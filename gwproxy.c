@@ -5,9 +5,9 @@
 
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
-"-b, --bind-addr\t\tIP address and port to be bound by the server\n"
-"-t, --target-addr\tIP address and port \n"
-"-h, --help\t\tShow this help message and exit\n";
+"-b\tIP address and port to be bound by the server\n"
+"-t\tIP address and port \n"
+"-h\tShow this help message and exit\n";
 
 int main(int argc, char *argv[])
 {
