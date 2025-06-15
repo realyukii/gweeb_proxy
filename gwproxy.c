@@ -12,6 +12,9 @@ static const char usage[] =
 "-t\tIP address and port \n"
 "-h\tShow this help message and exit\n";
 
+static int init_addr(char *addr, struct sockaddr *addr_st);
+static int start_server(char *addr, unsigned short port);
+
 int main(int argc, char *argv[])
 {
 	char c,  *bind_opt, *target_opt, *src_addr, *dst_addr;
@@ -50,5 +53,15 @@ int main(int argc, char *argv[])
 		return -EINVAL;
 	}
 
+
+static int start_server(char *addr, unsigned short port)
+{
+	/* TODO */
+	return 0;
+}
+
+static int init_addr(char *addr, struct sockaddr *addr_st)
+{
+	/* TODO */
 	return 0;
 }
