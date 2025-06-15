@@ -1,2 +1,2 @@
 build/gwproxy: gwproxy.c
-	gcc $^ -o $@
+	gcc -DDEBUG_LVL=3 $^ -o $@
