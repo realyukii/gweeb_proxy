@@ -1,4 +1,7 @@
+#include <stdbool.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
+#include <sys/epoll.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -6,6 +9,7 @@
 #include <unistd.h>
 #include <unistd.h>
 
+#define NR_EVENTS 512
 #ifndef DEBUG_LVL
 #define DEBUG_LVL 0
 #endif
@@ -23,11 +27,11 @@ extern char *optarg;
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-b\tIP address and port to be bound by the server\n"
-"-t\tIP address and port \n"
+"-t\tIP address and port of the target server\n"
 "-h\tShow this help message and exit\n";
 
 static int init_addr(char *addr, struct sockaddr *addr_st);
-static int start_server(char *addr, unsigned short port);
+static int start_server(struct sockaddr *addr_st);
 
 int main(int argc, char *argv[])
 {
@@ -53,7 +57,7 @@ int main(int argc, char *argv[])
 			break;
 		case 'h':
 			printf("%s", usage);
-			break;
+			return 0;
 
 		default:
 			return -EINVAL;
@@ -82,13 +86,64 @@ int main(int argc, char *argv[])
 		return -EINVAL;
 	}
 
+	ret = start_server(&src_addr_st);
+	if (ret < 0) {
+		perror("start_server");
+		return ret;
+	}
+
 	return 0;
 }
 
-static int start_server(char *addr, unsigned short port)
+static int start_server(struct sockaddr *addr_st)
 {
-	/* TODO */
+	int ret, tcp_sock, client_fd, epoll_fd, ready_nr;
+	struct epoll_event ev;
+	struct epoll_event evs[NR_EVENTS];
+	ev.events = EPOLLIN;
+	static const int flg = 1;
+
+	tcp_sock = socket(addr_st->sa_family, SOCK_STREAM, 0);
+	if (tcp_sock < 0)
+		return -EXIT_FAILURE;
+
+	setsockopt(tcp_sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
+	setsockopt(tcp_sock, SOL_SOCKET, SO_KEEPALIVE, &flg, sizeof(flg));
+	setsockopt(tcp_sock, IPPROTO_TCP, TCP_QUICKACK, &flg, sizeof(flg));
+	setsockopt(tcp_sock, IPPROTO_TCP, TCP_NODELAY, &flg, sizeof(flg));
+
+	if (bind(tcp_sock, addr_st, sizeof(*addr_st)) < 0)
+		goto err;
+	
+	if (listen(tcp_sock, 10) < 0)
+		goto err;
+
+	epoll_fd = epoll_create(1);
+	ev.data.fd = tcp_sock;
+	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, tcp_sock, &ev);
+
+	while (true) {
+		ready_nr = epoll_wait(epoll_fd, evs, NR_EVENTS, -1);
+		for (size_t i = 0; i < ready_nr; i++) {
+			struct epoll_event *c_ev = &evs[i];
+			if (c_ev->data.fd == tcp_sock) {
+				client_fd = accept(tcp_sock, NULL, NULL);
+				ev.data.fd = client_fd;
+				epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+			} else {
+				char buf[255] = {0};
+				ret = recv(c_ev->data.fd, buf, sizeof(buf), 0);
+
+				printf("%s\n", buf);
+				printf("read %d bytes\n", ret);
+			}
+		}
+	}
+
 	return 0;
+err:
+	close(tcp_sock);
+	return -EXIT_FAILURE;
 }
 
 static int init_addr(char *addr, struct sockaddr *addr_st)
