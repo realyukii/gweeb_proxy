@@ -5,6 +5,19 @@
 #include <unistd.h>
 #include <unistd.h>
 
+#ifndef DEBUG_LVL
+#define DEBUG_LVL 0
+#endif
+#define FOCUS 1
+#define DEBUG 2
+#define VERBOSE 3
+#define pr_debug(lvl, fmt, ...)				\
+do {							\
+	if (DEBUG_LVL >= (lvl)) {			\
+		fprintf(stderr, fmt, ##__VA_ARGS__);	\
+	}						\
+} while (0)
+
 extern char *optarg;
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
