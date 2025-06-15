@@ -1,8 +1,11 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <unistd.h>
+#include <arpa/inet.h>
 #include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <unistd.h>
 
+extern char *optarg;
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-b\tIP address and port to be bound by the server\n"
@@ -11,7 +14,7 @@ static const char usage[] =
 
 int main(int argc, char *argv[])
 {
-	char c;
+	char c,  *bind_opt, *target_opt, *src_addr, *dst_addr;
 
 	if (argc == 1) {
 		printf("%s", usage);
@@ -19,13 +22,14 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 
+	bind_opt = target_opt = NULL;
 	while ((c = getopt(argc, argv, "hb:t:")) != -1) {
 		switch (c) {
 		case 'b':
-			puts("bind");
+			bind_opt = optarg;
 			break;
 		case 't':
-			puts("target");
+			target_opt = optarg;
 			break;
 		case 'h':
 			printf("%s", usage);
@@ -34,6 +38,16 @@ int main(int argc, char *argv[])
 		default:
 			return -EINVAL;
 		}
+	}
+
+	if (!target_opt) {
+		fprintf(stderr, "-t option is required\n");
+		return -EINVAL;
+	}
+
+	if (!bind_opt) {
+		fprintf(stderr, "-b option is required\n");
+		return -EINVAL;
 	}
 
 	return 0;
