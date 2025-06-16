@@ -95,7 +95,7 @@ static int start_server(void)
 	ev.events = EPOLLIN;
 	static const int flg = 1;
 
-	tcp_sock = socket(src_addr_st.sa_family, SOCK_STREAM, 0);
+	tcp_sock = socket(src_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (tcp_sock < 0)
 		return -EXIT_FAILURE;
 
@@ -136,8 +136,9 @@ static int start_server(void)
 				
 				epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
 
-				int tsock = socket(dst_addr_st.sa_family, SOCK_STREAM, 0);
-				if (!connect(tsock, &dst_addr_st, sizeof(dst_addr_st))) {
+				int tsock = socket(dst_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+				ret = connect(tsock, &dst_addr_st, sizeof(dst_addr_st));
+				if (ret == 0 || errno == -EINPROGRESS || errno == -EAGAIN) {
 					ev.data.fd = tsock;
 					ev.data.u64 = 0;
 					ev.data.ptr = pc;
@@ -165,6 +166,8 @@ static int start_server(void)
 
 				ret = recv(from, buf, sizeof(buf), 0);
 				if (ret < 0) {
+					if (errno == -EAGAIN || errno == -EWOULDBLOCK)
+						continue;
 					perror("recv");
 					close(from);
 					close(to);
@@ -179,6 +182,8 @@ static int start_server(void)
 
 				ret = send(to, buf, ret, 0);
 				if (ret < 0) {
+					if (errno == -EAGAIN || errno == -EWOULDBLOCK)
+						continue;
 					perror("send");
 					close(from);
 					close(to);
