@@ -138,18 +138,10 @@ static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
 					close(c_ev->data.fd);
 				}
 
-				printf("%s\n", buf);
-				printf("read %d bytes\n", ret);
-
 				int fsock = socket(dst_addr_st->sa_family, SOCK_STREAM, 0);
 				if (!connect(fsock, dst_addr_st, sizeof(*dst_addr_st))) {
-					ret = send(fsock, buf, ret, 0);
-					if (ret < 0)
-						perror("send at target");
-					ret = recv(fsock, buf, sizeof(buf), 0);
-					if (ret < 0)
-						perror("recv at target");
-					close(fsock);
+					ev.data.fd = fsock;
+					epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fsock, &ev);
 				}
 
 				ret = send(c_ev->data.fd, buf, ret, 0);
@@ -157,8 +149,6 @@ static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
 					perror("send");
 					close(c_ev->data.fd);
 				}
-
-				printf("write %d bytes\n", ret);
 			}
 		}
 	}
