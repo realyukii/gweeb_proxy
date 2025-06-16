@@ -24,68 +24,47 @@ do {							\
 } while (0)
 
 extern char *optarg;
+static struct sockaddr src_addr_st, dst_addr_st;
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-b\tIP address and port to be bound by the server\n"
 "-t\tIP address and port of the target server\n"
 "-h\tShow this help message and exit\n";
 
+/*
+* Initialize address used to bind or connect a socket.
+*
+* @param addr Pointer to the string with fmt ip:port.
+* @param addr_st Pointer to a sockaddr structure to initialize.
+* @return zero on success, or a negative integer on failure.
+*/
 static int init_addr(char *addr, struct sockaddr *addr_st);
-static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st);
+
+/*
+* Start the TCP proxy server.
+* 
+* @return negative integer on failure.
+*/
+static int start_server(void);
+
+/*
+* Handle command-line arguments.
+* 
+* @param argc total argument passed.
+* @param argv Pointer to an array of string.
+* @return zero on success, or a negative integer on failure.
+*/
+static int handle_cmdline(int argc, char *argv[]);
 
 int main(int argc, char *argv[])
 {
-	char c,  *bind_opt, *target_opt;
-	struct sockaddr src_addr_st, dst_addr_st;
 	int ret;
 
-	if (argc == 1) {
-		printf("%s", usage);
+	ret = handle_cmdline(argc, argv);
+	if (ret < 0)
+		return ret;
 
-		return 0;
-	}
-
-	bind_opt = target_opt = NULL;
-	while ((c = getopt(argc, argv, "hb:t:")) != -1) {
-		switch (c) {
-		case 'b':
-			bind_opt = optarg;
-			break;
-		case 't':
-			target_opt = optarg;
-			break;
-		case 'h':
-			printf("%s", usage);
-			return 0;
-
-		default:
-			return -EINVAL;
-		}
-	}
-
-	if (!target_opt) {
-		fprintf(stderr, "-t option is required\n");
-		return -EINVAL;
-	}
-
-	if (!bind_opt) {
-		fprintf(stderr, "-b option is required\n");
-		return -EINVAL;
-	}
-
-	ret = init_addr(bind_opt, &src_addr_st);
-	if (ret < 0) {
-		fprintf(stderr, "invalid format for %s\n", bind_opt);
-		return -EINVAL;
-	}
-
-	ret = init_addr(target_opt, &dst_addr_st);
-	if (ret < 0) {
-		fprintf(stderr, "invalid format for %s\n", target_opt);
-		return -EINVAL;
-	}
-
-	ret = start_server(&src_addr_st, &dst_addr_st);
+	ret = start_server();
 	if (ret < 0) {
 		perror("start_server");
 		return ret;
@@ -94,7 +73,7 @@ int main(int argc, char *argv[])
 	return 0;
 }
 
-static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
+static int start_server(void)
 {
 	int ret, tcp_sock, client_fd, epoll_fd, ready_nr;
 	struct epoll_event ev;
@@ -102,7 +81,7 @@ static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
 	ev.events = EPOLLIN;
 	static const int flg = 1;
 
-	tcp_sock = socket(addr_st->sa_family, SOCK_STREAM, 0);
+	tcp_sock = socket(src_addr_st.sa_family, SOCK_STREAM, 0);
 	if (tcp_sock < 0)
 		return -EXIT_FAILURE;
 
@@ -111,7 +90,7 @@ static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
 	setsockopt(tcp_sock, IPPROTO_TCP, TCP_QUICKACK, &flg, sizeof(flg));
 	setsockopt(tcp_sock, IPPROTO_TCP, TCP_NODELAY, &flg, sizeof(flg));
 
-	if (bind(tcp_sock, addr_st, sizeof(*addr_st)) < 0)
+	if (bind(tcp_sock, &src_addr_st, sizeof(src_addr_st)) < 0)
 		goto err;
 	
 	if (listen(tcp_sock, 10) < 0)
@@ -210,6 +189,60 @@ static int init_addr(char *addr, struct sockaddr *addr_st)
 		break;
 	}
 	pr_debug(VERBOSE, "address: %s:%d\n", addr, hport);
+
+	return 0;
+}
+
+static int handle_cmdline(int argc, char *argv[])
+{
+	char c,  *bind_opt, *target_opt;
+	int ret;
+
+	if (argc == 1) {
+		printf("%s", usage);
+
+		return 0;
+	}
+
+	bind_opt = target_opt = NULL;
+	while ((c = getopt(argc, argv, "hb:t:")) != -1) {
+		switch (c) {
+		case 'b':
+			bind_opt = optarg;
+			break;
+		case 't':
+			target_opt = optarg;
+			break;
+		case 'h':
+			printf("%s", usage);
+			return 0;
+
+		default:
+			return -EINVAL;
+		}
+	}
+
+	if (!target_opt) {
+		fprintf(stderr, "-t option is required\n");
+		return -EINVAL;
+	}
+
+	if (!bind_opt) {
+		fprintf(stderr, "-b option is required\n");
+		return -EINVAL;
+	}
+
+	ret = init_addr(bind_opt, &src_addr_st);
+	if (ret < 0) {
+		fprintf(stderr, "invalid format for %s\n", bind_opt);
+		return -EINVAL;
+	}
+
+	ret = init_addr(target_opt, &dst_addr_st);
+	if (ret < 0) {
+		fprintf(stderr, "invalid format for %s\n", target_opt);
+		return -EINVAL;
+	}
 
 	return 0;
 }
