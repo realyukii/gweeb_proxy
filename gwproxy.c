@@ -23,6 +23,20 @@ do {							\
 	}						\
 } while (0)
 
+enum {
+	EV_BIT_CLIENT		= (0x0001ULL << 48ULL),
+	EV_BIT_TARGET		= (0x0002ULL << 48ULL)
+};
+
+#define ALL_EV_BIT	(EV_BIT_CLIENT | EV_BIT_TARGET)
+#define GET_EV_BIT(X)	((X) & ALL_EV_BIT)
+#define CLEAR_EV_BIT(X)	((X) & ~ALL_EV_BIT)
+
+struct pair_connection {
+	int csockfd;
+	int tsockfd;
+};
+
 extern char *optarg;
 static struct sockaddr src_addr_st, dst_addr_st;
 static const char usage[] =
@@ -103,6 +117,9 @@ static int start_server(void)
 	while (true) {
 		ready_nr = epoll_wait(epoll_fd, evs, NR_EVENTS, -1);
 		if (ready_nr < 0) {
+			if (errno == -EINTR)
+				continue;
+			printf("errno = %d\n", errno);
 			perror("epoll_wait");
 			return -EXIT_FAILURE;
 		}
@@ -110,26 +127,67 @@ static int start_server(void)
 		for (int i = 0; i < ready_nr; i++) {
 			struct epoll_event *c_ev = &evs[i];
 			if (c_ev->data.fd == tcp_sock) {
+				struct pair_connection *pc = malloc(sizeof(*pc));
 				client_fd = accept(tcp_sock, NULL, NULL);
-				ev.data.fd = client_fd;
+				ev.data.u64 = 0;
+				ev.data.ptr = pc;
+				pc->csockfd = client_fd;
+				ev.data.u64 |= EV_BIT_CLIENT;
+				
 				epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+
+				int tsock = socket(dst_addr_st.sa_family, SOCK_STREAM, 0);
+				if (!connect(tsock, &dst_addr_st, sizeof(dst_addr_st))) {
+					ev.data.fd = tsock;
+					ev.data.u64 = 0;
+					ev.data.ptr = pc;
+					pc->tsockfd = tsock;
+					ev.data.u64 |= EV_BIT_TARGET;
+					epoll_ctl(epoll_fd, EPOLL_CTL_ADD, tsock, &ev);
+				}
 			} else {
-				char buf[255] = {0};
-				ret = recv(c_ev->data.fd, buf, sizeof(buf), 0);
+				uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
+				c_ev->data.u64 = CLEAR_EV_BIT(c_ev->data.u64);
+				struct pair_connection *pc = c_ev->data.ptr;
+				int from, to;
+				char buf[1024] = {0};
+				switch (ev_bit) {
+				case EV_BIT_CLIENT:
+					from = pc->csockfd;
+					to = pc->tsockfd;
+					break;
+
+				case EV_BIT_TARGET:
+					from = pc->tsockfd;
+					to = pc->csockfd;
+					break;
+				}
+
+				ret = recv(from, buf, sizeof(buf), 0);
 				if (ret < 0) {
 					perror("recv");
-					close(c_ev->data.fd);
+					close(from);
+					close(to);
+					free(pc);
+					continue;
 				} else if (!ret) {
-					close(c_ev->data.fd);
+					close(from);
+					close(to);
+					free(pc);
 					continue;
 				}
 
-				ret = send(c_ev->data.fd, buf, ret, 0);
+				ret = send(to, buf, ret, 0);
 				if (ret < 0) {
 					perror("send");
-					close(c_ev->data.fd);
+					close(from);
+					close(to);
+					free(pc);
+					continue;
 				} else if (!ret) {
-					close(c_ev->data.fd);
+					close(from);
+					close(to);
+					free(pc);
 				}
 			}
 		}
