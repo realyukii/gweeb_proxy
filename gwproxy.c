@@ -1,3 +1,4 @@
+#include <sys/resource.h>
 #include <stdbool.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
@@ -39,6 +40,10 @@ struct pair_connection {
 
 extern char *optarg;
 static struct sockaddr src_addr_st, dst_addr_st;
+static const struct rlimit file_limits = {
+	.rlim_cur = 65536,
+	.rlim_max = 65536
+};
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-b\tIP address and port to be bound by the server\n"
@@ -78,6 +83,7 @@ int main(int argc, char *argv[])
 	if (ret < 0)
 		return ret;
 
+	setrlimit(RLIMIT_NOFILE, &file_limits);
 	ret = start_server();
 	if (ret < 0) {
 		perror("start_server");
