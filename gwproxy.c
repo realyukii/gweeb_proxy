@@ -35,8 +35,7 @@ static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st);
 
 int main(int argc, char *argv[])
 {
-	char c,  *bind_opt, *target_opt, *src_addr, *dst_addr;
-	unsigned short src_port, dst_port;
+	char c,  *bind_opt, *target_opt;
 	struct sockaddr src_addr_st, dst_addr_st;
 	int ret;
 
@@ -124,7 +123,12 @@ static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
 
 	while (true) {
 		ready_nr = epoll_wait(epoll_fd, evs, NR_EVENTS, -1);
-		for (size_t i = 0; i < ready_nr; i++) {
+		if (ready_nr < 0) {
+			perror("epoll_wait");
+			return -EXIT_FAILURE;
+		}
+
+		for (int i = 0; i < ready_nr; i++) {
 			struct epoll_event *c_ev = &evs[i];
 			if (c_ev->data.fd == tcp_sock) {
 				client_fd = accept(tcp_sock, NULL, NULL);
