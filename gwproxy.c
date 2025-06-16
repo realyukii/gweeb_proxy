@@ -31,7 +31,7 @@ static const char usage[] =
 "-h\tShow this help message and exit\n";
 
 static int init_addr(char *addr, struct sockaddr *addr_st);
-static int start_server(struct sockaddr *addr_st);
+static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st);
 
 int main(int argc, char *argv[])
 {
@@ -86,7 +86,7 @@ int main(int argc, char *argv[])
 		return -EINVAL;
 	}
 
-	ret = start_server(&src_addr_st);
+	ret = start_server(&src_addr_st, &dst_addr_st);
 	if (ret < 0) {
 		perror("start_server");
 		return ret;
@@ -95,7 +95,7 @@ int main(int argc, char *argv[])
 	return 0;
 }
 
-static int start_server(struct sockaddr *addr_st)
+static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
 {
 	int ret, tcp_sock, client_fd, epoll_fd, ready_nr;
 	struct epoll_event ev;
@@ -133,9 +133,26 @@ static int start_server(struct sockaddr *addr_st)
 			} else {
 				char buf[255] = {0};
 				ret = recv(c_ev->data.fd, buf, sizeof(buf), 0);
+				if (ret < 0) {
+					perror("recv");
+					close(c_ev->data.fd);
+				}
 
 				printf("%s\n", buf);
 				printf("read %d bytes\n", ret);
+
+				// TODO: connect and start sending/receiving data from the target host
+				// int fsock = socket(dst_addr_st->sa_family, SOCK_STREAM, 0);
+				// if (!connect(fsock, dst_addr_st, sizeof(*dst_addr_st))) {
+				// }
+
+				ret = send(c_ev->data.fd, "acked\n", 7, 0);
+				if (ret < 0) {
+					perror("send");
+					close(c_ev->data.fd);
+				}
+
+				printf("write %d bytes\n", ret);
 			}
 		}
 	}
