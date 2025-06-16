@@ -141,12 +141,18 @@ static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
 				printf("%s\n", buf);
 				printf("read %d bytes\n", ret);
 
-				// TODO: connect and start sending/receiving data from the target host
-				// int fsock = socket(dst_addr_st->sa_family, SOCK_STREAM, 0);
-				// if (!connect(fsock, dst_addr_st, sizeof(*dst_addr_st))) {
-				// }
+				int fsock = socket(dst_addr_st->sa_family, SOCK_STREAM, 0);
+				if (!connect(fsock, dst_addr_st, sizeof(*dst_addr_st))) {
+					ret = send(fsock, buf, ret, 0);
+					if (ret < 0)
+						perror("send at target");
+					ret = recv(fsock, buf, sizeof(buf), 0);
+					if (ret < 0)
+						perror("recv at target");
+					close(fsock);
+				}
 
-				ret = send(c_ev->data.fd, "acked\n", 7, 0);
+				ret = send(c_ev->data.fd, buf, ret, 0);
 				if (ret < 0) {
 					perror("send");
 					close(c_ev->data.fd);
