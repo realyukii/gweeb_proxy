@@ -136,17 +136,16 @@ static int start_server(struct sockaddr *addr_st, struct sockaddr *dst_addr_st)
 				if (ret < 0) {
 					perror("recv");
 					close(c_ev->data.fd);
-				}
-
-				int fsock = socket(dst_addr_st->sa_family, SOCK_STREAM, 0);
-				if (!connect(fsock, dst_addr_st, sizeof(*dst_addr_st))) {
-					ev.data.fd = fsock;
-					epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fsock, &ev);
+				} else if (!ret) {
+					close(c_ev->data.fd);
+					continue;
 				}
 
 				ret = send(c_ev->data.fd, buf, ret, 0);
 				if (ret < 0) {
 					perror("send");
+					close(c_ev->data.fd);
+				} else if (!ret) {
 					close(c_ev->data.fd);
 				}
 			}
