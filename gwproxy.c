@@ -123,7 +123,7 @@ static int start_server(void)
 	while (true) {
 		ready_nr = epoll_wait(epoll_fd, evs, NR_EVENTS, -1);
 		if (ready_nr < 0) {
-			if (errno == -EINTR)
+			if (errno == EINTR)
 				continue;
 			printf("errno = %d\n", errno);
 			perror("epoll_wait");
@@ -144,7 +144,7 @@ static int start_server(void)
 
 				int tsock = socket(dst_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 				ret = connect(tsock, &dst_addr_st, sizeof(dst_addr_st));
-				if (ret == 0 || errno == -EINPROGRESS || errno == -EAGAIN) {
+				if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
 					ev.data.fd = tsock;
 					ev.data.u64 = 0;
 					ev.data.ptr = pc;
@@ -172,7 +172,7 @@ static int start_server(void)
 
 				ret = recv(from, buf, sizeof(buf), 0);
 				if (ret < 0) {
-					if (errno == -EAGAIN || errno == -EWOULDBLOCK)
+					if (errno == EAGAIN || errno == EWOULDBLOCK)
 						continue;
 					perror("recv");
 					close(from);
@@ -188,7 +188,7 @@ static int start_server(void)
 
 				ret = send(to, buf, ret, 0);
 				if (ret < 0) {
-					if (errno == -EAGAIN || errno == -EWOULDBLOCK)
+					if (errno == EAGAIN || errno == EWOULDBLOCK)
 						continue;
 					perror("send");
 					close(from);
