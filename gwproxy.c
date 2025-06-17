@@ -35,13 +35,16 @@ enum {
 #define GET_EV_BIT(X)	((X) & ALL_EV_BIT)
 #define CLEAR_EV_BIT(X)	((X) & ~ALL_EV_BIT)
 
+struct single_connection {
+	int sockfd;
+	char *buf;
+	size_t len;
+	uint32_t epmask;
+};
+
 struct pair_connection {
-	int csockfd;
-	int tsockfd;
-	char *tbuf;
-	size_t tlen;
-	char *cbuf;
-	size_t clen;
+	struct single_connection client;
+	struct single_connection target;
 };
 
 struct gwproxy {
@@ -86,9 +89,41 @@ static int start_server(void);
 */
 static int handle_cmdline(int argc, char *argv[]);
 
+/*
+* Handle incoming client
+*
+* @param gwp Pointer to the global variable of gwproxy struct
+* @return zero on success, or a negative integer on failure.
+*/
 static int handle_incoming_client(struct gwproxy *gwp);
 
-static int handle_data(struct epoll_event *c_ev);
+/*
+* Handle incoming and outgoing data
+*
+* @param c_ev Pointer to epoll' client event structure.
+* @param gwp Pointer to the global variable of gwproxy struct
+* @param is_pollout Boolean to indicate if the event currently handled
+* is EPOLLOUT or EPOLLIN
+* @return zero on success, or a negative integer on failure.
+*/
+static int handle_data(struct epoll_event *c_ev, struct gwproxy *gwp, bool is_pollout);
+
+/*
+* Set EPOLLIN bit on epmask member.
+*
+* @param src Pointer to struct single_connection
+* @param epmask_changed Pointer to boolean
+*/
+static void adjust_pollin(struct single_connection *src, bool *epmask_changed);
+
+/*
+* Set EPOLLOUT bit on epmask member of dst.
+*
+* @param src Pointer to struct single_connection
+* @param dst Pointer to struct single_connection
+* @param epmask_changed Pointer to boolean
+*/
+static void adjust_pollout(struct single_connection *src, struct single_connection *dst, bool *epmask_changed);
 
 /*
 * Set socket attribute
@@ -162,9 +197,17 @@ static int start_server(void)
 				if (ret < 0)
 					goto err;
 			} else {
-				ret = handle_data(c_ev);
-				if (ret < 0)
-					break;
+				if (c_ev->events & EPOLLIN) {
+					ret = handle_data(c_ev, &gwp, false);
+					if (ret < 0)
+						break;
+				}
+
+				if (c_ev->events & EPOLLOUT) {
+					ret = handle_data(c_ev, &gwp, true);
+					if (ret < 0)
+						break;
+				}
 			}
 		}
 	}
@@ -230,25 +273,33 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 static struct pair_connection *init_pair(void)
 {
 	struct pair_connection *pc;
+	struct single_connection *client;
+	struct single_connection *target;
 
 	pc = malloc(sizeof(*pc));
 	if (!pc)
 		return NULL;
 
-	pc->cbuf = malloc(DEFAULT_BUF_SZ);
-	if (!pc->cbuf) {
+	client = &pc->client;
+	target = &pc->target;
+
+	client->buf = malloc(DEFAULT_BUF_SZ);
+	if (!client->buf) {
 		free(pc);
 		return NULL;
 	}
 
-	pc->tbuf = malloc(DEFAULT_BUF_SZ);
-	if (!pc->tbuf) {
-		free(pc->cbuf);
+	target->buf = malloc(DEFAULT_BUF_SZ);
+	if (!target->buf) {
+		free(client->buf);
 		free(pc);
 		return NULL;
 	}
-	pc->clen = 0;
-	pc->tlen = 0;
+	client->len = 0;
+	target->len = 0;
+
+	client->epmask = EPOLLIN;
+	target->epmask = EPOLLIN | EPOLLOUT;
 
 	return pc;
 }
@@ -316,17 +367,17 @@ static int handle_incoming_client(struct gwproxy *gwp)
 	if (!pc)
 		return -ENOMEM;
 
-	ev.events = EPOLLIN;
+	ev.events = pc->client.epmask;
 	client_fd = accept4(gwp->listen_sock, NULL, NULL, SOCK_NONBLOCK);
 	set_sockattr(client_fd);
+	pc->client.sockfd = client_fd;
 	ev.data.u64 = 0;
 	ev.data.ptr = pc;
-	pc->csockfd = client_fd;
 	ev.data.u64 |= EV_BIT_CLIENT;
 
 	epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, client_fd, &ev);
 
-	tsock = socket(dst_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	tsock = socket(dst_addr_st.ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (tsock < 0)
 		return -EXIT_FAILURE;
 
@@ -335,10 +386,10 @@ static int handle_incoming_client(struct gwproxy *gwp)
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 	ret = connect(tsock, (struct sockaddr *)&dst_addr_st, size_addr);
 	if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
-		ev.data.fd = tsock;
+		ev.events = pc->target.epmask;
 		ev.data.u64 = 0;
 		ev.data.ptr = pc;
-		pc->tsockfd = tsock;
+		pc->target.sockfd = tsock;
 		ev.data.u64 |= EV_BIT_TARGET;
 		epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
 	}
@@ -346,72 +397,148 @@ static int handle_incoming_client(struct gwproxy *gwp)
 	return 0;
 }
 
-static int handle_data(struct epoll_event *c_ev)
+static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 {
-	int from, to;
+	/*
+	* unset EPOLLIN from epmask when the buffer is full,
+	* otherwise, set it.
+	*/
+	if (!(DEFAULT_BUF_SZ - src->len)) {
+		if (src->epmask & EPOLLIN) {
+			src->epmask &= ~EPOLLIN;
+			*epmask_changed = true;
+		}
+	} else {
+		if (!(src->epmask & EPOLLIN)) {
+			src->epmask |= EPOLLIN;
+			*epmask_changed = true;
+		}
+	}
+}
+
+static void adjust_pollout(struct single_connection *src, struct single_connection *dst, bool *epmask_changed)
+{
+	/*
+	* set EPOLLOUT to epmask when there's remaining bytes in the buffer
+	* waiting to be sent, otherwise, unset it.
+	*/
+	if (src->len > 0) {
+		if (!(dst->epmask & EPOLLOUT)) {
+			dst->epmask |= EPOLLOUT;
+			*epmask_changed = true;
+		}
+	} else {
+		if (dst->epmask & EPOLLOUT) {
+			dst->epmask &= ~EPOLLOUT;
+			*epmask_changed = true;
+		}
+	}
+}
+
+static int handle_data(struct epoll_event *c_ev, struct gwproxy *gwp, bool is_pollout)
+{
 	ssize_t ret;
 	uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
 	struct pair_connection *pc;
-	char *buf;
-	size_t *len, rlen;
+	struct single_connection *from, *to, *tmp;
+	struct epoll_event ev_from, ev_to;
+	bool is_from_changed = false;
+	bool is_to_changed = false;
+	size_t rlen;
 
 	c_ev->data.u64 = CLEAR_EV_BIT(c_ev->data.u64);
 	pc = c_ev->data.ptr;
 
 	switch (ev_bit) {
 	case EV_BIT_CLIENT:
-		from = pc->csockfd;
-		buf = pc->cbuf;
-		len = &pc->clen;
-		to = pc->tsockfd;
+		from = &pc->client;
+		to = &pc->target;
 		break;
 
 	case EV_BIT_TARGET:
-		from = pc->tsockfd;
-		buf = pc->tbuf;
-		len = &pc->tlen;
-		to = pc->csockfd;
+		from = &pc->target;
+		to = &pc->client;
 		break;
 	}
 
-	rlen = DEFAULT_BUF_SZ - *len;
+	if (is_pollout) {
+		tmp = from;
+		from = to;
+		to = tmp;
+	}
+
+	if (from == &pc->client) {
+		ev_from.data.u64 = 0;
+		ev_from.data.ptr = pc;
+		ev_from.data.u64 |= EV_BIT_CLIENT;
+
+		ev_to.data.u64 = 0;
+		ev_to.data.ptr = pc;
+		ev_to.data.u64 |= EV_BIT_TARGET;
+	} else {
+		ev_from.data.u64 = 0;
+		ev_from.data.ptr = pc;
+		ev_from.data.u64 |= EV_BIT_TARGET;
+
+		ev_to.data.u64 = 0;
+		ev_to.data.ptr = pc;
+		ev_to.data.u64 |= EV_BIT_CLIENT;
+	}
+	
+	/* length of empty buffer */
+	rlen = DEFAULT_BUF_SZ - from->len;
 	if (rlen > 0) {
-		ret = recv(from, &buf[*len], rlen, 0);
+		ret = recv(from->sockfd, &from->buf[from->len], rlen, 0);
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
-				return 0;
+				goto exit;
 			perror("recv");
 			goto exit_err;
 		} else if (!ret)
 			goto exit_err;
-		
-		*len += (size_t)ret;
+
+		from->len += (size_t)ret;
 	}
 
-	if (*len > 0) {
-		ret = send(to, buf, *len, 0);
+	/* length of filled buffer */
+	if (from->len > 0) {
+		ret = send(to->sockfd, from->buf, from->len, 0);
 		if (ret < 0) {
 			ret = errno;
-			if (ret == EAGAIN || ret == EINTR) {
-				
-				return 0;
-			}
+			if (ret == EAGAIN || ret == EINTR)
+				goto exit;
 			perror("send");
 			goto exit_err;
 		} else if (!ret)
 			goto exit_err;
-		
-		*len -= ret;
-		if (*len)
-			memmove(buf, &buf[ret], *len);
+
+		from->len -= ret;
+		if (from->len)
+			memmove(from->buf, &from->buf[ret], from->len);
+	}
+
+exit:
+	adjust_pollout(from, to, &is_to_changed);
+	adjust_pollout(to, from, &is_from_changed);
+	adjust_pollin(from, &is_from_changed);
+	adjust_pollin(to, &is_to_changed);
+
+	if (is_from_changed) {
+		ev_from.events = from->epmask;
+		epoll_ctl(gwp->epfd, EPOLL_CTL_MOD, from->sockfd, &ev_from);
+	}
+
+	if (is_to_changed) {
+		ev_to.events = to->epmask;
+		epoll_ctl(gwp->epfd, EPOLL_CTL_MOD, to->sockfd, &ev_to);
 	}
 
 	return 0;
 
 exit_err:
-	close(from);
-	close(to);
+	close(from->sockfd);
+	close(to->sockfd);
 	free(pc);
 	return -EXIT_FAILURE;
 }
