@@ -1,4 +1,21 @@
 build/gwproxy: gwproxy.c
+	gcc -Wall -Wextra $^ -o $@
+build/gwproxy_debug: gwproxy.c
 	gcc -fsanitize=address -Wall -Wextra -DDEBUG_LVL=1 -g3 $^ -o $@
 test: ./build/gwproxy
-	strace ./build/gwproxy -t 127.0.0.1:8081 -b 127.0.0.1:8080
+	./build/gwproxy -t [::1]:8081 -b [::]:8080 &
+	./build/gwproxy -t [::1]:8081 -b [::]:8080 &
+	./build/gwproxy -t [::1]:8081 -b [::]:8080 &
+	./build/gwproxy -t [::1]:8081 -b [::]:8080 &
+	./build/gwproxy -t [::1]:8081 -b [::]:8080 &
+	./build/gwproxy -t [::1]:8081 -b [::]:8080 &
+	./build/gwproxy -t [::1]:8081 -b [::]:8080 &
+	./build/gwproxy -t [::1]:8081 -b [::]:8080 &
+	./build/gwproxy -t 192.168.1.3:8081 -b [::]:8080 &
+	./build/gwproxy -t 192.168.1.3:8081 -b [::]:8080 &
+	./build/gwproxy -t 192.168.1.3:8081 -b [::]:8080 &
+	./build/gwproxy -t 192.168.1.3:8081 -b [::]:8080 &
+	./build/gwproxy -t 192.168.1.3:8081 -b [::]:8080 &
+	./build/gwproxy -t 192.168.1.3:8081 -b [::]:8080 &
+	./build/gwproxy -t 192.168.1.3:8081 -b [::]:8080 &
+	./build/gwproxy -t 192.168.1.3:8081 -b [::]:8080

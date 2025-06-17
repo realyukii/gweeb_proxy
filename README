@@ -1,3 +1,12 @@
 A simple tcp proxy server that forward a connection to the specified destination address:port.
 
 This repository is part of GNU/Weeb challanges. For more information, see: https://t.me/GNUWeeb/1174779
+
+stress test with gwhttpd:
+ab -k -n 40000 -c 20000 http://[::1]:8080/zero & ab -k -n 40000 -c 20000 http://127.0.0.1:8080/zero
+
+40.000 HTTP request with 20.000 concurrent connection, each connection sent multiple request (possible by using keep-alive flag, -k)
+
+some tweak is needed:
+- sudo sysctl net.ipv4.ip_local_port_range="4000 65535"
+see: https://t.me/GNUWeeb/1174855

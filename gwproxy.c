@@ -55,8 +55,8 @@ struct gwproxy {
 extern char *optarg;
 static struct sockaddr_storage src_addr_st, dst_addr_st;
 static const struct rlimit file_limits = {
-	.rlim_cur = 65536,
-	.rlim_max = 65536
+	.rlim_cur = 100000,
+	.rlim_max = 100000
 };
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
@@ -140,7 +140,12 @@ int main(int argc, char *argv[])
 	if (ret < 0)
 		return ret;
 
-	setrlimit(RLIMIT_NOFILE, &file_limits);
+	ret = setrlimit(RLIMIT_NOFILE, &file_limits);
+	if (ret < 0) {
+		perror("setrlimit");
+		return ret;
+	}
+
 	ret = start_server();
 	if (ret < 0) {
 		perror("start_server");
@@ -168,6 +173,7 @@ static int start_server(void)
 		return -EXIT_FAILURE;
 
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
+	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &flg, sizeof(flg));
 
 	if (bind(gwp.listen_sock, (struct sockaddr *)&src_addr_st, size_addr) < 0)
 		goto err;
