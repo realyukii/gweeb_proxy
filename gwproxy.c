@@ -106,7 +106,8 @@ static int handle_incoming_client(struct gwproxy *gwp);
 * is EPOLLOUT or EPOLLIN
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_data(struct epoll_event *c_ev, struct gwproxy *gwp, bool is_pollout);
+static int handle_data(struct epoll_event *c_ev,
+			struct gwproxy *gwp, bool is_pollout);
 
 /*
 * Process epoll event that are 'ready'
@@ -134,7 +135,8 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed);
 * @param dst Pointer to struct single_connection
 * @param epmask_changed Pointer to boolean
 */
-static void adjust_pollout(struct single_connection *src, struct single_connection *dst, bool *epmask_changed);
+static void adjust_pollout(struct single_connection *src,
+			struct single_connection *dst, bool *epmask_changed);
 
 /*
 * Set socket attribute
@@ -186,10 +188,12 @@ static int start_server(void)
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &flg, sizeof(flg));
 
-	if (bind(gwp.listen_sock, (struct sockaddr *)&src_addr_st, size_addr) < 0)
+	ret = bind(gwp.listen_sock, (struct sockaddr *)&src_addr_st, size_addr);
+	if (ret < 0)
 		goto err;
-	
-	if (listen(gwp.listen_sock, 10) < 0)
+
+	ret = listen(gwp.listen_sock, 10);
+	if (ret < 0)
 		goto err;
 
 	gwp.epfd = epoll_create(1);
@@ -468,7 +472,8 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 	}
 }
 
-static void adjust_pollout(struct single_connection *src, struct single_connection *dst, bool *epmask_changed)
+static void adjust_pollout(struct single_connection *src,
+			struct single_connection *dst, bool *epmask_changed)
 {
 	/*
 	* set EPOLLOUT to epmask when there's remaining bytes in the buffer
@@ -487,7 +492,8 @@ static void adjust_pollout(struct single_connection *src, struct single_connecti
 	}
 }
 
-static int handle_data(struct epoll_event *c_ev, struct gwproxy *gwp, bool is_pollout)
+static int handle_data(struct epoll_event *c_ev,
+			struct gwproxy *gwp, bool is_pollout)
 {
 	ssize_t ret;
 	uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
