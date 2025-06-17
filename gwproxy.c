@@ -229,7 +229,8 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 	struct sockaddr_in6 *in6 = (void *)addr_st;
 	struct sockaddr_in *in = (void *)addr_st;
 	char *separator = NULL, *port_str;
-	unsigned short nport, hport, af;
+	unsigned short nport, af;
+	int hport;
 	size_t addrlen = strlen(addr) + 1;
 	char tmp[1 + INET6_ADDRSTRLEN + 1 + 1 + 5];
 	char *ipstr;
@@ -253,7 +254,7 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 	hport = atoi(port_str);
 	if (!hport)
 		return -EINVAL;
-	if (hport > 65535)
+	if (hport > 65535 || hport < 0)
 		return -EINVAL;
 	nport = htons(hport);
 
