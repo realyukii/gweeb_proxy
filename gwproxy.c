@@ -74,6 +74,12 @@ static int start_server(void);
 * @return zero on success, or a negative integer on failure.
 */
 static int handle_cmdline(int argc, char *argv[]);
+/*
+* Set socket attribute
+*
+* @param sock Network socket file descriptor.
+*/
+static void set_sockattr(int sock);
 
 int main(int argc, char *argv[])
 {
@@ -106,9 +112,6 @@ static int start_server(void)
 		return -EXIT_FAILURE;
 
 	setsockopt(tcp_sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
-	setsockopt(tcp_sock, SOL_SOCKET, SO_KEEPALIVE, &flg, sizeof(flg));
-	setsockopt(tcp_sock, IPPROTO_TCP, TCP_QUICKACK, &flg, sizeof(flg));
-	setsockopt(tcp_sock, IPPROTO_TCP, TCP_NODELAY, &flg, sizeof(flg));
 
 	if (bind(tcp_sock, &src_addr_st, sizeof(src_addr_st)) < 0)
 		goto err;
@@ -135,6 +138,7 @@ static int start_server(void)
 			if (c_ev->data.fd == tcp_sock) {
 				struct pair_connection *pc = malloc(sizeof(*pc));
 				client_fd = accept(tcp_sock, NULL, NULL);
+				set_sockattr(client_fd);
 				ev.data.u64 = 0;
 				ev.data.ptr = pc;
 				pc->csockfd = client_fd;
@@ -143,6 +147,9 @@ static int start_server(void)
 				epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
 
 				int tsock = socket(dst_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+				if (tsock < 0)
+					return -EXIT_FAILURE;
+				set_sockattr(tsock);
 				ret = connect(tsock, &dst_addr_st, sizeof(dst_addr_st));
 				if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
 					ev.data.fd = tsock;
@@ -315,4 +322,14 @@ static int handle_cmdline(int argc, char *argv[])
 	}
 
 	return 0;
+}
+
+static void set_sockattr(int sock)
+{
+	static const int flg = 1;
+
+	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
+	setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &flg, sizeof(flg));
+	setsockopt(sock, IPPROTO_TCP, TCP_QUICKACK, &flg, sizeof(flg));
+	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flg, sizeof(flg));
 }
