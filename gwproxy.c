@@ -172,33 +172,34 @@ static int start_server(void)
 
 				ret = recv(from, buf, sizeof(buf), 0);
 				if (ret < 0) {
-					if (errno == EAGAIN || errno == EWOULDBLOCK)
+					if (errno == EAGAIN)
 						continue;
 					perror("recv");
 					close(from);
 					close(to);
 					free(pc);
-					continue;
+					break;
 				} else if (!ret) {
 					close(from);
 					close(to);
 					free(pc);
-					continue;
+					break;
 				}
 
 				ret = send(to, buf, ret, 0);
 				if (ret < 0) {
-					if (errno == EAGAIN || errno == EWOULDBLOCK)
+					if (errno == EAGAIN)
 						continue;
 					perror("send");
 					close(from);
 					close(to);
 					free(pc);
-					continue;
+					break;
 				} else if (!ret) {
 					close(from);
 					close(to);
 					free(pc);
+					break;
 				}
 			}
 		}
