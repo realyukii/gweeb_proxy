@@ -82,6 +82,8 @@ static int handle_cmdline(int argc, char *argv[]);
 
 static int handle_incoming_client(struct gwproxy *gwp);
 
+static int handle_data(struct epoll_event *c_ev);
+
 /*
 * Set socket attribute
 *
@@ -147,54 +149,9 @@ static int start_server(void)
 			if (c_ev->data.fd == gwp.listen_sock) {
 				handle_incoming_client(&gwp);
 			} else {
-				uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
-				c_ev->data.u64 = CLEAR_EV_BIT(c_ev->data.u64);
-				struct pair_connection *pc = c_ev->data.ptr;
-				int from, to;
-				char buf[1024] = {0};
-				switch (ev_bit) {
-				case EV_BIT_CLIENT:
-					from = pc->csockfd;
-					to = pc->tsockfd;
+				ret = handle_data(c_ev);
+				if (ret < 0)
 					break;
-
-				case EV_BIT_TARGET:
-					from = pc->tsockfd;
-					to = pc->csockfd;
-					break;
-				}
-
-				ret = recv(from, buf, sizeof(buf), 0);
-				if (ret < 0) {
-					if (errno == EAGAIN)
-						continue;
-					perror("recv");
-					close(from);
-					close(to);
-					free(pc);
-					break;
-				} else if (!ret) {
-					close(from);
-					close(to);
-					free(pc);
-					break;
-				}
-
-				ret = send(to, buf, ret, 0);
-				if (ret < 0) {
-					if (errno == EAGAIN)
-						continue;
-					perror("send");
-					close(from);
-					close(to);
-					free(pc);
-					break;
-				} else if (!ret) {
-					close(from);
-					close(to);
-					free(pc);
-					break;
-				}
 			}
 		}
 	}
@@ -339,6 +296,62 @@ static int handle_incoming_client(struct gwproxy *gwp)
 		pc->tsockfd = tsock;
 		ev.data.u64 |= EV_BIT_TARGET;
 		epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
+	}
+
+	return 0;
+}
+
+static int handle_data(struct epoll_event *c_ev)
+{
+	int ret;
+	uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
+
+	c_ev->data.u64 = CLEAR_EV_BIT(c_ev->data.u64);
+	struct pair_connection *pc = c_ev->data.ptr;
+	int from, to;
+	char buf[1024] = {0};
+	switch (ev_bit) {
+	case EV_BIT_CLIENT:
+		from = pc->csockfd;
+		to = pc->tsockfd;
+		break;
+
+	case EV_BIT_TARGET:
+		from = pc->tsockfd;
+		to = pc->csockfd;
+		break;
+	}
+
+	ret = recv(from, buf, sizeof(buf), 0);
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return 0;
+		perror("recv");
+		close(from);
+		close(to);
+		free(pc);
+		return -EXIT_FAILURE;
+	} else if (!ret) {
+		close(from);
+		close(to);
+		free(pc);
+		return -EXIT_FAILURE;
+	}
+
+	ret = send(to, buf, ret, 0);
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return 0;
+		perror("send");
+		close(from);
+		close(to);
+		free(pc);
+		return -EXIT_FAILURE;
+	} else if (!ret) {
+		close(from);
+		close(to);
+		free(pc);
+		return -EXIT_FAILURE;
 	}
 
 	return 0;
