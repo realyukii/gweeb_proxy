@@ -115,9 +115,9 @@ static int start_server(void)
 	struct epoll_event ev;
 	struct gwproxy gwp;
 	struct epoll_event evs[NR_EVENTS];
-	ev.events = EPOLLIN;
 	static const int flg = 1;
 
+	ev.events = EPOLLIN;
 	gwp.listen_sock = socket(src_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (gwp.listen_sock < 0)
 		return -EXIT_FAILURE;
@@ -146,6 +146,7 @@ static int start_server(void)
 
 		for (int i = 0; i < ready_nr; i++) {
 			struct epoll_event *c_ev = &evs[i];
+
 			if (c_ev->data.fd == gwp.listen_sock) {
 				handle_incoming_client(&gwp);
 			} else {
@@ -270,7 +271,7 @@ static int handle_cmdline(int argc, char *argv[])
 
 static int handle_incoming_client(struct gwproxy *gwp)
 {
-	int client_fd, ret;
+	int client_fd, ret, tsock;
 	struct epoll_event ev;
 	struct pair_connection *pc = malloc(sizeof(*pc));
 
@@ -284,9 +285,10 @@ static int handle_incoming_client(struct gwproxy *gwp)
 
 	epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, client_fd, &ev);
 
-	int tsock = socket(dst_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	tsock = socket(dst_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (tsock < 0)
 		return -EXIT_FAILURE;
+
 	set_sockattr(tsock);
 	ret = connect(tsock, &dst_addr_st, sizeof(dst_addr_st));
 	if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
@@ -303,13 +305,14 @@ static int handle_incoming_client(struct gwproxy *gwp)
 
 static int handle_data(struct epoll_event *c_ev)
 {
-	int ret;
+	int ret, from, to;
 	uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
+	struct pair_connection *pc;
+	char buf[1024] = {0};
 
 	c_ev->data.u64 = CLEAR_EV_BIT(c_ev->data.u64);
-	struct pair_connection *pc = c_ev->data.ptr;
-	int from, to;
-	char buf[1024] = {0};
+	pc = c_ev->data.ptr;
+
 	switch (ev_bit) {
 	case EV_BIT_CLIENT:
 		from = pc->csockfd;
