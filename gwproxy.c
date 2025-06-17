@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <unistd.h>
 
+#define DEFAULT_BUF_SZ	1024
 #define NR_EVENTS 512
 #ifndef DEBUG_LVL
 #define DEBUG_LVL 0
@@ -36,6 +37,10 @@ enum {
 struct pair_connection {
 	int csockfd;
 	int tsockfd;
+	char *tbuf;
+	size_t tlen;
+	char *cbuf;
+	size_t clen;
 };
 
 struct gwproxy {
@@ -148,7 +153,9 @@ static int start_server(void)
 			struct epoll_event *c_ev = &evs[i];
 
 			if (c_ev->data.fd == gwp.listen_sock) {
-				handle_incoming_client(&gwp);
+				ret = handle_incoming_client(&gwp);
+				if (ret < 0)
+					goto err;
 			} else {
 				ret = handle_data(c_ev);
 				if (ret < 0)
@@ -215,6 +222,32 @@ static int init_addr(char *addr, struct sockaddr *addr_st)
 	return 0;
 }
 
+static struct pair_connection *init_pair(void)
+{
+	struct pair_connection *pc;
+
+	pc = malloc(sizeof(*pc));
+	if (!pc)
+		return NULL;
+
+	pc->cbuf = malloc(DEFAULT_BUF_SZ);
+	if (!pc->cbuf) {
+		free(pc);
+		return NULL;
+	}
+
+	pc->tbuf = malloc(DEFAULT_BUF_SZ);
+	if (!pc->tbuf) {
+		free(pc->cbuf);
+		free(pc);
+		return NULL;
+	}
+	pc->clen = 0;
+	pc->tlen = 0;
+
+	return pc;
+}
+
 static int handle_cmdline(int argc, char *argv[])
 {
 	char c,  *bind_opt, *target_opt;
@@ -273,7 +306,9 @@ static int handle_incoming_client(struct gwproxy *gwp)
 {
 	int client_fd, ret, tsock;
 	struct epoll_event ev;
-	struct pair_connection *pc = malloc(sizeof(*pc));
+	struct pair_connection *pc = init_pair();
+	if (!pc)
+		return -ENOMEM;
 
 	ev.events = EPOLLIN;
 	client_fd = accept(gwp->listen_sock, NULL, NULL);
@@ -305,10 +340,12 @@ static int handle_incoming_client(struct gwproxy *gwp)
 
 static int handle_data(struct epoll_event *c_ev)
 {
-	int ret, from, to;
+	int from, to;
+	ssize_t ret;
 	uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
 	struct pair_connection *pc;
-	char buf[1024] = {0};
+	char *buf;
+	size_t *len, rlen;
 
 	c_ev->data.u64 = CLEAR_EV_BIT(c_ev->data.u64);
 	pc = c_ev->data.ptr;
@@ -316,32 +353,51 @@ static int handle_data(struct epoll_event *c_ev)
 	switch (ev_bit) {
 	case EV_BIT_CLIENT:
 		from = pc->csockfd;
+		buf = pc->cbuf;
+		len = &pc->clen;
 		to = pc->tsockfd;
 		break;
 
 	case EV_BIT_TARGET:
 		from = pc->tsockfd;
+		buf = pc->tbuf;
+		len = &pc->tlen;
 		to = pc->csockfd;
 		break;
 	}
 
-	ret = recv(from, buf, sizeof(buf), 0);
-	if (ret < 0) {
-		if (errno == EAGAIN || errno == EINTR)
-			return 0;
-		perror("recv");
-		goto exit_err;
-	} else if (!ret)
-		goto exit_err;
+	rlen = DEFAULT_BUF_SZ - *len;
+	if (rlen > 0) {
+		ret = recv(from, &buf[*len], rlen, 0);
+		if (ret < 0) {
+			ret = errno;
+			if (ret == EAGAIN || ret == EINTR)
+				return 0;
+			perror("recv");
+			goto exit_err;
+		} else if (!ret)
+			goto exit_err;
+		
+		*len += (size_t)ret;
+	}
 
-	ret = send(to, buf, ret, 0);
-	if (ret < 0) {
-		if (errno == EAGAIN || errno == EINTR)
-			return 0;
-		perror("send");
-		goto exit_err;
-	} else if (!ret)
-		goto exit_err;
+	if (*len > 0) {
+		ret = send(to, buf, *len, 0);
+		if (ret < 0) {
+			ret = errno;
+			if (ret == EAGAIN || ret == EINTR) {
+				
+				return 0;
+			}
+			perror("send");
+			goto exit_err;
+		} else if (!ret)
+			goto exit_err;
+		
+		*len -= ret;
+		if (*len)
+			memmove(buf, &buf[ret], *len);
+	}
 
 	return 0;
 
