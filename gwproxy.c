@@ -230,10 +230,17 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 	struct sockaddr_in *in = (void *)addr_st;
 	char *separator = NULL, *port_str;
 	unsigned short nport, hport, af;
+	size_t addrlen = strlen(addr) + 1;
+	char tmp[1 + INET6_ADDRSTRLEN + 1 + 1 + 5];
+	char *ipstr;
 
-	for (size_t i = strlen(addr); i > 0; i--) {
-		if (addr[i] == ':') {
-			separator = &addr[i];
+	if (addrlen > sizeof(tmp))
+		return -EINVAL;
+
+	strncpy(tmp, addr, addrlen);
+	for (size_t i = addrlen - 1; i > 0; i--) {
+		if (tmp[i] == ':') {
+			separator = &tmp[i];
 			break;
 		}
 	}
@@ -246,32 +253,37 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 	hport = atoi(port_str);
 	if (!hport)
 		return -EINVAL;
+	if (hport > 65535)
+		return -EINVAL;
 	nport = htons(hport);
 
-	if (*addr == '[') {
+	if (*tmp == '[') {
 		af = AF_INET6;
 		/* replace ] with null-terminated byte */
 		*(separator - 1) = '\0';
-		addr++;
-	} else
+		ipstr = tmp + 1;
+	} else {
 		af = AF_INET;
+		ipstr = tmp;
+	}
 	
 	addr_st->ss_family = af;
 	switch (af) {
 	case AF_INET:
 		in->sin_port = nport;
-		if (!inet_pton(AF_INET, addr, &in->sin_addr))
+		if (!inet_pton(AF_INET, ipstr, &in->sin_addr))
 			return -EINVAL;
 
 		break;
 	case AF_INET6:
 		in6->sin6_port = nport;
-		if (!inet_pton(AF_INET6, addr, &in6->sin6_addr))
+		if (!inet_pton(AF_INET6, ipstr, &in6->sin6_addr))
 			return -EINVAL;
 
 		break;
 	}
-	pr_debug(VERBOSE, "address: %s:%d\n", addr, hport);
+
+	pr_debug(VERBOSE, "address: %s:%d\n", ipstr, hport);
 
 	return 0;
 }
