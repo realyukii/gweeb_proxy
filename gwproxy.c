@@ -317,6 +317,7 @@ static int handle_incoming_client(struct gwproxy *gwp)
 	struct epoll_event ev;
 	struct pair_connection *pc = malloc(sizeof(*pc));
 
+	ev.events = EPOLLIN;
 	client_fd = accept(gwp->listen_sock, NULL, NULL);
 	set_sockattr(client_fd);
 	ev.data.u64 = 0;
