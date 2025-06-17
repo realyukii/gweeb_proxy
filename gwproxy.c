@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <sys/resource.h>
 #include <stdbool.h>
 #include <arpa/inet.h>
@@ -311,7 +312,7 @@ static int handle_incoming_client(struct gwproxy *gwp)
 		return -ENOMEM;
 
 	ev.events = EPOLLIN;
-	client_fd = accept(gwp->listen_sock, NULL, NULL);
+	client_fd = accept4(gwp->listen_sock, NULL, NULL, SOCK_NONBLOCK);
 	set_sockattr(client_fd);
 	ev.data.u64 = 0;
 	ev.data.ptr = pc;
