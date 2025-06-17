@@ -38,6 +38,11 @@ struct pair_connection {
 	int tsockfd;
 };
 
+struct gwproxy {
+	int listen_sock;
+	int epfd;
+};
+
 extern char *optarg;
 static struct sockaddr src_addr_st, dst_addr_st;
 static const struct rlimit file_limits = {
@@ -74,6 +79,9 @@ static int start_server(void);
 * @return zero on success, or a negative integer on failure.
 */
 static int handle_cmdline(int argc, char *argv[]);
+
+static int handle_incoming_client(struct gwproxy *gwp);
+
 /*
 * Set socket attribute
 *
@@ -101,30 +109,31 @@ int main(int argc, char *argv[])
 
 static int start_server(void)
 {
-	int ret, tcp_sock, client_fd, epoll_fd, ready_nr;
+	int ret, ready_nr;
 	struct epoll_event ev;
+	struct gwproxy gwp;
 	struct epoll_event evs[NR_EVENTS];
 	ev.events = EPOLLIN;
 	static const int flg = 1;
 
-	tcp_sock = socket(src_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
-	if (tcp_sock < 0)
+	gwp.listen_sock = socket(src_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	if (gwp.listen_sock < 0)
 		return -EXIT_FAILURE;
 
-	setsockopt(tcp_sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
+	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
 
-	if (bind(tcp_sock, &src_addr_st, sizeof(src_addr_st)) < 0)
+	if (bind(gwp.listen_sock, &src_addr_st, sizeof(src_addr_st)) < 0)
 		goto err;
 	
-	if (listen(tcp_sock, 10) < 0)
+	if (listen(gwp.listen_sock, 10) < 0)
 		goto err;
 
-	epoll_fd = epoll_create(1);
-	ev.data.fd = tcp_sock;
-	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, tcp_sock, &ev);
+	gwp.epfd = epoll_create(1);
+	ev.data.fd = gwp.listen_sock;
+	epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, gwp.listen_sock, &ev);
 
 	while (true) {
-		ready_nr = epoll_wait(epoll_fd, evs, NR_EVENTS, -1);
+		ready_nr = epoll_wait(gwp.epfd, evs, NR_EVENTS, -1);
 		if (ready_nr < 0) {
 			if (errno == EINTR)
 				continue;
@@ -135,30 +144,8 @@ static int start_server(void)
 
 		for (int i = 0; i < ready_nr; i++) {
 			struct epoll_event *c_ev = &evs[i];
-			if (c_ev->data.fd == tcp_sock) {
-				struct pair_connection *pc = malloc(sizeof(*pc));
-				client_fd = accept(tcp_sock, NULL, NULL);
-				set_sockattr(client_fd);
-				ev.data.u64 = 0;
-				ev.data.ptr = pc;
-				pc->csockfd = client_fd;
-				ev.data.u64 |= EV_BIT_CLIENT;
-				
-				epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
-
-				int tsock = socket(dst_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
-				if (tsock < 0)
-					return -EXIT_FAILURE;
-				set_sockattr(tsock);
-				ret = connect(tsock, &dst_addr_st, sizeof(dst_addr_st));
-				if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
-					ev.data.fd = tsock;
-					ev.data.u64 = 0;
-					ev.data.ptr = pc;
-					pc->tsockfd = tsock;
-					ev.data.u64 |= EV_BIT_TARGET;
-					epoll_ctl(epoll_fd, EPOLL_CTL_ADD, tsock, &ev);
-				}
+			if (c_ev->data.fd == gwp.listen_sock) {
+				handle_incoming_client(&gwp);
 			} else {
 				uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
 				c_ev->data.u64 = CLEAR_EV_BIT(c_ev->data.u64);
@@ -214,7 +201,7 @@ static int start_server(void)
 
 	return 0;
 err:
-	close(tcp_sock);
+	close(gwp.listen_sock);
 	return -EXIT_FAILURE;
 }
 
@@ -319,6 +306,38 @@ static int handle_cmdline(int argc, char *argv[])
 	if (ret < 0) {
 		fprintf(stderr, "invalid format for %s\n", target_opt);
 		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int handle_incoming_client(struct gwproxy *gwp)
+{
+	int client_fd, ret;
+	struct epoll_event ev;
+	struct pair_connection *pc = malloc(sizeof(*pc));
+
+	client_fd = accept(gwp->listen_sock, NULL, NULL);
+	set_sockattr(client_fd);
+	ev.data.u64 = 0;
+	ev.data.ptr = pc;
+	pc->csockfd = client_fd;
+	ev.data.u64 |= EV_BIT_CLIENT;
+
+	epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, client_fd, &ev);
+
+	int tsock = socket(dst_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	if (tsock < 0)
+		return -EXIT_FAILURE;
+	set_sockattr(tsock);
+	ret = connect(tsock, &dst_addr_st, sizeof(dst_addr_st));
+	if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
+		ev.data.fd = tsock;
+		ev.data.u64 = 0;
+		ev.data.ptr = pc;
+		pc->tsockfd = tsock;
+		ev.data.u64 |= EV_BIT_TARGET;
+		epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
 	}
 
 	return 0;
