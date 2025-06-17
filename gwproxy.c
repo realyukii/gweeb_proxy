@@ -168,7 +168,7 @@ int main(int argc, char *argv[])
 
 static int start_server(void)
 {
-	int ready_nr;
+	int ret, ready_nr;
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
@@ -194,7 +194,11 @@ static int start_server(void)
 
 	gwp.epfd = epoll_create(1);
 	ev.data.fd = gwp.listen_sock;
-	epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, gwp.listen_sock, &ev);
+	ret = epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, gwp.listen_sock, &ev);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		return -EXIT_FAILURE;
+	}
 
 	while (true) {
 		ready_nr = epoll_wait(gwp.epfd, evs, NR_EVENTS, -1);
@@ -385,7 +389,11 @@ static int handle_incoming_client(struct gwproxy *gwp)
 	ev.data.ptr = pc;
 	ev.data.u64 |= EV_BIT_CLIENT;
 
-	epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, client_fd, &ev);
+	ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, client_fd, &ev);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		return -EXIT_FAILURE;
+	}
 
 	tsock = socket(dst_addr_st.ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (tsock < 0)
@@ -401,7 +409,11 @@ static int handle_incoming_client(struct gwproxy *gwp)
 		ev.data.ptr = pc;
 		pc->target.sockfd = tsock;
 		ev.data.u64 |= EV_BIT_TARGET;
-		epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
+		ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
+		if (ret < 0) {
+			perror("epoll_ctl");
+			return -EXIT_FAILURE;
+		}
 	}
 
 	return 0;
@@ -566,12 +578,20 @@ exit:
 
 	if (is_from_changed) {
 		ev_from.events = from->epmask;
-		epoll_ctl(gwp->epfd, EPOLL_CTL_MOD, from->sockfd, &ev_from);
+		ret = epoll_ctl(gwp->epfd, EPOLL_CTL_MOD, from->sockfd, &ev_from);
+		if (ret < 0) {
+			perror("epoll_ctl");
+			goto exit_err;
+		}
 	}
 
 	if (is_to_changed) {
 		ev_to.events = to->epmask;
-		epoll_ctl(gwp->epfd, EPOLL_CTL_MOD, to->sockfd, &ev_to);
+		ret = epoll_ctl(gwp->epfd, EPOLL_CTL_MOD, to->sockfd, &ev_to);
+		if (ret < 0) {
+			perror("epoll_ctl");
+			goto exit_err;
+		}
 	}
 
 	return 0;
