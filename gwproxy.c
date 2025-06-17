@@ -50,7 +50,7 @@ struct gwproxy {
 };
 
 extern char *optarg;
-static struct sockaddr src_addr_st, dst_addr_st;
+static struct sockaddr_storage src_addr_st, dst_addr_st;
 static const struct rlimit file_limits = {
 	.rlim_cur = 65536,
 	.rlim_max = 65536
@@ -68,7 +68,7 @@ static const char usage[] =
 * @param addr_st Pointer to a sockaddr structure to initialize.
 * @return zero on success, or a negative integer on failure.
 */
-static int init_addr(char *addr, struct sockaddr *addr_st);
+static int init_addr(char *addr, struct sockaddr_storage *addr_st);
 
 /*
 * Start the TCP proxy server.
@@ -118,19 +118,23 @@ int main(int argc, char *argv[])
 static int start_server(void)
 {
 	int ret, ready_nr;
+	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
 	struct epoll_event evs[NR_EVENTS];
 	static const int flg = 1;
 
+	size_addr = src_addr_st.ss_family == AF_INET ? 
+		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+
 	ev.events = EPOLLIN;
-	gwp.listen_sock = socket(src_addr_st.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	gwp.listen_sock = socket(src_addr_st.ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (gwp.listen_sock < 0)
 		return -EXIT_FAILURE;
 
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
 
-	if (bind(gwp.listen_sock, &src_addr_st, sizeof(src_addr_st)) < 0)
+	if (bind(gwp.listen_sock, (struct sockaddr *)&src_addr_st, size_addr) < 0)
 		goto err;
 	
 	if (listen(gwp.listen_sock, 10) < 0)
@@ -171,7 +175,7 @@ err:
 	return -EXIT_FAILURE;
 }
 
-static int init_addr(char *addr, struct sockaddr *addr_st)
+static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 {
 	struct sockaddr_in6 *in6 = (void *)addr_st;
 	struct sockaddr_in *in = (void *)addr_st;
@@ -203,7 +207,7 @@ static int init_addr(char *addr, struct sockaddr *addr_st)
 	} else
 		af = AF_INET;
 	
-	addr_st->sa_family = af;
+	addr_st->ss_family = af;
 	switch (af) {
 	case AF_INET:
 		in->sin_port = nport;
@@ -307,6 +311,7 @@ static int handle_incoming_client(struct gwproxy *gwp)
 {
 	int client_fd, ret, tsock;
 	struct epoll_event ev;
+	socklen_t size_addr;
 	struct pair_connection *pc = init_pair();
 	if (!pc)
 		return -ENOMEM;
@@ -326,7 +331,9 @@ static int handle_incoming_client(struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 
 	set_sockattr(tsock);
-	ret = connect(tsock, &dst_addr_st, sizeof(dst_addr_st));
+	size_addr = src_addr_st.ss_family == AF_INET ? 
+		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+	ret = connect(tsock, (struct sockaddr *)&dst_addr_st, size_addr);
 	if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
 		ev.data.fd = tsock;
 		ev.data.u64 = 0;
