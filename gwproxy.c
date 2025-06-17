@@ -327,7 +327,7 @@ static int handle_data(struct epoll_event *c_ev)
 
 	ret = recv(from, buf, sizeof(buf), 0);
 	if (ret < 0) {
-		if (errno == EAGAIN)
+		if (errno == EAGAIN || errno == EINTR)
 			return 0;
 		perror("recv");
 		close(from);
@@ -343,7 +343,7 @@ static int handle_data(struct epoll_event *c_ev)
 
 	ret = send(to, buf, ret, 0);
 	if (ret < 0) {
-		if (errno == EAGAIN)
+		if (errno == EAGAIN || errno == EINTR)
 			return 0;
 		perror("send");
 		close(from);
