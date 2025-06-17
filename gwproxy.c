@@ -330,34 +330,26 @@ static int handle_data(struct epoll_event *c_ev)
 		if (errno == EAGAIN || errno == EINTR)
 			return 0;
 		perror("recv");
-		close(from);
-		close(to);
-		free(pc);
-		return -EXIT_FAILURE;
-	} else if (!ret) {
-		close(from);
-		close(to);
-		free(pc);
-		return -EXIT_FAILURE;
-	}
+		goto exit_err;
+	} else if (!ret)
+		goto exit_err;
 
 	ret = send(to, buf, ret, 0);
 	if (ret < 0) {
 		if (errno == EAGAIN || errno == EINTR)
 			return 0;
 		perror("send");
-		close(from);
-		close(to);
-		free(pc);
-		return -EXIT_FAILURE;
-	} else if (!ret) {
-		close(from);
-		close(to);
-		free(pc);
-		return -EXIT_FAILURE;
-	}
+		goto exit_err;
+	} else if (!ret)
+		goto exit_err;
 
 	return 0;
+
+exit_err:
+	close(from);
+	close(to);
+	free(pc);
+	return -EXIT_FAILURE;
 }
 
 static void set_sockattr(int sock)
