@@ -109,6 +109,17 @@ static int handle_incoming_client(struct gwproxy *gwp);
 static int handle_data(struct epoll_event *c_ev, struct gwproxy *gwp, bool is_pollout);
 
 /*
+* Process epoll event that are 'ready'
+*
+* @param ready_nr Number of ready events.
+* @param evs Pointer to epoll event struct.
+* @param gwp Pointer to the global variable of gwproxy struct.
+* @return zero on success, or a negative integer on failure.
+*/
+static int process_read_list(int ready_nr,
+				struct epoll_event *evs, struct gwproxy *gwp);
+
+/*
 * Set EPOLLIN bit on epmask member.
 *
 * @param src Pointer to struct single_connection
@@ -157,7 +168,7 @@ int main(int argc, char *argv[])
 
 static int start_server(void)
 {
-	int ret, ready_nr;
+	int ready_nr;
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
@@ -195,27 +206,7 @@ static int start_server(void)
 			return -EXIT_FAILURE;
 		}
 
-		for (int i = 0; i < ready_nr; i++) {
-			struct epoll_event *c_ev = &evs[i];
-
-			if (c_ev->data.fd == gwp.listen_sock) {
-				ret = handle_incoming_client(&gwp);
-				if (ret < 0)
-					goto err;
-			} else {
-				if (c_ev->events & EPOLLIN) {
-					ret = handle_data(c_ev, &gwp, false);
-					if (ret < 0)
-						break;
-				}
-
-				if (c_ev->events & EPOLLOUT) {
-					ret = handle_data(c_ev, &gwp, true);
-					if (ret < 0)
-						break;
-				}
-			}
-		}
+		process_read_list(ready_nr, evs, &gwp);
 	}
 
 	return 0;
@@ -411,6 +402,36 @@ static int handle_incoming_client(struct gwproxy *gwp)
 		pc->target.sockfd = tsock;
 		ev.data.u64 |= EV_BIT_TARGET;
 		epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
+	}
+
+	return 0;
+}
+
+static int process_read_list(int ready_nr,
+				struct epoll_event *evs, struct gwproxy *gwp)
+{
+	int ret;
+
+	for (int i = 0; i < ready_nr; i++) {
+		struct epoll_event *c_ev = &evs[i];
+
+		if (c_ev->data.fd == gwp->listen_sock) {
+			ret = handle_incoming_client(gwp);
+			if (ret < 0)
+				return ret;
+		} else {
+			if (c_ev->events & EPOLLIN) {
+				ret = handle_data(c_ev, gwp, false);
+				if (ret < 0)
+					break;
+			}
+
+			if (c_ev->events & EPOLLOUT) {
+				ret = handle_data(c_ev, gwp, true);
+				if (ret < 0)
+					break;
+			}
+		}
 	}
 
 	return 0;
