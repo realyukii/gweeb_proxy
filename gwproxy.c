@@ -549,8 +549,12 @@ static int handle_data(struct epoll_event *ev,
 		ret = recv(from->sockfd, &from->buf[from->len], rlen, 0);
 		if (ret < 0) {
 			ret = errno;
-			if (ret == EAGAIN || ret == EINTR)
-				goto exit;
+			if (ret == EAGAIN || ret == EINTR) {
+				if (is_pollout)
+					goto try_send;
+				else
+					goto exit;
+			}
 			perror("recv");
 			goto exit_err;
 		} else if (!ret)
@@ -559,6 +563,7 @@ static int handle_data(struct epoll_event *ev,
 		from->len += (size_t)ret;
 	}
 
+try_send:
 	/* length of filled buffer */
 	if (from->len > 0) {
 		ret = send(to->sockfd, from->buf, from->len, 0);
