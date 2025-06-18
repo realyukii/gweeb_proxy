@@ -479,15 +479,7 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 	int ret;
 	bool is_from_changed = false;
 	bool is_to_changed = false;
-	struct epoll_event ev_from, ev_to;
-
-	ev_from.data.u64 = 0;
-	ev_from.data.ptr = pc;
-	ev_from.data.u64 |= EV_BIT_CLIENT;
-
-	ev_to.data.u64 = 0;
-	ev_to.data.ptr = pc;
-	ev_to.data.u64 |= EV_BIT_TARGET;
+	struct epoll_event ev;
 
 	adjust_pollout(src, dst, &is_to_changed);
 	adjust_pollout(dst, src, &is_from_changed);
@@ -495,8 +487,11 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 	adjust_pollin(dst, &is_to_changed);
 
 	if (is_from_changed) {
-		ev_from.events = src->epmask;
-		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, src->sockfd, &ev_from);
+		ev.data.u64 = 0;
+		ev.data.ptr = pc;
+		ev.data.u64 |= EV_BIT_CLIENT;
+		ev.events = src->epmask;
+		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, src->sockfd, &ev);
 		if (ret < 0) {
 			perror("epoll_ctl");
 			return -EXIT_FAILURE;
@@ -504,8 +499,11 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 	}
 
 	if (is_to_changed) {
-		ev_to.events = dst->epmask;
-		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, dst->sockfd, &ev_to);
+		ev.events = dst->epmask;
+		ev.data.u64 = 0;
+		ev.data.ptr = pc;
+		ev.data.u64 |= EV_BIT_TARGET;
+		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, dst->sockfd, &ev);
 		if (ret < 0) {
 			perror("epoll_ctl");
 			return -EXIT_FAILURE;
