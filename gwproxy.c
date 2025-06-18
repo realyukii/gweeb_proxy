@@ -117,7 +117,7 @@ static int handle_data(struct epoll_event *c_ev,
 * @param gwp Pointer to the global variable of gwproxy struct.
 * @return zero on success, or a negative integer on failure.
 */
-static int process_read_list(int ready_nr,
+static int process_ready_list(int ready_nr,
 				struct epoll_event *evs, struct gwproxy *gwp);
 
 /*
@@ -214,7 +214,7 @@ static int start_server(void)
 			return -EXIT_FAILURE;
 		}
 
-		process_read_list(ready_nr, evs, &gwp);
+		process_ready_list(ready_nr, evs, &gwp);
 	}
 
 	return 0;
@@ -423,7 +423,7 @@ static int handle_incoming_client(struct gwproxy *gwp)
 	return 0;
 }
 
-static int process_read_list(int ready_nr,
+static int process_ready_list(int ready_nr,
 				struct epoll_event *evs, struct gwproxy *gwp)
 {
 	int ret;
