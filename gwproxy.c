@@ -1,13 +1,13 @@
 #define _GNU_SOURCE
-#include <sys/resource.h>
-#include <stdbool.h>
 #include <arpa/inet.h>
-#include <netinet/tcp.h>
-#include <sys/epoll.h>
 #include <errno.h>
+#include <netinet/tcp.h>
+#include <stdbool.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #include <unistd.h>
 
@@ -65,6 +65,15 @@ static const char usage[] =
 "-h\tShow this help message and exit\n";
 
 /*
+* Handle command-line arguments.
+* 
+* @param argc total argument passed.
+* @param argv Pointer to an array of string.
+* @return zero on success, or a negative integer on failure.
+*/
+static int handle_cmdline(int argc, char *argv[]);
+
+/*
 * Initialize address used to bind or connect a socket.
 *
 * @param addr Pointer to the string with fmt ip:port.
@@ -81,13 +90,15 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st);
 static int start_server(void);
 
 /*
-* Handle command-line arguments.
-* 
-* @param argc total argument passed.
-* @param argv Pointer to an array of string.
+* Process epoll event that are 'ready'
+*
+* @param ready_nr Number of ready events.
+* @param evs Pointer to epoll event struct.
+* @param gwp Pointer to the global variable of gwproxy struct.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_cmdline(int argc, char *argv[]);
+static int process_ready_list(int ready_nr,
+				struct epoll_event *evs, struct gwproxy *gwp);
 
 /*
 * Handle incoming client
@@ -108,17 +119,6 @@ static int handle_incoming_client(struct gwproxy *gwp);
 */
 static int handle_data(struct epoll_event *c_ev,
 			struct gwproxy *gwp, bool is_pollout);
-
-/*
-* Process epoll event that are 'ready'
-*
-* @param ready_nr Number of ready events.
-* @param evs Pointer to epoll event struct.
-* @param gwp Pointer to the global variable of gwproxy struct.
-* @return zero on success, or a negative integer on failure.
-*/
-static int process_ready_list(int ready_nr,
-				struct epoll_event *evs, struct gwproxy *gwp);
 
 /*
 * Set EPOLLIN bit on epmask member.
