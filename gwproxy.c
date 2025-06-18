@@ -111,13 +111,13 @@ static int handle_incoming_client(struct gwproxy *gwp);
 /*
 * Handle incoming and outgoing data
 *
-* @param c_ev Pointer to epoll' client event structure.
+* @param ev Pointer to epoll' client event structure.
 * @param gwp Pointer to the global variable of gwproxy struct
 * @param is_pollout Boolean to indicate if the event currently handled
 * is EPOLLOUT or EPOLLIN
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_data(struct epoll_event *c_ev,
+static int handle_data(struct epoll_event *ev,
 			struct gwproxy *gwp, bool is_pollout);
 
 /*
@@ -429,21 +429,21 @@ static int process_ready_list(int ready_nr,
 	int ret;
 
 	for (int i = 0; i < ready_nr; i++) {
-		struct epoll_event *c_ev = &evs[i];
+		struct epoll_event *ev = &evs[i];
 
-		if (c_ev->data.fd == gwp->listen_sock) {
+		if (ev->data.fd == gwp->listen_sock) {
 			ret = handle_incoming_client(gwp);
 			if (ret < 0)
 				return ret;
 		} else {
-			if (c_ev->events & EPOLLIN) {
-				ret = handle_data(c_ev, gwp, false);
+			if (ev->events & EPOLLIN) {
+				ret = handle_data(ev, gwp, false);
 				if (ret < 0)
 					break;
 			}
 
-			if (c_ev->events & EPOLLOUT) {
-				ret = handle_data(c_ev, gwp, true);
+			if (ev->events & EPOLLOUT) {
+				ret = handle_data(ev, gwp, true);
 				if (ret < 0)
 					break;
 			}
@@ -492,11 +492,11 @@ static void adjust_pollout(struct single_connection *src,
 	}
 }
 
-static int handle_data(struct epoll_event *c_ev,
+static int handle_data(struct epoll_event *ev,
 			struct gwproxy *gwp, bool is_pollout)
 {
 	ssize_t ret;
-	uint64_t ev_bit = GET_EV_BIT(c_ev->data.u64);
+	uint64_t ev_bit = GET_EV_BIT(ev->data.u64);
 	struct pair_connection *pc;
 	struct single_connection *from, *to, *tmp;
 	struct epoll_event ev_from, ev_to;
@@ -504,8 +504,8 @@ static int handle_data(struct epoll_event *c_ev,
 	bool is_to_changed = false;
 	size_t rlen;
 
-	c_ev->data.u64 = CLEAR_EV_BIT(c_ev->data.u64);
-	pc = c_ev->data.ptr;
+	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
+	pc = ev->data.ptr;
 
 	switch (ev_bit) {
 	case EV_BIT_CLIENT:
