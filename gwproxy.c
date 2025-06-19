@@ -208,7 +208,7 @@ static int start_server(void)
 	ret = epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, gwp.listen_sock, &ev);
 	if (ret < 0) {
 		perror("epoll_ctl");
-		return -EXIT_FAILURE;
+		goto err;
 	}
 
 	while (true) {
@@ -218,13 +218,12 @@ static int start_server(void)
 				continue;
 			printf("errno = %d\n", errno);
 			perror("epoll_wait");
-			return -EXIT_FAILURE;
+			goto err;
 		}
 
 		process_ready_list(ready_nr, evs, &gwp);
 	}
 
-	return 0;
 err:
 	close(gwp.listen_sock);
 	return -EXIT_FAILURE;
