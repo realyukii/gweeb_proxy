@@ -1,4 +1,4 @@
-all: build/gwproxy build/gwproxy_debug
+all: build/gwproxy build/gwproxy_gdb build/gwproxy_memcheck
 
 build/gwproxy: gwproxy.c
 	gcc -Wall -Wextra $^ -o $@
