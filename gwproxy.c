@@ -90,7 +90,7 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st);
 static int start_server(void);
 
 /*
-* Process epoll event that are 'ready'
+* Process epoll event that are 'ready'.
 *
 * @param ready_nr Number of ready events.
 * @param evs Pointer to epoll event struct.
@@ -101,20 +101,18 @@ static int process_ready_list(int ready_nr,
 				struct epoll_event *evs, struct gwproxy *gwp);
 
 /*
-* Handle incoming client
+* Handle incoming client.
 *
-* @param gwp Pointer to the global variable of gwproxy struct
+* @param gwp Pointer to the global variable of gwproxy struct.
 * @return zero on success, or a negative integer on failure.
 */
 static int handle_incoming_client(struct gwproxy *gwp);
 
 /*
-* Handle incoming and outgoing data
+* Handle incoming and outgoing data.
 *
-* @param ev Pointer to epoll' client event structure.
-* @param gwp Pointer to the global variable of gwproxy struct
-* @param is_pollout Boolean to indicate if the event currently handled
-* is EPOLLOUT or EPOLLIN
+* @param from The source of fetched data.
+* @param to The destination of data to be sent.
 * @return zero on success, or a negative integer on failure.
 */
 static int handle_data(struct single_connection *from,
@@ -123,6 +121,17 @@ static int handle_data(struct single_connection *from,
 static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		struct single_connection **from, struct single_connection **to);
 
+/*
+* Adjust epoll events
+* on registered member of interest list.
+*
+* @param epfd epoll file descriptor.
+* @param pc Pointer that need to be saved 
+* and returned once particular event is triggered.
+* @param src Pointer that need its epmask member to be adjusted
+* @param dst Pointer that need its epmask member to be adjusted
+* @return zero on success, or a negative integer on failure.
+*/
 static int adjust_events(int epfd, struct pair_connection *pc,
 			struct single_connection *src,
 			struct single_connection *dst);
