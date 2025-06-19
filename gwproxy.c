@@ -9,9 +9,10 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/resource.h>
-#include <unistd.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 
+#define DEFAULT_TIMEOUT 5
 #define DEFAULT_THREAD_NR 4
 #define DEFAULT_BUF_SZ	1024
 #define NR_EVENTS 512
@@ -30,10 +31,11 @@ do {							\
 
 enum {
 	EV_BIT_CLIENT		= (0x0001ULL << 48ULL),
-	EV_BIT_TARGET		= (0x0002ULL << 48ULL)
+	EV_BIT_TARGET		= (0x0002ULL << 48ULL),
+	EV_BIT_TIMER		= (0x0003ULL << 48ULL)
 };
 
-#define ALL_EV_BIT	(EV_BIT_CLIENT | EV_BIT_TARGET)
+#define ALL_EV_BIT	(EV_BIT_CLIENT | EV_BIT_TARGET | EV_BIT_TIMER)
 #define GET_EV_BIT(X)	((X) & ALL_EV_BIT)
 #define CLEAR_EV_BIT(X)	((X) & ~ALL_EV_BIT)
 
@@ -53,6 +55,8 @@ struct pair_connection {
 	struct single_connection client;
 	/* represent target connection */
 	struct single_connection target;
+	/* timer file descriptor for setting timeout */
+	int timerfd;
 };
 
 struct gwproxy {
@@ -65,6 +69,7 @@ struct gwproxy {
 struct gwp_args {
 	struct sockaddr_storage src_addr_st, dst_addr_st;
 	size_t thread_nr;
+	size_t timeout;
 
 };
 
@@ -80,7 +85,8 @@ static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-b\tIP address and port to be bound by the server\n"
 "-t\tIP address and port of the target server\n"
-"-T\tnumber of thread (default %d)\n"
+"-T\tnumber of thread (default: %d)\n"
+"-w\twait time for timeout, set to zero for no timeout (default: %d seconds)"
 "-h\tShow this help message and exit\n";
 
 /*
@@ -151,7 +157,7 @@ static struct pair_connection *init_pair(void);
 * @param from caller-variable to initialize.
 * @param to caller-variable to initialize.
 */
-static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
+static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		struct single_connection **from, struct single_connection **to);
 
 /*
@@ -274,6 +280,7 @@ static int start_server(void)
 
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
+	// setsockopt(gwp.listen_sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, &val, sizeof(val));
 
 	ret = bind(gwp.listen_sock, (struct sockaddr *)s, size_addr);
 	if (ret < 0)
@@ -370,8 +377,6 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 		break;
 	}
 
-	pr_debug(VERBOSE, "address: %s:%d\n", ipstr, hport);
-
 	return 0;
 }
 
@@ -384,6 +389,7 @@ static struct pair_connection *init_pair(void)
 	pc = malloc(sizeof(*pc));
 	if (!pc)
 		return NULL;
+	pc->timerfd = -1;
 
 	client = &pc->client;
 	target = &pc->target;
@@ -411,17 +417,17 @@ static struct pair_connection *init_pair(void)
 
 static int handle_cmdline(int argc, char *argv[])
 {
-	char c,  *bind_opt, *target_opt, *thread_opt;
-	int thread_nr;
+	char c,  *bind_opt, *target_opt, *thread_opt, *wait_opt;
+	int thread_nr, timeout;
 	int ret;
 
 	if (argc == 1) {
-		printf(usage, DEFAULT_THREAD_NR);
+		printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT);
 
 		return 0;
 	}
 
-	bind_opt = target_opt = NULL;
+	wait_opt = thread_opt = bind_opt = target_opt = NULL;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 'b':
@@ -433,8 +439,11 @@ static int handle_cmdline(int argc, char *argv[])
 		case 'T':
 			thread_opt = optarg;
 			break;
+		case 'w':
+			wait_opt = optarg;
+			break;
 		case 'h':
-			printf(usage, DEFAULT_THREAD_NR);
+			printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT);
 			return 0;
 
 		default:
@@ -461,6 +470,15 @@ static int handle_cmdline(int argc, char *argv[])
 	}
 	args.thread_nr = thread_nr;
 
+	if (wait_opt) {
+		timeout = atoi(wait_opt);
+		if (timeout < 0)
+			timeout = DEFAULT_TIMEOUT;
+	} else {
+		timeout = DEFAULT_TIMEOUT;
+	}
+	args.timeout = timeout;
+
 	ret = init_addr(bind_opt, &args.src_addr_st);
 	if (ret < 0) {
 		fprintf(stderr, "invalid format for %s\n", bind_opt);
@@ -478,13 +496,40 @@ static int handle_cmdline(int argc, char *argv[])
 
 static int handle_incoming_client(struct gwproxy *gwp)
 {
-	int client_fd, ret, tsock;
+	int client_fd, ret, tsock, flg;
 	struct epoll_event ev;
 	socklen_t size_addr;
 	struct sockaddr_storage *d = &args.dst_addr_st;
 	struct pair_connection *pc = init_pair();
 	if (!pc)
 		return -ENOMEM;
+
+	if (args.timeout) {
+		int tmfd;
+		struct itimerspec it = {
+			.it_value = {
+				.tv_sec = args.timeout,
+				.tv_nsec = 0
+			},
+			.it_interval = {
+				.tv_sec = 0,
+				.tv_nsec = 0
+			}
+		};
+
+		flg = TFD_NONBLOCK;
+		tmfd = timerfd_create(CLOCK_MONOTONIC, flg);
+		if (tmfd < 0)
+			return -EXIT_FAILURE;
+		pc->timerfd = tmfd;
+
+		ev.events = EPOLLIN;
+		ev.data.u64 = 0;
+		ev.data.ptr = pc;
+		ev.data.u64 |= EV_BIT_TIMER;
+		epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, pc->timerfd, &ev);
+		timerfd_settime(pc->timerfd, 0, &it, NULL);
+	}
 
 	ev.events = pc->client.epmask;
 	client_fd = accept4(gwp->listen_sock, NULL, NULL, SOCK_NONBLOCK);
@@ -508,17 +553,18 @@ static int handle_incoming_client(struct gwproxy *gwp)
 	size_addr = d->ss_family == AF_INET ? 
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 	ret = connect(tsock, (struct sockaddr *)d, size_addr);
-	if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
-		ev.events = pc->target.epmask;
-		ev.data.u64 = 0;
-		ev.data.ptr = pc;
-		pc->target.sockfd = tsock;
-		ev.data.u64 |= EV_BIT_TARGET;
-		ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
-		if (ret < 0) {
-			perror("epoll_ctl");
-			return -EXIT_FAILURE;
-		}
+	if (ret < 0 && errno != EINPROGRESS)
+		return -EXIT_FAILURE;
+
+	ev.events = pc->target.epmask;
+	ev.data.u64 = 0;
+	ev.data.ptr = pc;
+	pc->target.sockfd = tsock;
+	ev.data.u64 |= EV_BIT_TARGET;
+	ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		return -EXIT_FAILURE;
 	}
 
 	return 0;
@@ -539,7 +585,9 @@ static int process_ready_list(int ready_nr,
 			if (ret < 0)
 				return ret;
 		} else {
-			extract_data(ev, &pc, &from, &to);
+			ret = extract_data(ev, &pc, &from, &to);
+			if (ret < 0)
+				goto exit_err;
 			if (ev->events & EPOLLIN) {
 				ret = handle_data(from, to);
 				if (ret < 0)
@@ -548,6 +596,11 @@ static int process_ready_list(int ready_nr,
 			}
 
 			if (ev->events & EPOLLOUT) {
+				if (pc->timerfd != -1) {
+					close(pc->timerfd);
+					pc->timerfd = -1;
+				}
+
 				ret = handle_data(to, from);
 				if (ret < 0)
 					goto exit_err;
@@ -560,6 +613,9 @@ static int process_ready_list(int ready_nr,
 	return 0;
 
 exit_err:
+	// asm volatile("int3");
+	if (pc->timerfd != -1)
+		close(pc->timerfd);
 	close(from->sockfd);
 	close(to->sockfd);
 	free(pc->client.buf);
@@ -648,7 +704,7 @@ static void adjust_pollout(struct single_connection *src,
 	}
 }
 
-static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
+static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		struct single_connection **from, struct single_connection **to)
 {
 	uint64_t ev_bit = GET_EV_BIT(ev->data.u64);
@@ -657,6 +713,11 @@ static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
 	*pc = ev->data.ptr;
 
 	switch (ev_bit) {
+	case EV_BIT_TIMER:
+		*from = &(*pc)->client;
+		*to = &(*pc)->target;
+		pr_debug(VERBOSE, "timed out, terminating the session\n");
+		return -ETIMEDOUT;
 	case EV_BIT_CLIENT:
 		*from = &(*pc)->client;
 		*to = &(*pc)->target;
@@ -667,6 +728,8 @@ static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		*to = &(*pc)->client;
 		break;
 	}
+
+	return 0;
 }
 
 static int handle_data(struct single_connection *from,
