@@ -136,6 +136,13 @@ static int process_ready_list(int ready_nr,
 static int handle_incoming_client(struct gwproxy *gwp);
 
 /*
+* Initialize a pair of connection: client:target.
+*
+* @return pointer to the malloc'd address
+*/
+static struct pair_connection *init_pair(void);
+
+/*
 * Extract data returned by epoll_wait
 * on particular event in particular socket file descriptor.
 *
