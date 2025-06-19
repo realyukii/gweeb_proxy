@@ -145,8 +145,8 @@ static int handle_data(struct single_connection *from,
 * @param epfd epoll file descriptor.
 * @param pc Pointer that need to be saved 
 * and returned once particular event is triggered.
-* @param src Pointer that need its epmask member to be adjusted
-* @param dst Pointer that need its epmask member to be adjusted
+* @param src Pointer that needs its epmask member to be adjusted
+* @param dst Pointer that needs its epmask member to be adjusted
 * @return zero on success, or a negative integer on failure.
 */
 static int adjust_events(int epfd, struct pair_connection *pc,
