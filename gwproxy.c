@@ -2,6 +2,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/tcp.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,7 @@
 #include <unistd.h>
 #include <unistd.h>
 
+#define DEFAULT_THREAD_NR 4
 #define DEFAULT_BUF_SZ	1024
 #define NR_EVENTS 512
 #ifndef DEBUG_LVL
@@ -66,6 +68,7 @@ static const struct rlimit file_limits = {
 	.rlim_cur = 100000,
 	.rlim_max = 100000
 };
+static pthread_t threads[DEFAULT_THREAD_NR];
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-b\tIP address and port to be bound by the server\n"
@@ -89,6 +92,14 @@ static int handle_cmdline(int argc, char *argv[]);
 * @return zero on success, or a negative integer on failure.
 */
 static int init_addr(char *addr, struct sockaddr_storage *addr_st);
+
+/*
+* Thread callback
+*
+* @param args unused
+* @return NULL
+*/
+static void *thread_cb(void *args);
 
 /*
 * Start the TCP proxy server.
@@ -196,13 +207,31 @@ int main(int argc, char *argv[])
 		return ret;
 	}
 
-	ret = start_server();
-	if (ret < 0) {
-		perror("start_server");
-		return ret;
+	for (size_t i = 0; i < DEFAULT_THREAD_NR; i++) {
+		ret = pthread_create(&threads[i], NULL, thread_cb, NULL);
+		if (ret < 0) {
+			perror("pthread_create");
+			return ret;
+		}
+	}
+
+	for (size_t i = 0; i < DEFAULT_THREAD_NR; i++) {
+		ret = pthread_join(threads[i], NULL);
+		if (ret < 0) {
+			perror("pthread_join");
+			return ret;
+		}
 	}
 
 	return 0;
+}
+
+static void *thread_cb(__attribute__((__unused__)) void *args)
+{
+	/* TODO: what to do when start_server fail to run on this thread? */
+	start_server();
+
+	return NULL;
 }
 
 static int start_server(void)
