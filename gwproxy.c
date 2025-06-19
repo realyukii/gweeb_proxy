@@ -36,19 +36,27 @@ enum {
 #define CLEAR_EV_BIT(X)	((X) & ~ALL_EV_BIT)
 
 struct single_connection {
+	/* TCP socket file descriptor */
 	int sockfd;
+	/* buffer allocated on dynamic memory */
 	char *buf;
+	/* length of filled buffer */
 	size_t len;
+	/* epoll mask used to store epoll event*/
 	uint32_t epmask;
 };
 
 struct pair_connection {
+	/* represent client connection */
 	struct single_connection client;
+	/* represent target connection */
 	struct single_connection target;
 };
 
 struct gwproxy {
+	/* TCP socket file descriptor */
 	int listen_sock;
+	/* epoll file descriptor */
 	int epfd;
 };
 
