@@ -207,23 +207,23 @@ int main(int argc, char *argv[])
 
 static int start_server(void)
 {
-	int ret, ready_nr;
+	int ret, ready_nr, flg;
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
 	struct epoll_event evs[NR_EVENTS];
-	static const int flg = 1;
+	static const int val = 1;
 
 	size_addr = src_addr_st.ss_family == AF_INET ? 
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 
-	ev.events = EPOLLIN;
-	gwp.listen_sock = socket(src_addr_st.ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	flg = SOCK_STREAM | SOCK_NONBLOCK;
+	gwp.listen_sock = socket(src_addr_st.ss_family, flg, 0);
 	if (gwp.listen_sock < 0)
 		return -EXIT_FAILURE;
 
-	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
-	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &flg, sizeof(flg));
+	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
 
 	ret = bind(gwp.listen_sock, (struct sockaddr *)&src_addr_st, size_addr);
 	if (ret < 0)
@@ -234,6 +234,7 @@ static int start_server(void)
 		goto err;
 
 	gwp.epfd = epoll_create(1);
+	ev.events = EPOLLIN;
 	ev.data.fd = gwp.listen_sock;
 	ret = epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, gwp.listen_sock, &ev);
 	if (ret < 0) {
@@ -646,10 +647,10 @@ static int handle_data(struct single_connection *from,
 
 static void set_sockattr(int sock)
 {
-	static const int flg = 1;
+	static const int val = 1;
 
-	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &flg, sizeof(flg));
-	setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &flg, sizeof(flg));
-	setsockopt(sock, IPPROTO_TCP, TCP_QUICKACK, &flg, sizeof(flg));
-	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flg, sizeof(flg));
+	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+	setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val));
+	setsockopt(sock, IPPROTO_TCP, TCP_QUICKACK, &val, sizeof(val));
+	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val));
 }
