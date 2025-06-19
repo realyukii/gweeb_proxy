@@ -555,6 +555,8 @@ static int process_ready_list(int ready_nr,
 exit_err:
 	close(from->sockfd);
 	close(to->sockfd);
+	free(pc->client.buf);
+	free(pc->target.buf);
 	free(pc);
 	return -EXIT_FAILURE;
 }
