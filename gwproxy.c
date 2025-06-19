@@ -218,6 +218,7 @@ static void set_sockattr(int sock);
 int main(int argc, char *argv[])
 {
 	int ret;
+	void *retval;
 
 	ret = handle_cmdline(argc, argv);
 	if (ret < 0)
@@ -242,10 +243,15 @@ int main(int argc, char *argv[])
 	}
 
 	for (size_t i = 0; i < args.thread_nr; i++) {
-		ret = pthread_join(threads[i], NULL);
+		ret = pthread_join(threads[i], &retval);
 		if (ret < 0) {
 			perror("pthread_join");
 			return ret;
+		}
+
+		if ((int)retval < 0) {
+			fprintf(stderr, "fatal: failed to start server\n");
+			return -EXIT_FAILURE;
 		}
 	}
 
@@ -254,10 +260,9 @@ int main(int argc, char *argv[])
 
 static void *thread_cb(__attribute__((__unused__)) void *args)
 {
-	/* TODO: what to do when start_server fail to run on this thread? */
-	start_server();
+	int ret = start_server();
 
-	return NULL;
+	return (void *)ret;
 }
 
 static int start_server(void)
@@ -280,7 +285,6 @@ static int start_server(void)
 
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
-	// setsockopt(gwp.listen_sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, &val, sizeof(val));
 
 	ret = bind(gwp.listen_sock, (struct sockaddr *)s, size_addr);
 	if (ret < 0)
