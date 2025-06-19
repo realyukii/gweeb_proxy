@@ -130,6 +130,10 @@ static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
 
 /*
 * Handle incoming and outgoing data.
+* remark:
+* The caller must swap the argument passed into this function
+* if the event was EPOLLOUT, as we're going to send instead of receive.
+* this behavior is affected by/related to function extract_data.
 *
 * @param from The source of fetched data.
 * @param to The destination of data to be sent.
