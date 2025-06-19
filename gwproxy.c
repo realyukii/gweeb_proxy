@@ -62,21 +62,29 @@ struct gwproxy {
 	int epfd;
 };
 
+struct gwp_args {
+	struct sockaddr_storage src_addr_st, dst_addr_st;
+	size_t thread_nr;
+
+};
+
 extern char *optarg;
-static struct sockaddr_storage src_addr_st, dst_addr_st;
+struct gwp_args args;
 static const struct rlimit file_limits = {
 	.rlim_cur = 100000,
 	.rlim_max = 100000
 };
-static pthread_t threads[DEFAULT_THREAD_NR];
+static pthread_t *threads;
+static const char opts[] = "hb:t:T:";
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-b\tIP address and port to be bound by the server\n"
 "-t\tIP address and port of the target server\n"
+"-T\tnumber of thread (default %d)\n"
 "-h\tShow this help message and exit\n";
 
 /*
-* Handle command-line arguments.
+* Handle command-line arguments and initialize gwp_args.
 * 
 * @param argc total argument passed.
 * @param argv Pointer to an array of string.
@@ -141,6 +149,7 @@ static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
 
 /*
 * Handle incoming and outgoing data.
+*
 * remark:
 * The caller must swap the argument passed into this function
 * if the event was EPOLLOUT, as we're going to send instead of receive.
@@ -207,7 +216,11 @@ int main(int argc, char *argv[])
 		return ret;
 	}
 
-	for (size_t i = 0; i < DEFAULT_THREAD_NR; i++) {
+	threads = calloc(args.thread_nr, sizeof(pthread_t));
+	if (!threads)
+		return -ENOMEM;
+
+	for (size_t i = 0; i < args.thread_nr; i++) {
 		ret = pthread_create(&threads[i], NULL, thread_cb, NULL);
 		if (ret < 0) {
 			perror("pthread_create");
@@ -215,7 +228,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	for (size_t i = 0; i < DEFAULT_THREAD_NR; i++) {
+	for (size_t i = 0; i < args.thread_nr; i++) {
 		ret = pthread_join(threads[i], NULL);
 		if (ret < 0) {
 			perror("pthread_join");
@@ -240,21 +253,22 @@ static int start_server(void)
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
+	struct sockaddr_storage *s = &args.src_addr_st;
 	struct epoll_event evs[NR_EVENTS];
 	static const int val = 1;
 
-	size_addr = src_addr_st.ss_family == AF_INET ? 
+	size_addr = s->ss_family == AF_INET ? 
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 
 	flg = SOCK_STREAM | SOCK_NONBLOCK;
-	gwp.listen_sock = socket(src_addr_st.ss_family, flg, 0);
+	gwp.listen_sock = socket(s->ss_family, flg, 0);
 	if (gwp.listen_sock < 0)
 		return -EXIT_FAILURE;
 
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
 
-	ret = bind(gwp.listen_sock, (struct sockaddr *)&src_addr_st, size_addr);
+	ret = bind(gwp.listen_sock, (struct sockaddr *)s, size_addr);
 	if (ret < 0)
 		goto err;
 
@@ -390,17 +404,18 @@ static struct pair_connection *init_pair(void)
 
 static int handle_cmdline(int argc, char *argv[])
 {
-	char c,  *bind_opt, *target_opt;
+	char c,  *bind_opt, *target_opt, *thread_opt;
+	int thread_nr;
 	int ret;
 
 	if (argc == 1) {
-		printf("%s", usage);
+		printf(usage, DEFAULT_THREAD_NR);
 
 		return 0;
 	}
 
 	bind_opt = target_opt = NULL;
-	while ((c = getopt(argc, argv, "hb:t:")) != -1) {
+	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 'b':
 			bind_opt = optarg;
@@ -408,8 +423,11 @@ static int handle_cmdline(int argc, char *argv[])
 		case 't':
 			target_opt = optarg;
 			break;
+		case 'T':
+			thread_opt = optarg;
+			break;
 		case 'h':
-			printf("%s", usage);
+			printf(usage, DEFAULT_THREAD_NR);
 			return 0;
 
 		default:
@@ -427,13 +445,22 @@ static int handle_cmdline(int argc, char *argv[])
 		return -EINVAL;
 	}
 
-	ret = init_addr(bind_opt, &src_addr_st);
+	if (thread_opt) {
+		thread_nr = atoi(thread_opt);
+		if (thread_nr <= 0)
+			thread_nr = DEFAULT_THREAD_NR;
+	} else {
+		thread_nr = DEFAULT_THREAD_NR;
+	}
+	args.thread_nr = thread_nr;
+
+	ret = init_addr(bind_opt, &args.src_addr_st);
 	if (ret < 0) {
 		fprintf(stderr, "invalid format for %s\n", bind_opt);
 		return -EINVAL;
 	}
 
-	ret = init_addr(target_opt, &dst_addr_st);
+	ret = init_addr(target_opt, &args.dst_addr_st);
 	if (ret < 0) {
 		fprintf(stderr, "invalid format for %s\n", target_opt);
 		return -EINVAL;
@@ -447,6 +474,7 @@ static int handle_incoming_client(struct gwproxy *gwp)
 	int client_fd, ret, tsock;
 	struct epoll_event ev;
 	socklen_t size_addr;
+	struct sockaddr_storage *d = &args.dst_addr_st;
 	struct pair_connection *pc = init_pair();
 	if (!pc)
 		return -ENOMEM;
@@ -465,14 +493,14 @@ static int handle_incoming_client(struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 	}
 
-	tsock = socket(dst_addr_st.ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	tsock = socket(d->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (tsock < 0)
 		return -EXIT_FAILURE;
 
 	set_sockattr(tsock);
-	size_addr = src_addr_st.ss_family == AF_INET ? 
+	size_addr = d->ss_family == AF_INET ? 
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-	ret = connect(tsock, (struct sockaddr *)&dst_addr_st, size_addr);
+	ret = connect(tsock, (struct sockaddr *)d, size_addr);
 	if (ret == 0 || errno == EINPROGRESS || errno == EAGAIN) {
 		ev.events = pc->target.epmask;
 		ev.data.u64 = 0;
