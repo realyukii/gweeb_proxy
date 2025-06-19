@@ -109,6 +109,18 @@ static int process_ready_list(int ready_nr,
 static int handle_incoming_client(struct gwproxy *gwp);
 
 /*
+* Extract data returned by epoll_wait
+* on particular event in particular socket file descriptor.
+*
+* @param ev Pointer to epoll event.
+* @param pc caller-variable to initialize.
+* @param from caller-variable to initialize.
+* @param to caller-variable to initialize.
+*/
+static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
+		struct single_connection **from, struct single_connection **to);
+
+/*
 * Handle incoming and outgoing data.
 *
 * @param from The source of fetched data.
@@ -117,9 +129,6 @@ static int handle_incoming_client(struct gwproxy *gwp);
 */
 static int handle_data(struct single_connection *from,
 			struct single_connection *to);
-
-static void extract_data(struct epoll_event *ev, struct pair_connection **pc,
-		struct single_connection **from, struct single_connection **to);
 
 /*
 * Adjust epoll events
