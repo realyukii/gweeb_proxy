@@ -74,7 +74,6 @@ struct gwp_args {
 };
 
 extern char *optarg;
-struct gwp_args args;
 static const struct rlimit file_limits = {
 	.rlim_cur = 100000,
 	.rlim_max = 100000
@@ -166,7 +165,7 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 * @param argv Pointer to an array of string.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_cmdline(int argc, char *argv[])
+static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 {
 	char c,  *bind_opt, *target_opt, *thread_opt, *wait_opt;
 	int thread_nr, timeout;
@@ -219,7 +218,7 @@ static int handle_cmdline(int argc, char *argv[])
 	} else {
 		thread_nr = DEFAULT_THREAD_NR;
 	}
-	args.thread_nr = thread_nr;
+	args->thread_nr = thread_nr;
 
 	if (wait_opt) {
 		timeout = atoi(wait_opt);
@@ -228,15 +227,15 @@ static int handle_cmdline(int argc, char *argv[])
 	} else {
 		timeout = DEFAULT_TIMEOUT;
 	}
-	args.timeout = timeout;
+	args->timeout = timeout;
 
-	ret = init_addr(bind_opt, &args.src_addr_st);
+	ret = init_addr(bind_opt, &args->src_addr_st);
 	if (ret < 0) {
 		fprintf(stderr, "invalid format for %s\n", bind_opt);
 		return -EINVAL;
 	}
 
-	ret = init_addr(target_opt, &args.dst_addr_st);
+	ret = init_addr(target_opt, &args->dst_addr_st);
 	if (ret < 0) {
 		fprintf(stderr, "invalid format for %s\n", target_opt);
 		return -EINVAL;
@@ -306,21 +305,21 @@ static struct pair_connection *init_pair(void)
 * @param gwp Pointer to the global variable of gwproxy struct.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_incoming_client(struct gwproxy *gwp)
+static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 {
 	int client_fd, ret, tsock, flg;
 	struct epoll_event ev;
 	socklen_t size_addr;
-	struct sockaddr_storage *d = &args.dst_addr_st;
+	struct sockaddr_storage *d = &args->dst_addr_st;
 	struct pair_connection *pc = init_pair();
 	if (!pc)
 		return -ENOMEM;
 
-	if (args.timeout) {
+	if (args->timeout) {
 		int tmfd;
 		struct itimerspec it = {
 			.it_value = {
-				.tv_sec = args.timeout,
+				.tv_sec = args->timeout,
 				.tv_nsec = 0
 			},
 			.it_interval = {
@@ -585,7 +584,7 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 * @param gwp Pointer to the global variable of gwproxy struct.
 * @return zero on success, or a negative integer on failure.
 */
-static int process_ready_list(int ready_nr,
+static int process_ready_list(int ready_nr, struct gwp_args *args,
 				struct epoll_event *evs, struct gwproxy *gwp)
 {
 	int ret;
@@ -596,7 +595,7 @@ static int process_ready_list(int ready_nr,
 		struct epoll_event *ev = &evs[i];
 
 		if (ev->data.fd == gwp->listen_sock) {
-			ret = handle_incoming_client(gwp);
+			ret = handle_incoming_client(gwp, args);
 			if (ret < 0)
 				return ret;
 		} else {
@@ -644,13 +643,13 @@ exit_err:
 * 
 * @return negative integer on failure.
 */
-static int start_server(void)
+static int start_server(struct gwp_args *args)
 {
 	int ret, ready_nr, flg;
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
-	struct sockaddr_storage *s = &args.src_addr_st;
+	struct sockaddr_storage *s = &args->src_addr_st;
 	struct epoll_event evs[NR_EVENTS];
 	static const int val = 1;
 
@@ -692,7 +691,7 @@ static int start_server(void)
 			goto err;
 		}
 
-		process_ready_list(ready_nr, evs, &gwp);
+		process_ready_list(ready_nr, args, evs, &gwp);
 	}
 
 err:
@@ -706,9 +705,9 @@ err:
 * @param args unused
 * @return NULL
 */
-static void *thread_cb(__attribute__((__unused__)) void *args)
+static void *thread_cb(void *args)
 {
-	int ret = start_server();
+	int ret = start_server(args);
 
 	return (void *)(intptr_t)ret;
 }
@@ -717,8 +716,9 @@ int main(int argc, char *argv[])
 {
 	int ret;
 	void *retval;
+	struct gwp_args args;
 
-	ret = handle_cmdline(argc, argv);
+	ret = handle_cmdline(argc, argv, &args);
 	if (ret < 0)
 		return ret;
 
@@ -733,7 +733,7 @@ int main(int argc, char *argv[])
 		return -ENOMEM;
 
 	for (size_t i = 0; i < args.thread_nr; i++) {
-		ret = pthread_create(&threads[i], NULL, thread_cb, NULL);
+		ret = pthread_create(&threads[i], NULL, thread_cb, &args);
 		if (ret < 0) {
 			perror("pthread_create");
 			return ret;
