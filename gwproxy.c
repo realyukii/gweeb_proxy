@@ -439,7 +439,8 @@ static int handle_data(struct single_connection *from,
 	/* length of empty buffer */
 	rlen = DEFAULT_BUF_SZ - from->len;
 	if (rlen > 0) {
-		ret = recv(from->sockfd, &from->buf[from->len], rlen, 0);
+		// asm volatile("int3");
+		ret = recv(from->sockfd, &from->buf[from->len], rlen, MSG_NOSIGNAL);
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
@@ -454,7 +455,8 @@ static int handle_data(struct single_connection *from,
 
 	/* length of filled buffer */
 	if (from->len > 0) {
-		ret = send(to->sockfd, from->buf, from->len, 0);
+		// asm volatile("int3");
+		ret = send(to->sockfd, from->buf, from->len, MSG_NOSIGNAL);
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
