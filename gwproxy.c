@@ -649,43 +649,42 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 * @param dst Pointer that needs its epmask member to be adjusted
 * @return zero on success, or a negative integer on failure.
 */
-static int adjust_events(int epfd, struct pair_connection *pc,
-			struct single_connection *src,
-			struct single_connection *dst)
+static int adjust_events(int epfd, struct pair_connection *pc)
 {
 	int ret;
-	bool is_from_changed = false;
-	bool is_to_changed = false;
+	bool is_client_changed = false;
+	bool is_target_changed = false;
 	struct epoll_event ev;
+	struct single_connection *client = &pc->client, *target = &pc->target;
 
-	adjust_pollout(src, dst, &is_to_changed);
-	// adjust_pollout(dst, src, &is_from_changed);
-	adjust_pollin(src, &is_from_changed);
-	// adjust_pollin(dst, &is_to_changed);
+	adjust_pollout(client, target, &is_target_changed);
+	adjust_pollout(target, client, &is_client_changed);
+	adjust_pollin(client, &is_client_changed);
+	adjust_pollin(target, &is_target_changed);
 
-	// if (is_from_changed) {
+	if (is_client_changed) {
 		ev.data.u64 = 0;
 		ev.data.ptr = pc;
 		ev.data.u64 |= EV_BIT_CLIENT;
-		ev.events = src->epmask;
+		ev.events = client->epmask;
 
 		pr_debug(
 			DEBUG_EPOLL_EVENTS,
 			"modifying events on socket %d: ",
-			src->sockfd
+			client->sockfd
 		);
 		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 			printBits(sizeof(ev.events), &ev.events);
 		}
-		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, src->sockfd, &ev);
+		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, client->sockfd, &ev);
 		if (ret < 0) {
 			perror("epoll_ctl");
 			return -EXIT_FAILURE;
 		}
-	// }
+	}
 
-	// if (is_to_changed) {
-		ev.events = dst->epmask;
+	if (is_target_changed) {
+		ev.events = target->epmask;
 		ev.data.u64 = 0;
 		ev.data.ptr = pc;
 		ev.data.u64 |= EV_BIT_TARGET;
@@ -693,17 +692,17 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 		pr_debug(
 			DEBUG_EPOLL_EVENTS,
 			"modifying events on socket %d: ",
-			dst->sockfd
+			target->sockfd
 		);
 		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 			printBits(sizeof(ev.events), &ev.events);
 		}
-		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, dst->sockfd, &ev);
+		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, target->sockfd, &ev);
 		if (ret < 0) {
 			perror("epoll_ctl");
 			return -EXIT_FAILURE;
 		}
-	// }
+	}
 
 	return 0;
 }
@@ -743,7 +742,6 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 				ret = handle_data(from, to);
 				if (ret < 0)
 					goto exit_err;
-				adjust_events(gwp->epfd, pc, from, to);
 			}
 
 			if (ev->events & EPOLLOUT) {
@@ -759,8 +757,9 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 				ret = handle_data(to, from);
 				if (ret < 0)
 					goto exit_err;
-				adjust_events(gwp->epfd, pc, to, from);
 			}
+
+			adjust_events(gwp->epfd, pc);
 
 		}
 	}
