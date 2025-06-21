@@ -108,7 +108,7 @@ void printBits(size_t const size, void const * const ptr)
 * Initialize address used to bind or connect a socket.
 *
 * @param addr Pointer to the string with fmt ip:port.
-* @param addr_st Pointer to a sockaddr structure to initialize.
+* @param addr_st Pointer to a sockaddr_storage structure to initialize.
 * @return zero on success, or a negative integer on failure.
 */
 static int init_addr(char *addr, struct sockaddr_storage *addr_st)
@@ -179,6 +179,7 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 * 
 * @param argc total argument passed.
 * @param argv Pointer to an array of string.
+* @param args Pointer to cmdline arguments to initialize.
 * @return zero on success, or a negative integer on failure.
 */
 static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
@@ -318,7 +319,7 @@ static struct pair_connection *init_pair(void)
 /*
 * Handle incoming client.
 *
-* @param gwp Pointer to the global variable of gwproxy struct.
+* @param gwp Pointer to the gwproxy struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
 static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
@@ -404,8 +405,9 @@ static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 * @param ev Pointer to epoll event.
 * @param pc caller-variable to initialize.
 * @param from the socket that trigger epoll event;
-* however, it is not the case for EV_BIT_TIMER
-* @param to the peer
+* however, it is not the case for EV_BIT_TIMER.
+* @param to the peer.
+* @return zero on success, or a negative integer on failure.
 */
 static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		struct single_connection **from, struct single_connection **to)
@@ -535,9 +537,9 @@ try_send:
 /*
 * Set EPOLLOUT bit on epmask member of dst.
 *
-* @param src Pointer to struct single_connection
-* @param dst Pointer to struct single_connection
-* @param epmask_changed Pointer to boolean
+* @param src Pointer to struct single_connection.
+* @param dst Pointer to struct single_connection.
+* @param epmask_changed Pointer to boolean.
 */
 static void adjust_pollout(struct single_connection *src,
 			struct single_connection *dst, bool *epmask_changed)
@@ -594,8 +596,8 @@ static void adjust_pollout(struct single_connection *src,
 /*
 * Set EPOLLIN bit on epmask member.
 *
-* @param src Pointer to struct single_connection
-* @param epmask_changed Pointer to boolean
+* @param src Pointer to struct single_connection.
+* @param epmask_changed Pointer to boolean.
 */
 static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 {
@@ -653,8 +655,6 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 * @param epfd epoll file descriptor.
 * @param pc Pointer that need to be saved 
 * and returned once particular event is triggered.
-* @param src Pointer that needs its epmask member to be adjusted
-* @param dst Pointer that needs its epmask member to be adjusted
 * @return zero on success, or a negative integer on failure.
 */
 static int adjust_events(int epfd, struct pair_connection *pc)
@@ -719,6 +719,7 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 * Process epoll event that are 'ready'.
 *
 * @param ready_nr Number of ready events.
+* @param args Pointer to cmdline arguments.
 * @param evs Pointer to epoll event struct.
 * @param gwp Pointer to the global variable of gwproxy struct.
 * @return zero on success, or a negative integer on failure.
@@ -788,6 +789,7 @@ exit_err:
 /*
 * Start the TCP proxy server.
 * 
+* @param args Pointer to cmdline arguments.
 * @return negative integer on failure.
 */
 static int start_server(struct gwp_args *args)
@@ -849,7 +851,7 @@ err:
 /*
 * Thread callback
 *
-* @param args unused
+* @param args Pointer to cmdline arguments.
 * @return NULL
 */
 static void *thread_cb(void *args)
