@@ -477,7 +477,6 @@ static int handle_data(struct single_connection *from,
 	);
 	if (rlen > 0) {
 		ret = recv(from->sockfd, &from->buf[from->len], rlen, MSG_NOSIGNAL);
-		// asm volatile("int3");
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR) {
@@ -503,7 +502,6 @@ try_send:
 	/* length of filled buffer */
 	if (from->len > 0) {
 		ret = send(to->sockfd, from->buf, from->len, MSG_NOSIGNAL);
-		// asm volatile("int3");
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
@@ -540,7 +538,6 @@ static void adjust_pollout(struct single_connection *src,
 	* set EPOLLOUT to epmask when there's remaining bytes in the buffer
 	* waiting to be sent, otherwise, unset it.
 	*/
-	// asm volatile("int3");
 	if (src->len > 0) {
 		pr_debug(
 			DEBUG_EPOLL_EVENTS,
@@ -598,7 +595,6 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 	* unset EPOLLIN from epmask when the buffer is full,
 	* otherwise, set it.
 	*/
-	// asm volatile("int3");
 	if (!(DEFAULT_BUF_SZ - src->len)) {
 		pr_debug(
 			DEBUG_EPOLL_EVENTS,
