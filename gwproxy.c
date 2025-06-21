@@ -372,8 +372,8 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	ev.events = pc->client.epmask;
 	client_fd = accept4(gwp->listen_sock, NULL, NULL, SOCK_NONBLOCK);
 	if (client_fd < 0) {
-		perror("accept");
 		ret = errno;
+		perror("accept");
 		if (ret != EINTR)
 			goto exit_err;
 	}
