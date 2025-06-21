@@ -403,8 +403,9 @@ static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 *
 * @param ev Pointer to epoll event.
 * @param pc caller-variable to initialize.
-* @param from caller-variable to initialize.
-* @param to caller-variable to initialize.
+* @param from the socket that trigger epoll event;
+* however, it is not the case for EV_BIT_TIMER
+* @param to the peer
 */
 static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		struct single_connection **from, struct single_connection **to)
@@ -720,7 +721,7 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 {
 	int ret;
 	struct pair_connection *pc;
-	struct single_connection *from, *to;
+	struct single_connection *a, *b;
 
 	for (int i = 0; i < ready_nr; i++) {
 		struct epoll_event *ev = &evs[i];
@@ -731,7 +732,7 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 			if (ret < 0)
 				return ret;
 		} else {
-			ret = extract_data(ev, &pc, &from, &to);
+			ret = extract_data(ev, &pc, &a, &b);
 			if (ret < 0)
 				goto exit_err;
 			if (ev->events & EPOLLIN) {
@@ -739,7 +740,7 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 					DEBUG_EPOLL_EVENTS,
 					"current epoll events have EPOLLIN bit set\n"
 				);
-				ret = handle_data(from, to);
+				ret = handle_data(a, b);
 				if (ret < 0)
 					goto exit_err;
 			}
@@ -754,7 +755,7 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 					pc->timerfd = -1;
 				}
 
-				ret = handle_data(to, from);
+				ret = handle_data(b, a);
 				if (ret < 0)
 					goto exit_err;
 			}
@@ -769,8 +770,8 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 exit_err:
 	if (pc->timerfd != -1)
 		close(pc->timerfd);
-	close(from->sockfd);
-	close(to->sockfd);
+	close(a->sockfd);
+	close(b->sockfd);
 	free(pc->client.buf);
 	free(pc->target.buf);
 	free(pc);
