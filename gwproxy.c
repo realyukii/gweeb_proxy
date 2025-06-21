@@ -730,6 +730,7 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 		struct epoll_event *ev = &evs[i];
 
 		if (ev->data.fd == gwp->listen_sock) {
+			pr_debug(VERBOSE, "serving new client\n");
 			ret = handle_incoming_client(gwp, args);
 			if (ret < 0)
 				return ret;
