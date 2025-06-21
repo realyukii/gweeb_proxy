@@ -117,7 +117,7 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 	struct sockaddr_in *in = (void *)addr_st;
 	char *separator = NULL, *port_str;
 	unsigned short nport, af;
-	int hport;
+	int i, hport;
 	size_t addrlen = strlen(addr) + 1;
 	char tmp[1 + INET6_ADDRSTRLEN + 1 + 1 + 5];
 	char *ipstr;
@@ -126,7 +126,7 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 		return -EINVAL;
 
 	strncpy(tmp, addr, addrlen);
-	for (size_t i = addrlen - 1; i > 0; i--) {
+	for (i = addrlen - 1; i > 0; i--) {
 		if (tmp[i] == ':') {
 			separator = &tmp[i];
 			break;
@@ -322,7 +322,7 @@ static struct pair_connection *init_pair(void)
 * @param gwp Pointer to the gwproxy struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
+static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 {
 	int client_fd, ret, tsock, flg;
 	struct epoll_event ev;
@@ -330,7 +330,7 @@ static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	struct sockaddr_storage *d = &args->dst_addr_st;
 	struct pair_connection *pc = init_pair();
 	if (!pc)
-		return -ENOMEM;
+		return;
 
 	if (args->timeout) {
 		int tmfd;
@@ -347,20 +347,36 @@ static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 
 		flg = TFD_NONBLOCK;
 		tmfd = timerfd_create(CLOCK_MONOTONIC, flg);
-		if (tmfd < 0)
-			return -EXIT_FAILURE;
+		if (tmfd < 0) {
+			perror("timerfd_create");
+			goto exit_err;
+		}
 		pc->timerfd = tmfd;
 
 		ev.events = EPOLLIN;
 		ev.data.u64 = 0;
 		ev.data.ptr = pc;
 		ev.data.u64 |= EV_BIT_TIMER;
-		epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, pc->timerfd, &ev);
-		timerfd_settime(pc->timerfd, 0, &it, NULL);
+		ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, pc->timerfd, &ev);
+		if (ret < 0) {
+			perror("epoll_ctl");
+			goto exit_err;
+		}
+		ret = timerfd_settime(pc->timerfd, 0, &it, NULL);
+		if (ret < 0) {
+			perror("timerfd_settime");
+			goto exit_err;
+		}
 	}
 
 	ev.events = pc->client.epmask;
 	client_fd = accept4(gwp->listen_sock, NULL, NULL, SOCK_NONBLOCK);
+	if (client_fd < 0) {
+		perror("accept");
+		ret = errno;
+		if (ret != EINTR)
+			goto exit_err;
+	}
 	set_sockattr(client_fd);
 	pc->client.sockfd = client_fd;
 	ev.data.u64 = 0;
@@ -370,19 +386,23 @@ static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, client_fd, &ev);
 	if (ret < 0) {
 		perror("epoll_ctl");
-		return -EXIT_FAILURE;
+		goto exit_err;
 	}
 
 	tsock = socket(d->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
-	if (tsock < 0)
-		return -EXIT_FAILURE;
+	if (tsock < 0) {
+		perror("socket");
+		goto exit_err;
+	}
 
 	set_sockattr(tsock);
 	size_addr = d->ss_family == AF_INET ? 
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 	ret = connect(tsock, (struct sockaddr *)d, size_addr);
-	if (ret < 0 && errno != EINPROGRESS)
-		return -EXIT_FAILURE;
+	if (ret < 0 && errno != EINPROGRESS) {
+		perror("connect");
+		goto exit_err;
+	}
 
 	ev.events = pc->target.epmask;
 	ev.data.u64 = 0;
@@ -392,10 +412,20 @@ static int handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
 	if (ret < 0) {
 		perror("epoll_ctl");
-		return -EXIT_FAILURE;
+		goto exit_err;
 	}
 
-	return 0;
+	return;
+exit_err:
+	free(pc->client.buf);
+	free(pc->target.buf);
+	if (pc->timerfd != -1)
+		close(pc->timerfd);
+	free(pc);
+	if (client_fd != -1)
+		close(client_fd);
+	if (tsock != -1)
+		close(tsock);
 }
 
 /*
@@ -716,65 +746,49 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 }
 
 /*
-* Process epoll event that are 'ready'.
+* Process epoll event from tcp connection.
 *
-* @param ready_nr Number of ready events.
-* @param args Pointer to cmdline arguments.
-* @param evs Pointer to epoll event struct.
-* @param gwp Pointer to the global variable of gwproxy struct.
-* @return zero on success, or a negative integer on failure.
+* @param ev Pointer to epoll event structure.
+* @param gwp Pointer to the gwproxy struct (thread data).
 */
-static int process_ready_list(int ready_nr, struct gwp_args *args,
-				struct epoll_event *evs, struct gwproxy *gwp)
+static void process_tcp(struct epoll_event *ev, struct gwproxy *gwp)
 {
 	int ret;
 	struct pair_connection *pc;
 	struct single_connection *a, *b;
 
-	for (int i = 0; i < ready_nr; i++) {
-		struct epoll_event *ev = &evs[i];
-
-		if (ev->data.fd == gwp->listen_sock) {
-			pr_debug(VERBOSE, "serving new client\n");
-			ret = handle_incoming_client(gwp, args);
-			if (ret < 0)
-				return ret;
-		} else {
-			ret = extract_data(ev, &pc, &a, &b);
-			if (ret < 0)
-				goto exit_err;
-			if (ev->events & EPOLLIN) {
-				pr_debug(
-					DEBUG_EPOLL_EVENTS,
-					"current epoll events have EPOLLIN bit set\n"
-				);
-				ret = handle_data(a, b);
-				if (ret < 0)
-					goto exit_err;
-			}
-
-			if (ev->events & EPOLLOUT) {
-				pr_debug(
-					DEBUG_EPOLL_EVENTS,
-					"current epoll events have EPOLLOUT bit set\n"
-				);
-				if (pc->timerfd != -1) {
-					close(pc->timerfd);
-					pc->timerfd = -1;
-				}
-
-				ret = handle_data(b, a);
-				if (ret < 0)
-					goto exit_err;
-			}
-
-			adjust_events(gwp->epfd, pc);
-
-		}
+	ret = extract_data(ev, &pc, &a, &b);
+	if (ret < 0)
+		goto exit_err;
+	if (ev->events & EPOLLIN) {
+		pr_debug(
+			DEBUG_EPOLL_EVENTS,
+			"current epoll events have EPOLLIN bit set\n"
+		);
+		ret = handle_data(a, b);
+		if (ret < 0)
+			goto exit_err;
 	}
 
-	return 0;
+	if (ev->events & EPOLLOUT) {
+		pr_debug(
+			DEBUG_EPOLL_EVENTS,
+			"current epoll events have EPOLLOUT bit set\n"
+		);
 
+		if (pc->timerfd != -1) {
+			close(pc->timerfd);
+			pc->timerfd = -1;
+		}
+
+		ret = handle_data(b, a);
+		if (ret < 0)
+			goto exit_err;
+	}
+
+	adjust_events(gwp->epfd, pc);
+
+	return;
 exit_err:
 	if (pc->timerfd != -1)
 		close(pc->timerfd);
@@ -783,7 +797,33 @@ exit_err:
 	free(pc->client.buf);
 	free(pc->target.buf);
 	free(pc);
-	return -EXIT_FAILURE;
+}
+
+/*
+* Process epoll event that are 'ready'.
+*
+* @param ready_nr Number of ready events.
+* @param args Pointer to cmdline arguments.
+* @param evs Pointer to epoll event struct.
+* @param gwp Pointer to the gwproxy struct (thread data).
+* @return zero on success, or a negative integer on failure.
+*/
+static int process_ready_list(int ready_nr, struct gwp_args *args,
+				struct epoll_event *evs, struct gwproxy *gwp)
+{
+	int ret, i;
+
+	for (i = 0; i < ready_nr; i++) {
+		struct epoll_event *ev = &evs[i];
+
+		if (ev->data.fd == gwp->listen_sock) {
+			pr_debug(VERBOSE, "serving new client\n");
+			handle_incoming_client(gwp, args);
+		} else
+			process_tcp(ev, gwp);
+	}
+
+	return 0;
 }
 
 /*
@@ -835,7 +875,6 @@ static int start_server(struct gwp_args *args)
 		if (ready_nr < 0) {
 			if (errno == EINTR)
 				continue;
-			printf("errno = %d\n", errno);
 			perror("epoll_wait");
 			goto err;
 		}
@@ -845,6 +884,8 @@ static int start_server(struct gwp_args *args)
 
 err:
 	close(gwp.listen_sock);
+	if (gwp.epfd != -1)
+		close(gwp.epfd);
 	return -EXIT_FAILURE;
 }
 
@@ -863,7 +904,7 @@ static void *thread_cb(void *args)
 
 int main(int argc, char *argv[])
 {
-	int ret;
+	int ret, i;
 	void *retval;
 	struct gwp_args args;
 
@@ -881,23 +922,28 @@ int main(int argc, char *argv[])
 	if (!threads)
 		return -ENOMEM;
 
-	for (size_t i = 0; i < args.thread_nr; i++) {
+	for (i = 0; i < args.thread_nr; i++) {
 		ret = pthread_create(&threads[i], NULL, thread_cb, &args);
-		if (ret < 0) {
+		if (ret) {
+			errno = ret;
 			perror("pthread_create");
+			free(threads);
 			return ret;
 		}
 	}
 
-	for (size_t i = 0; i < args.thread_nr; i++) {
+	for (i = 0; i < args.thread_nr; i++) {
 		ret = pthread_join(threads[i], &retval);
-		if (ret < 0) {
+		if (ret) {
+			errno = ret;
 			perror("pthread_join");
+			free(threads);
 			return ret;
 		}
 
 		if ((intptr_t)retval < 0) {
 			fprintf(stderr, "fatal: failed to start server\n");
+			free(threads);
 			return -EXIT_FAILURE;
 		}
 	}
