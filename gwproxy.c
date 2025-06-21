@@ -332,6 +332,7 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	if (!pc)
 		return;
 
+	tsock = client_fd = -1;
 	if (args->timeout) {
 		int tmfd;
 		struct itimerspec it = {
@@ -852,6 +853,7 @@ static int start_server(struct gwp_args *args)
 	gwp.listen_sock = socket(s->ss_family, flg, 0);
 	if (gwp.listen_sock < 0)
 		return -EXIT_FAILURE;
+	gwp.epfd = -1;
 
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
