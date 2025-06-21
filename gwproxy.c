@@ -22,9 +22,10 @@
 #define FOCUS 1
 #define DEBUG 2
 #define VERBOSE 3
+#define DEBUG_EPOLL_EVENTS 4
 #define pr_debug(lvl, fmt, ...)				\
 do {							\
-	if (DEBUG_LVL >= (lvl)) {			\
+	if (DEBUG_LVL == (lvl)) {			\
 		fprintf(stderr, fmt, ##__VA_ARGS__);	\
 	}						\
 } while (0)
@@ -414,7 +415,7 @@ static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 	*pc = ev->data.ptr;
 
 	pr_debug(
-		VERBOSE,
+		DEBUG_EPOLL_EVENTS,
 		"ressurected from sleep, let's start to extract the bit\n"
 	);
 	switch (ev_bit) {
@@ -424,24 +425,24 @@ static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		pr_debug(VERBOSE, "timed out, terminating the session\n");
 		return -ETIMEDOUT;
 	case EV_BIT_CLIENT:
-		pr_debug(VERBOSE, "receiving data from client\n");
+		pr_debug(DEBUG_EPOLL_EVENTS, "receiving data from client\n");
 		*from = &(*pc)->client;
 		*to = &(*pc)->target;
 		break;
 
 	case EV_BIT_TARGET:
-		pr_debug(VERBOSE, "receiving data from target\n");
+		pr_debug(DEBUG_EPOLL_EVENTS, "receiving data from target\n");
 		*from = &(*pc)->target;
 		*to = &(*pc)->client;
 		break;
 	}
 
 	pr_debug(
-		VERBOSE,
+		DEBUG_EPOLL_EVENTS,
 		"current events on socket %d: ",
 		(*from)->sockfd
 	);
-	if (DEBUG_LVL == VERBOSE) {
+	if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 		printBits(sizeof(ev->events), &ev->events);
 	}
 
@@ -469,7 +470,7 @@ static int handle_data(struct single_connection *from,
 	/* length of empty buffer */
 	rlen = DEFAULT_BUF_SZ - from->len;
 	pr_debug(
-		VERBOSE,
+		DEBUG_EPOLL_EVENTS,
 		"receive from socket %d "
 		"with buffer that have free space of %ld bytes\n",
 		from->sockfd, rlen
@@ -494,11 +495,11 @@ static int handle_data(struct single_connection *from,
 			return -EXIT_FAILURE;
 
 		from->len += (size_t)ret;
-		pr_debug(VERBOSE, "buffer filled with %ld bytes\n", from->len);
+		pr_debug(DEBUG_EPOLL_EVENTS, "buffer filled with %ld bytes\n", from->len);
 	}
 
 try_send:
-	pr_debug(VERBOSE, "send to socket %d\n", to->sockfd);
+	pr_debug(DEBUG_EPOLL_EVENTS, "send to socket %d\n", to->sockfd);
 	/* length of filled buffer */
 	if (from->len > 0) {
 		ret = send(to->sockfd, from->buf, from->len, MSG_NOSIGNAL);
@@ -514,7 +515,7 @@ try_send:
 
 		from->len -= ret;
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"remaining bytes on the buffer: %ld\n",
 			from->len
 		);
@@ -542,7 +543,7 @@ static void adjust_pollout(struct single_connection *src,
 	// asm volatile("int3");
 	if (src->len > 0) {
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"[set EPOLLOUT] there is still buffer remaining "
 			"in socket %d, need to drain it by sending it "
 			"to the socket %d\n",
@@ -550,11 +551,11 @@ static void adjust_pollout(struct single_connection *src,
 		);
 
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"current events on socket %d: ",
 			dst->sockfd
 		);
-		if (DEBUG_LVL == VERBOSE) {
+		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 			printBits(sizeof(dst->epmask), &dst->epmask);
 		}
 		if (!(dst->epmask & EPOLLOUT)) {
@@ -563,7 +564,7 @@ static void adjust_pollout(struct single_connection *src,
 		}
 	} else {
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"[unset EPOLLOUT] no buffer left on socket %d, "
 			"it is fully empty, "
 			"send to socket %d is now completed\n",
@@ -571,11 +572,11 @@ static void adjust_pollout(struct single_connection *src,
 		);
 
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"current events on socket %d: ",
 			dst->sockfd
 		);
-		if (DEBUG_LVL == VERBOSE) {
+		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 			printBits(sizeof(dst->epmask), &dst->epmask);
 		}
 		if (dst->epmask & EPOLLOUT) {
@@ -600,18 +601,18 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 	// asm volatile("int3");
 	if (!(DEFAULT_BUF_SZ - src->len)) {
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"[unset EPOLLIN] buffer on socket %d is full "
 			"can't receive anymore\n",
 			src->sockfd
 		);
 
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"current events on socket %d: ",
 			src->sockfd
 		);
-		if (DEBUG_LVL == VERBOSE) {
+		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 			printBits(sizeof(src->epmask), &src->epmask);
 		}
 		if (src->epmask & EPOLLIN) {
@@ -620,18 +621,18 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 		}
 	} else {
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"[set EPOLLIN] buffer on socket %d still have "
 			"some free space to fill in\n",
 			src->sockfd
 		);
 
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"current events on socket %d: ",
 			src->sockfd
 		);
-		if (DEBUG_LVL == VERBOSE) {
+		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 			printBits(sizeof(src->epmask), &src->epmask);
 		}
 		if (!(src->epmask & EPOLLIN)) {
@@ -673,11 +674,11 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 		ev.events = src->epmask;
 
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"modifying events on socket %d: ",
 			src->sockfd
 		);
-		if (DEBUG_LVL == VERBOSE) {
+		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 			printBits(sizeof(ev.events), &ev.events);
 		}
 		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, src->sockfd, &ev);
@@ -694,11 +695,11 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 		ev.data.u64 |= EV_BIT_TARGET;
 
 		pr_debug(
-			VERBOSE,
+			DEBUG_EPOLL_EVENTS,
 			"modifying events on socket %d: ",
 			dst->sockfd
 		);
-		if (DEBUG_LVL == VERBOSE) {
+		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
 			printBits(sizeof(ev.events), &ev.events);
 		}
 		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, dst->sockfd, &ev);
@@ -740,7 +741,7 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 				goto exit_err;
 			if (ev->events & EPOLLIN) {
 				pr_debug(
-					VERBOSE,
+					DEBUG_EPOLL_EVENTS,
 					"current epoll events have EPOLLIN bit set\n"
 				);
 				ret = handle_data(from, to);
@@ -751,7 +752,7 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 
 			if (ev->events & EPOLLOUT) {
 				pr_debug(
-					VERBOSE,
+					DEBUG_EPOLL_EVENTS,
 					"current epoll events have EPOLLOUT bit set\n"
 				);
 				if (pc->timerfd != -1) {
