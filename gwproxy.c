@@ -88,6 +88,21 @@ static const char usage[] =
 "-w\twait time for timeout, set to zero for no timeout (default: %d seconds)"
 "-h\tShow this help message and exit\n";
 
+void printBits(size_t const size, void const * const ptr)
+{
+	unsigned char *b = (unsigned char*) ptr;
+	unsigned char byte;
+	int i, j;
+	
+	for (i = size-1; i >= 0; i--) {
+		for (j = 7; j >= 0; j--) {
+			byte = (b[i] >> j) & 1;
+			printf("%u", byte);
+		}
+	}
+	puts("");
+}
+
 /*
 * Initialize address used to bind or connect a socket.
 *
@@ -398,6 +413,10 @@ static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
 	*pc = ev->data.ptr;
 
+	pr_debug(
+		VERBOSE,
+		"ressurected from sleep, let's start to extract the bit\n"
+	);
 	switch (ev_bit) {
 	case EV_BIT_TIMER:
 		*from = &(*pc)->client;
@@ -405,14 +424,25 @@ static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		pr_debug(VERBOSE, "timed out, terminating the session\n");
 		return -ETIMEDOUT;
 	case EV_BIT_CLIENT:
+		pr_debug(VERBOSE, "receiving data from client\n");
 		*from = &(*pc)->client;
 		*to = &(*pc)->target;
 		break;
 
 	case EV_BIT_TARGET:
+		pr_debug(VERBOSE, "receiving data from target\n");
 		*from = &(*pc)->target;
 		*to = &(*pc)->client;
 		break;
+	}
+
+	pr_debug(
+		VERBOSE,
+		"current events on socket %d: ",
+		(*from)->sockfd
+	);
+	if (DEBUG_LVL == VERBOSE) {
+		printBits(sizeof(ev->events), &ev->events);
 	}
 
 	return 0;
@@ -438,25 +468,41 @@ static int handle_data(struct single_connection *from,
 	
 	/* length of empty buffer */
 	rlen = DEFAULT_BUF_SZ - from->len;
+	pr_debug(
+		VERBOSE,
+		"receive from socket %d "
+		"with buffer that have free space of %ld bytes\n",
+		from->sockfd, rlen
+	);
 	if (rlen > 0) {
-		// asm volatile("int3");
 		ret = recv(from->sockfd, &from->buf[from->len], rlen, MSG_NOSIGNAL);
+		// asm volatile("int3");
 		if (ret < 0) {
 			ret = errno;
-			if (ret == EAGAIN || ret == EINTR)
+			if (ret == EAGAIN || ret == EINTR) {
+				/*
+				* if buffer is not empty,
+				* send it to the destination
+				*/
+				if (from->len)
+					goto try_send;
 				return 0;
+			}
 			perror("recv");
 			return -EXIT_FAILURE;
 		} else if (!ret)
 			return -EXIT_FAILURE;
 
 		from->len += (size_t)ret;
+		pr_debug(VERBOSE, "buffer filled with %ld bytes\n", from->len);
 	}
 
+try_send:
+	pr_debug(VERBOSE, "send to socket %d\n", to->sockfd);
 	/* length of filled buffer */
 	if (from->len > 0) {
-		// asm volatile("int3");
 		ret = send(to->sockfd, from->buf, from->len, MSG_NOSIGNAL);
+		// asm volatile("int3");
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
@@ -467,6 +513,11 @@ static int handle_data(struct single_connection *from,
 			return -EXIT_FAILURE;
 
 		from->len -= ret;
+		pr_debug(
+			VERBOSE,
+			"remaining bytes on the buffer: %ld\n",
+			from->len
+		);
 		if (from->len)
 			memmove(from->buf, &from->buf[ret], from->len);
 	}
@@ -488,12 +539,45 @@ static void adjust_pollout(struct single_connection *src,
 	* set EPOLLOUT to epmask when there's remaining bytes in the buffer
 	* waiting to be sent, otherwise, unset it.
 	*/
+	// asm volatile("int3");
 	if (src->len > 0) {
+		pr_debug(
+			VERBOSE,
+			"[set EPOLLOUT] there is still buffer remaining "
+			"in socket %d, need to drain it by sending it "
+			"to the socket %d\n",
+			src->sockfd, dst->sockfd
+		);
+
+		pr_debug(
+			VERBOSE,
+			"current events on socket %d: ",
+			dst->sockfd
+		);
+		if (DEBUG_LVL == VERBOSE) {
+			printBits(sizeof(dst->epmask), &dst->epmask);
+		}
 		if (!(dst->epmask & EPOLLOUT)) {
 			dst->epmask |= EPOLLOUT;
 			*epmask_changed = true;
 		}
 	} else {
+		pr_debug(
+			VERBOSE,
+			"[unset EPOLLOUT] no buffer left on socket %d, "
+			"it is fully empty, "
+			"send to socket %d is now completed\n",
+			src->sockfd, dst->sockfd
+		);
+
+		pr_debug(
+			VERBOSE,
+			"current events on socket %d: ",
+			dst->sockfd
+		);
+		if (DEBUG_LVL == VERBOSE) {
+			printBits(sizeof(dst->epmask), &dst->epmask);
+		}
 		if (dst->epmask & EPOLLOUT) {
 			dst->epmask &= ~EPOLLOUT;
 			*epmask_changed = true;
@@ -513,12 +597,43 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 	* unset EPOLLIN from epmask when the buffer is full,
 	* otherwise, set it.
 	*/
+	// asm volatile("int3");
 	if (!(DEFAULT_BUF_SZ - src->len)) {
+		pr_debug(
+			VERBOSE,
+			"[unset EPOLLIN] buffer on socket %d is full "
+			"can't receive anymore\n",
+			src->sockfd
+		);
+
+		pr_debug(
+			VERBOSE,
+			"current events on socket %d: ",
+			src->sockfd
+		);
+		if (DEBUG_LVL == VERBOSE) {
+			printBits(sizeof(src->epmask), &src->epmask);
+		}
 		if (src->epmask & EPOLLIN) {
 			src->epmask &= ~EPOLLIN;
 			*epmask_changed = true;
 		}
 	} else {
+		pr_debug(
+			VERBOSE,
+			"[set EPOLLIN] buffer on socket %d still have "
+			"some free space to fill in\n",
+			src->sockfd
+		);
+
+		pr_debug(
+			VERBOSE,
+			"current events on socket %d: ",
+			src->sockfd
+		);
+		if (DEBUG_LVL == VERBOSE) {
+			printBits(sizeof(src->epmask), &src->epmask);
+		}
 		if (!(src->epmask & EPOLLIN)) {
 			src->epmask |= EPOLLIN;
 			*epmask_changed = true;
@@ -547,15 +662,24 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 	struct epoll_event ev;
 
 	adjust_pollout(src, dst, &is_to_changed);
-	adjust_pollout(dst, src, &is_from_changed);
+	// adjust_pollout(dst, src, &is_from_changed);
 	adjust_pollin(src, &is_from_changed);
-	adjust_pollin(dst, &is_to_changed);
+	// adjust_pollin(dst, &is_to_changed);
 
 	if (is_from_changed) {
 		ev.data.u64 = 0;
 		ev.data.ptr = pc;
 		ev.data.u64 |= EV_BIT_CLIENT;
 		ev.events = src->epmask;
+
+		pr_debug(
+			VERBOSE,
+			"modifying events on socket %d: ",
+			src->sockfd
+		);
+		if (DEBUG_LVL == VERBOSE) {
+			printBits(sizeof(ev.events), &ev.events);
+		}
 		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, src->sockfd, &ev);
 		if (ret < 0) {
 			perror("epoll_ctl");
@@ -568,6 +692,15 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 		ev.data.u64 = 0;
 		ev.data.ptr = pc;
 		ev.data.u64 |= EV_BIT_TARGET;
+
+		pr_debug(
+			VERBOSE,
+			"modifying events on socket %d: ",
+			dst->sockfd
+		);
+		if (DEBUG_LVL == VERBOSE) {
+			printBits(sizeof(ev.events), &ev.events);
+		}
 		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, dst->sockfd, &ev);
 		if (ret < 0) {
 			perror("epoll_ctl");
@@ -605,6 +738,10 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 			if (ret < 0)
 				goto exit_err;
 			if (ev->events & EPOLLIN) {
+				pr_debug(
+					VERBOSE,
+					"current epoll events have EPOLLIN bit set\n"
+				);
 				ret = handle_data(from, to);
 				if (ret < 0)
 					goto exit_err;
@@ -612,6 +749,10 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 			}
 
 			if (ev->events & EPOLLOUT) {
+				pr_debug(
+					VERBOSE,
+					"current epoll events have EPOLLOUT bit set\n"
+				);
 				if (pc->timerfd != -1) {
 					close(pc->timerfd);
 					pc->timerfd = -1;
@@ -629,7 +770,6 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 	return 0;
 
 exit_err:
-	// asm volatile("int3");
 	if (pc->timerfd != -1)
 		close(pc->timerfd);
 	close(from->sockfd);
