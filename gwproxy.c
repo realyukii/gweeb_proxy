@@ -417,10 +417,17 @@ static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 
 	pr_debug(
 		DEBUG_EPOLL_EVENTS,
-		"ressurected from sleep, let's start to extract the bit\n"
+		"ressurected from sleep, let's start extracting the bit\n"
 	);
 	switch (ev_bit) {
 	case EV_BIT_TIMER:
+		/*
+		* failed to establish connection from the client to the target
+		* at specified time interval;
+		* the order of assignment itself doesn't matter technically,
+		* but this comment was made to emphasize "what's going on"
+		* for the sake of readability.
+		*/
 		*from = &(*pc)->client;
 		*to = &(*pc)->target;
 		pr_debug(VERBOSE, "timed out, terminating the session\n");
