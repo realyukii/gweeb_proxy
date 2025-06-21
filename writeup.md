@@ -4,8 +4,7 @@ sequence of program flow:
 3. accept new client (established connection)
 4. connect to specified target
 5. start receiving data from client
-6.0 check if the target connection is established
-6.1 start forwarding data to target
+6. start forwarding data to target
 7. start receiving response from target
 8. start forwarding response to client
 9. repeat to step 5 until both parties done exchange data

@@ -666,7 +666,7 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 	adjust_pollin(src, &is_from_changed);
 	// adjust_pollin(dst, &is_to_changed);
 
-	if (is_from_changed) {
+	// if (is_from_changed) {
 		ev.data.u64 = 0;
 		ev.data.ptr = pc;
 		ev.data.u64 |= EV_BIT_CLIENT;
@@ -685,9 +685,9 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 			perror("epoll_ctl");
 			return -EXIT_FAILURE;
 		}
-	}
+	// }
 
-	if (is_to_changed) {
+	// if (is_to_changed) {
 		ev.events = dst->epmask;
 		ev.data.u64 = 0;
 		ev.data.ptr = pc;
@@ -706,7 +706,7 @@ static int adjust_events(int epfd, struct pair_connection *pc,
 			perror("epoll_ctl");
 			return -EXIT_FAILURE;
 		}
-	}
+	// }
 
 	return 0;
 }
