@@ -751,7 +751,7 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 * @param ev Pointer to epoll event structure.
 * @param gwp Pointer to the gwproxy struct (thread data).
 */
-static void process_tcp(struct epoll_event *ev, struct gwproxy *gwp)
+static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp)
 {
 	int ret;
 	struct pair_connection *pc;
@@ -788,8 +788,9 @@ static void process_tcp(struct epoll_event *ev, struct gwproxy *gwp)
 
 	adjust_events(gwp->epfd, pc);
 
-	return;
+	return 0;
 exit_err:
+	pr_debug(VERBOSE, "free the system resources for this session\n");
 	if (pc->timerfd != -1)
 		close(pc->timerfd);
 	close(a->sockfd);
@@ -797,6 +798,7 @@ exit_err:
 	free(pc->client.buf);
 	free(pc->target.buf);
 	free(pc);
+	return -EXIT_FAILURE;
 }
 
 /*
@@ -806,12 +808,12 @@ exit_err:
 * @param args Pointer to cmdline arguments.
 * @param evs Pointer to epoll event struct.
 * @param gwp Pointer to the gwproxy struct (thread data).
-* @return zero on success, or a negative integer on failure.
 */
-static int process_ready_list(int ready_nr, struct gwp_args *args,
+static void process_ready_list(int ready_nr, struct gwp_args *args,
 				struct epoll_event *evs, struct gwproxy *gwp)
 {
-	int ret, i;
+	int i;
+	pr_debug(VERBOSE, "number of epoll events %d\n", ready_nr);
 
 	for (i = 0; i < ready_nr; i++) {
 		struct epoll_event *ev = &evs[i];
@@ -820,10 +822,11 @@ static int process_ready_list(int ready_nr, struct gwp_args *args,
 			pr_debug(VERBOSE, "serving new client\n");
 			handle_incoming_client(gwp, args);
 		} else
-			process_tcp(ev, gwp);
+			if (process_tcp(ev, gwp) < 0)
+				return;
 	}
 
-	return 0;
+	return;
 }
 
 /*
@@ -904,7 +907,8 @@ static void *thread_cb(void *args)
 
 int main(int argc, char *argv[])
 {
-	int ret, i;
+	int ret;
+	size_t i;
 	void *retval;
 	struct gwp_args args;
 
