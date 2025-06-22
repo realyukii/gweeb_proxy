@@ -32,9 +32,12 @@ do {							\
 } while (0)
 #define pr_menu printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT)
 
-enum {
+enum typemask {
+	/* indicate a client file descriptor */
 	EV_BIT_CLIENT		= (0x0001ULL << 48ULL),
+	/* indicate a target file descriptor */
 	EV_BIT_TARGET		= (0x0002ULL << 48ULL),
+	/* indicate a timer file descriptor */
 	EV_BIT_TIMER		= (0x0003ULL << 48ULL)
 };
 
@@ -306,7 +309,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 
 	if (args->socks5_mode)
 		return 0;
-		
+
 	ret = init_addr(target_opt, &args->dst_addr_st);
 	if (ret < 0) {
 		fprintf(stderr, "invalid format for %s\n", target_opt);
