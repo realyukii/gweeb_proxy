@@ -12,6 +12,7 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
+#define SOCKS5_VER 5
 #define MAX_FILEPATH 1024
 #define DEFAULT_TIMEOUT 5
 #define DEFAULT_THREAD_NR 4
@@ -45,7 +46,8 @@ enum gwp_state {
 	/* not in socks5 mode */
 	NO_SOCKS5,
 	/* hello packet from client */
-	STATE_GREETING,
+	STATE_ACCEPT_GREETING,
+	STATE_GREETING_ACCEPTED,
 	/* negotiating authentication method */
 	STATE_AUTH,
 	/* exchange the data between client and destination */
@@ -112,6 +114,7 @@ struct pair_connection {
 	int timerfd;
 	/* state of the established session */
 	enum gwp_state state;
+	enum auth_type preferred_method;
 };
 
 struct gwproxy {
@@ -119,6 +122,11 @@ struct gwproxy {
 	int listen_sock;
 	/* epoll file descriptor */
 	int epfd;
+};
+
+struct socks5_greeting {
+	unsigned char ver;
+	unsigned char nauth;
 };
 
 struct gwp_args {
@@ -509,7 +517,7 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	}
 
 	if (args->socks5_mode)
-		pc->state = STATE_GREETING;
+		pc->state = STATE_ACCEPT_GREETING;
 	else
 		pc->state = NO_SOCKS5;
 
@@ -925,6 +933,65 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			perror("epoll_ctl");
 			goto exit_err;
 		}
+	} else if (pc->state == STATE_ACCEPT_GREETING) {
+		struct socks5_greeting *g = (void *)a->buf;
+		unsigned char *ptr;
+		unsigned preferred_auth = NONE;
+		int i, rlen = DEFAULT_BUF_SZ - a->len;
+
+		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
+		if (ret < 0) {
+			if (errno == EAGAIN)
+				return 0;
+			perror("recv");
+			goto exit_err;
+		}
+		a->len += ret;
+		if (a->len < 2)
+			return EAGAIN;
+
+		if (g->ver != SOCKS5_VER)
+			goto exit_err;
+		
+		if (g->nauth == 0)
+			goto exit_err;
+
+		if (a->len - 2 < g->nauth)
+			return EAGAIN;
+
+		ptr = &g->nauth + 1;
+		for (i = 0; i < g->nauth; i++, ptr++) {
+			switch (*ptr) {
+			case NO_AUTH:
+				preferred_auth = NO_AUTH;
+				goto auth_method_found;
+			case USERNAME_PWD:
+				preferred_auth = USERNAME_PWD;
+				goto auth_method_found;
+			}
+		}
+
+auth_method_found:
+		pc->preferred_method = preferred_auth;
+		pc->state = STATE_GREETING_ACCEPTED;
+	}
+
+	if (pc->state == STATE_GREETING_ACCEPTED) {
+		char server_choice[2];
+		server_choice[0] = SOCKS5_VER;
+		server_choice[1] = pc->preferred_method;
+		// TODO: handle short-send
+		ret = send(a->sockfd, server_choice, sizeof(server_choice), 0);
+		if (ret < 0) {
+			if (errno == EAGAIN)
+				return 0;
+
+			goto exit_err;
+		}
+		asm volatile("int3");
+		/* for testing purpose, assume no auth is performed */
+		pc->state = STATE_REQUEST;
+	}
 	}
 
 	if (pc->state == STATE_EXCHANGE) {
