@@ -42,6 +42,8 @@ enum typemask {
 };
 
 enum gwp_state {
+	/* not in socks5 mode */
+	NO_SOCKS5,
 	/* hello packet from client */
 	STATE_GREETING,
 	/* negotiating authentication method */
@@ -449,13 +451,12 @@ static int register_events(int fd, int epfd, uint32_t epmask,
 */
 static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 {
-	int client_fd, ret, tsock;
-	struct sockaddr_storage *d = &args->dst_addr_st;
+	int client_fd, ret;
 	struct pair_connection *pc = init_pair();
 	if (!pc)
 		return;
 
-	tsock = client_fd = -1;
+	client_fd = -1;
 	if (args->timeout) {
 		int tmfd, flg;
 		struct itimerspec it = {
@@ -504,16 +505,10 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 		goto exit_err;
 	}
 
-	tsock = set_target(d);
-	if (tsock < 0)
-		goto exit_err;
-
-	pc->target.sockfd = tsock;
-	ret = register_events(tsock, gwp->epfd, pc->target.epmask, pc, EV_BIT_TARGET);
-	if (ret < 0) {
-		perror("epoll_ctl");
-		goto exit_err;
-	}
+	if (args->socks5_mode)
+		pc->state = STATE_GREETING;
+	else
+		pc->state = NO_SOCKS5;
 
 	return;
 exit_err:
@@ -524,8 +519,6 @@ exit_err:
 	free(pc);
 	if (client_fd != -1)
 		close(client_fd);
-	if (tsock != -1)
-		close(tsock);
 }
 
 /*
@@ -855,17 +848,36 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 *
 * @param ev Pointer to epoll event structure.
 * @param gwp Pointer to the gwproxy struct (thread data).
+* @param args Pointer to cmdline arguments.
 * @return zero on success, or a negative integer on failure.
 */
-static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp)
+static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
+			struct gwp_args *args)
 {
-	int ret;
+	int ret, tsock;
+	struct sockaddr_storage *d = &args->dst_addr_st;
 	struct pair_connection *pc;
 	struct single_connection *a, *b;
 
 	ret = extract_data(ev, &pc, &a, &b);
 	if (ret < 0)
 		goto exit_err;
+
+	if (pc->state == NO_SOCKS5) {
+		tsock = set_target(d);
+		if (tsock < 0)
+			goto exit_err;
+		pc->state = STATE_EXCHANGE;
+
+		pc->target.sockfd = tsock;
+		ret = register_events(tsock, gwp->epfd, pc->target.epmask,
+					pc, EV_BIT_TARGET);
+		if (ret < 0) {
+			perror("epoll_ctl");
+			goto exit_err;
+		}
+	}
+
 	if (ev->events & EPOLLIN) {
 		pr_debug(
 			DEBUG_EPOLL_EVENTS,
@@ -928,7 +940,7 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 			pr_debug(VERBOSE, "serving new client\n");
 			handle_incoming_client(gwp, args);
 		} else
-			if (process_tcp(ev, gwp) < 0)
+			if (process_tcp(ev, gwp, args) < 0)
 				return;
 	}
 
