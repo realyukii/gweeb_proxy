@@ -368,6 +368,62 @@ static struct pair_connection *init_pair(void)
 }
 
 /*
+* connect to the specified target.
+*
+* @param sockaddr Pointer to the sockaddr_storage structure.
+* @return socket file descriptor on success or a negative integer on failure.
+*/
+static int set_target(struct sockaddr_storage *sockaddr)
+{
+	int ret, tsock;
+	socklen_t size_addr;
+
+	tsock = socket(sockaddr->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	if (tsock < 0) {
+		perror("socket");
+		return -EXIT_FAILURE;
+	}
+
+	set_sockattr(tsock);
+	size_addr = sockaddr->ss_family == AF_INET ? 
+		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+	ret = connect(tsock, (struct sockaddr *)sockaddr, size_addr);
+	if (ret < 0 && errno != EINPROGRESS) {
+		perror("connect");
+		return -EXIT_FAILURE;
+	}
+
+	return tsock;
+}
+
+/*
+* Register events on socket file descriptor to the epoll's interest list.
+*
+* @param fd file descriptor to be registered.
+* @param epfd epoll file descriptor.
+* @param epmask epoll events.
+* @param typemask used to identify the type of file descriptor.
+* @param ptr a pointer to be saved and returned once particular events is ready.
+*/
+static int register_events(int fd, int epfd, uint32_t epmask,
+				void *ptr, uint64_t typemask) {
+	struct epoll_event ev;
+	int ret;
+
+	ev.events = epmask;
+	ev.data.u64 = 0;
+	ev.data.ptr = ptr;
+	ev.data.u64 |= typemask;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		return -EXIT_FAILURE;
+	}
+
+	return 0;
+}
+
+/*
 * Handle incoming client.
 *
 * @param gwp Pointer to the gwproxy struct (thread data).
@@ -377,7 +433,6 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 {
 	int client_fd, ret, tsock;
 	struct epoll_event ev;
-	socklen_t size_addr;
 	struct sockaddr_storage *d = &args->dst_addr_st;
 	struct pair_connection *pc = init_pair();
 	if (!pc)
@@ -405,11 +460,7 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 		}
 		pc->timerfd = tmfd;
 
-		ev.events = EPOLLIN;
-		ev.data.u64 = 0;
-		ev.data.ptr = pc;
-		ev.data.u64 |= EV_BIT_TIMER;
-		ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, pc->timerfd, &ev);
+		ret = register_events(tmfd, gwp->epfd, EPOLLIN, pc, EV_BIT_TIMER);
 		if (ret < 0) {
 			perror("epoll_ctl");
 			goto exit_err;
@@ -421,7 +472,6 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 		}
 	}
 
-	ev.events = pc->client.epmask;
 	client_fd = accept4(gwp->listen_sock, NULL, NULL, SOCK_NONBLOCK);
 	if (client_fd < 0) {
 		ret = errno;
@@ -431,37 +481,18 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	}
 	set_sockattr(client_fd);
 	pc->client.sockfd = client_fd;
-	ev.data.u64 = 0;
-	ev.data.ptr = pc;
-	ev.data.u64 |= EV_BIT_CLIENT;
-
-	ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, client_fd, &ev);
+	ret = register_events(client_fd, gwp->epfd, pc->client.epmask, pc, EV_BIT_CLIENT);
 	if (ret < 0) {
 		perror("epoll_ctl");
 		goto exit_err;
 	}
 
-	tsock = socket(d->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
-	if (tsock < 0) {
-		perror("socket");
+	tsock = set_target(d);
+	if (tsock < 0)
 		goto exit_err;
-	}
 
-	set_sockattr(tsock);
-	size_addr = d->ss_family == AF_INET ? 
-		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-	ret = connect(tsock, (struct sockaddr *)d, size_addr);
-	if (ret < 0 && errno != EINPROGRESS) {
-		perror("connect");
-		goto exit_err;
-	}
-
-	ev.events = pc->target.epmask;
-	ev.data.u64 = 0;
-	ev.data.ptr = pc;
 	pc->target.sockfd = tsock;
-	ev.data.u64 |= EV_BIT_TARGET;
-	ret = epoll_ctl(gwp->epfd, EPOLL_CTL_ADD, tsock, &ev);
+	ret = register_events(tsock, gwp->epfd, pc->target.epmask, pc, EV_BIT_TARGET);
 	if (ret < 0) {
 		perror("epoll_ctl");
 		goto exit_err;
