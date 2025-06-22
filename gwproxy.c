@@ -840,6 +840,52 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 }
 
 /*
+* Handle exchange data.
+*
+* @param ev Pointer to epoll event.
+* @param pc Pointer to pair_connection struct of current session.
+* @param a Pointer to the connection (can be either client or target).
+* @param b Pointer to the connection (can be either client or target).
+* @param gwp Pointer to the gwproxy struct (thread data).
+* @return zero on success, or a negative integer on failure.
+*/
+static int exchange_data(struct epoll_event *ev, struct pair_connection *pc,
+			struct single_connection *a, struct single_connection *b,
+			struct gwproxy *gwp)
+{
+	int ret;
+
+	if (ev->events & EPOLLIN) {
+		pr_debug(
+			DEBUG_EPOLL_EVENTS,
+			"current epoll events have EPOLLIN bit set\n"
+		);
+		ret = handle_data(a, b);
+		if (ret < 0)
+			return -EXIT_FAILURE;
+	}
+
+	if (ev->events & EPOLLOUT) {
+		pr_debug(
+			DEBUG_EPOLL_EVENTS,
+			"current epoll events have EPOLLOUT bit set\n"
+		);
+
+		if (pc->timerfd != -1) {
+			close(pc->timerfd);
+			pc->timerfd = -1;
+		}
+
+		ret = handle_data(b, a);
+		if (ret < 0)
+			return -EXIT_FAILURE;
+	}
+
+	adjust_events(gwp->epfd, pc);
+	return 0;
+}
+
+/*
 * Process epoll event from tcp connection.
 *
 * currently, this function handle:
@@ -878,33 +924,11 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		}
 	}
 
-	if (ev->events & EPOLLIN) {
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"current epoll events have EPOLLIN bit set\n"
-		);
-		ret = handle_data(a, b);
+	if (pc->state == STATE_EXCHANGE) {
+		ret = exchange_data(ev, pc, a, b, gwp);
 		if (ret < 0)
 			goto exit_err;
 	}
-
-	if (ev->events & EPOLLOUT) {
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"current epoll events have EPOLLOUT bit set\n"
-		);
-
-		if (pc->timerfd != -1) {
-			close(pc->timerfd);
-			pc->timerfd = -1;
-		}
-
-		ret = handle_data(b, a);
-		if (ret < 0)
-			goto exit_err;
-	}
-
-	adjust_events(gwp->epfd, pc);
 
 	return 0;
 exit_err:
