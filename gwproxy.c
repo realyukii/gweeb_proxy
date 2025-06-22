@@ -30,6 +30,7 @@ do {							\
 		fprintf(stderr, fmt, ##__VA_ARGS__);	\
 	}						\
 } while (0)
+#define pr_menu printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT)
 
 enum {
 	EV_BIT_CLIENT		= (0x0001ULL << 48ULL),
@@ -123,7 +124,7 @@ static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-s\tenable socks5 mode\n"
 "-f\tauthentication file for username/password method "
-"(if this option is not specified, no authentication is required)\n"
+"(if not specified, no authentication is required)\n"
 "-b\tIP address and port to be bound by the server\n"
 "-t\tIP address and port of the target server (ignored in socks5 mode)\n"
 "-T\tnumber of thread (default: %d)\n"
@@ -230,7 +231,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 	int ret;
 
 	if (argc == 1) {
-		printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT);
+		pr_menu;
 
 		return 0;
 	}
@@ -258,7 +259,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 			wait_opt = optarg;
 			break;
 		case 'h':
-			printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT);
+			pr_menu;
 			return 0;
 
 		default:
