@@ -934,20 +934,26 @@ static int start_server(struct gwp_args *args)
 
 	flg = SOCK_STREAM | SOCK_NONBLOCK;
 	gwp.listen_sock = socket(s->ss_family, flg, 0);
-	if (gwp.listen_sock < 0)
+	if (gwp.listen_sock < 0) {
+		perror("socket");
 		return -EXIT_FAILURE;
+	}
 	gwp.epfd = -1;
 
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
 
 	ret = bind(gwp.listen_sock, (struct sockaddr *)s, size_addr);
-	if (ret < 0)
+	if (ret < 0) {
+		perror("bind");
 		goto err;
+	}
 
 	ret = listen(gwp.listen_sock, 10);
-	if (ret < 0)
+	if (ret < 0) {
+		perror("listen");
 		goto err;
+	}
 
 	gwp.epfd = epoll_create(1);
 	ev.events = EPOLLIN;
