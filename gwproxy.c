@@ -50,8 +50,20 @@ enum gwp_state {
 	STATE_GREETING_ACCEPTED,
 	/* negotiating authentication method */
 	STATE_AUTH,
+	/*
+	* client connection request.
+	* determine which target the client want to connect to
+	*/
+	STATE_REQUEST,
 	/* exchange the data between client and destination */
 	STATE_EXCHANGE
+};
+
+enum auth_type {
+	NO_AUTH = 0x0,
+	// GSSAPI, not supported yet
+	USERNAME_PWD = 0x2,
+	NONE = 0xFF
 };
 
 #define ALL_EV_BIT	(EV_BIT_CLIENT | EV_BIT_TARGET | EV_BIT_TIMER)
@@ -992,6 +1004,23 @@ auth_method_found:
 		/* for testing purpose, assume no auth is performed */
 		pc->state = STATE_REQUEST;
 	}
+
+	if (pc->state == STATE_AUTH) {}
+
+	if (pc->state == STATE_REQUEST) {
+		int rlen = DEFAULT_BUF_SZ - a->len;
+
+		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
+		if (ret < 0) {
+			if (errno == EAGAIN)
+				return 0;
+			perror("recv");
+			goto exit_err;
+		}
+
+		asm volatile("int3");
+		puts("TODO: handle state request");
+		
 	}
 
 	if (pc->state == STATE_EXCHANGE) {
