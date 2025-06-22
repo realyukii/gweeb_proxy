@@ -849,6 +849,10 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 /*
 * Process epoll event from tcp connection.
 *
+* currently, this function handle:
+* - connection established from EINPROGRESS (EPOLLOUT).
+* - socket that ready to read or write (EPOLLIN or EPOLLOUT).
+*
 * @param ev Pointer to epoll event structure.
 * @param gwp Pointer to the gwproxy struct (thread data).
 * @return zero on success, or a negative integer on failure.
