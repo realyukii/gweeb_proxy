@@ -225,8 +225,7 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 */
 static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 {
-	char c,  *bind_opt, *target_opt, *thread_opt, *wait_opt, 
-	*socks5_opt, *auth_file_opt;
+	char c,  *bind_opt, *target_opt, *thread_opt, *wait_opt, *auth_file_opt;
 	int thread_nr, timeout;
 	int ret;
 
@@ -242,8 +241,10 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 		switch (c) {
 		case 's':
 			args->socks5_mode = true;
+			break;
 		case 'f':
 			auth_file_opt = optarg;
+			break;
 		case 'b':
 			bind_opt = optarg;
 			break;
@@ -264,6 +265,9 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 			return -EINVAL;
 		}
 	}
+
+	/* TODO: parse auth file */
+	(void)auth_file_opt;
 
 	if (!target_opt) {
 		fprintf(stderr, "-t option is required\n");
