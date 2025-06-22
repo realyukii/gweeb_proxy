@@ -432,7 +432,6 @@ static int register_events(int fd, int epfd, uint32_t epmask,
 static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 {
 	int client_fd, ret, tsock;
-	struct epoll_event ev;
 	struct sockaddr_storage *d = &args->dst_addr_st;
 	struct pair_connection *pc = init_pair();
 	if (!pc)
@@ -834,6 +833,7 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 *
 * @param ev Pointer to epoll event structure.
 * @param gwp Pointer to the gwproxy struct (thread data).
+* @return zero on success, or a negative integer on failure.
 */
 static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp)
 {
