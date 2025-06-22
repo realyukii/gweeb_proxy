@@ -12,6 +12,7 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
+#define MAX_FILEPATH 1024
 #define DEFAULT_TIMEOUT 5
 #define DEFAULT_THREAD_NR 4
 #define DEFAULT_BUF_SZ	1024
@@ -107,7 +108,8 @@ struct gwp_args {
 	struct sockaddr_storage src_addr_st, dst_addr_st;
 	size_t thread_nr;
 	size_t timeout;
-
+	bool socks5_mode;
+	char auth_file[MAX_FILEPATH];
 };
 
 extern char *optarg;
@@ -116,13 +118,16 @@ static const struct rlimit file_limits = {
 	.rlim_max = 100000
 };
 static pthread_t *threads;
-static const char opts[] = "hb:t:T:";
+static const char opts[] = "hb:t:T:f:s";
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
+"-s\tenable socks5 mode\n"
+"-f\tauthentication file for username/password method "
+"(if this option is not specified, no authentication is required)\n"
 "-b\tIP address and port to be bound by the server\n"
-"-t\tIP address and port of the target server\n"
+"-t\tIP address and port of the target server (ignored in socks5 mode)\n"
 "-T\tnumber of thread (default: %d)\n"
-"-w\twait time for timeout, set to zero for no timeout (default: %d seconds)"
+"-w\twait time for timeout, set to zero for no timeout (default: %d seconds)\n"
 "-h\tShow this help message and exit\n";
 
 void printBits(size_t const size, void const * const ptr)
@@ -220,7 +225,8 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 */
 static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 {
-	char c,  *bind_opt, *target_opt, *thread_opt, *wait_opt;
+	char c,  *bind_opt, *target_opt, *thread_opt, *wait_opt, 
+	*socks5_opt, *auth_file_opt;
 	int thread_nr, timeout;
 	int ret;
 
@@ -231,8 +237,13 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 	}
 
 	wait_opt = thread_opt = bind_opt = target_opt = NULL;
+	args->socks5_mode = false;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
+		case 's':
+			args->socks5_mode = true;
+		case 'f':
+			auth_file_opt = optarg;
 		case 'b':
 			bind_opt = optarg;
 			break;
