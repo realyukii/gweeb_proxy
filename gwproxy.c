@@ -41,6 +41,15 @@ enum typemask {
 	EV_BIT_TIMER		= (0x0003ULL << 48ULL)
 };
 
+enum gwp_state {
+	/* hello packet from client */
+	STATE_GREETING,
+	/* negotiating authentication method */
+	STATE_AUTH,
+	/* exchange the data between client and destination */
+	STATE_EXCHANGE
+};
+
 #define ALL_EV_BIT	(EV_BIT_CLIENT | EV_BIT_TARGET | EV_BIT_TIMER)
 #define GET_EV_BIT(X)	((X) & ALL_EV_BIT)
 #define CLEAR_EV_BIT(X)	((X) & ~ALL_EV_BIT)
@@ -99,6 +108,8 @@ struct pair_connection {
 	struct single_connection target;
 	/* timer file descriptor for setting timeout */
 	int timerfd;
+	/* state of the established session */
+	enum gwp_state state;
 };
 
 struct gwproxy {
