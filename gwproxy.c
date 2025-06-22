@@ -366,6 +366,9 @@ static struct pair_connection *init_pair(void)
 	client = &pc->client;
 	target = &pc->target;
 
+	client->sockfd = -1;
+	target->sockfd = -1;
+
 	client->buf = malloc(DEFAULT_BUF_SZ);
 	if (!client->buf) {
 		free(pc);
@@ -935,8 +938,10 @@ exit_err:
 	pr_debug(VERBOSE, "free the system resources for this session\n");
 	if (pc->timerfd != -1)
 		close(pc->timerfd);
-	close(a->sockfd);
-	close(b->sockfd);
+	if (a->sockfd != -1)
+		close(a->sockfd);
+	if (b->sockfd != -1)
+		close(b->sockfd);
 	free(pc->client.buf);
 	free(pc->target.buf);
 	free(pc);
