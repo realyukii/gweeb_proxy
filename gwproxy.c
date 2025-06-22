@@ -270,7 +270,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 	/* TODO: parse auth file */
 	(void)auth_file_opt;
 
-	if (!target_opt) {
+	if (!target_opt && !args->socks5_mode) {
 		fprintf(stderr, "-t option is required\n");
 		return -EINVAL;
 	}
@@ -304,6 +304,9 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 		return -EINVAL;
 	}
 
+	if (args->socks5_mode)
+		return 0;
+		
 	ret = init_addr(target_opt, &args->dst_addr_st);
 	if (ret < 0) {
 		fprintf(stderr, "invalid format for %s\n", target_opt);
