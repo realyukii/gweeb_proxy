@@ -371,7 +371,7 @@ static struct pair_connection *init_pair(void)
 */
 static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 {
-	int client_fd, ret, tsock, flg;
+	int client_fd, ret, tsock;
 	struct epoll_event ev;
 	socklen_t size_addr;
 	struct sockaddr_storage *d = &args->dst_addr_st;
@@ -381,7 +381,7 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 
 	tsock = client_fd = -1;
 	if (args->timeout) {
-		int tmfd;
+		int tmfd, flg;
 		struct itimerspec it = {
 			.it_value = {
 				.tv_sec = args->timeout,
