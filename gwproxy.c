@@ -183,6 +183,17 @@ struct socks5_connect_request {
 	*/
 };
 
+struct socks5_connect_reply {
+	uint8_t ver;
+	uint8_t status;
+	uint8_t rsv;
+	struct socks5_addr bind_addr;
+	/*
+	* since addr member of struct bind_addr use union,
+	* the bind port is not specified explicitly as a struct member.
+	*/
+};
+
 struct gwp_args {
 	struct sockaddr_storage src_addr_st, dst_addr_st;
 	size_t thread_nr;
@@ -1075,13 +1086,18 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 */
 static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 {
+	/* target address to which client connect. */
 	struct sockaddr_storage d;
-	struct sockaddr_in *in;
-	struct sockaddr_in6 *in6;
+	/* bounded address to which client is bound. */
+	struct sockaddr_storage b;
+	struct sockaddr_in *d_in, *b_in;
+	struct sockaddr_in6 *d_in6, *b_in6;
 	struct single_connection *a = &pc->client;
+	struct socks5_connect_reply reply_buf;
 	struct socks5_connect_request *c = (void *)a->buf;
 	int ret, rlen = DEFAULT_BUF_SZ - a->len;
-	size_t fixed_len, expected_len;
+	socklen_t b_sz;
+	size_t fixed_len, expected_len, total_len;
 	uint8_t ipv4_sz = sizeof(c->dst_addr.addr.ipv4),
 	ipv6_sz = sizeof(c->dst_addr.addr.ipv6),
 	domainlen_sz = sizeof(c->dst_addr.addr.domain.len),
@@ -1118,10 +1134,10 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		if (a->len < expected_len)
 			return -EAGAIN;
 
-		in = (struct sockaddr_in *)&d;
-		in->sin_family = AF_INET;
-		in->sin_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv4 + ipv4_sz);
-		memcpy(&in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
+		d_in = (struct sockaddr_in *)&d;
+		d_in->sin_family = AF_INET;
+		d_in->sin_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv4 + ipv4_sz);
+		memcpy(&d_in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
 
 		break;
 	case DOMAIN:
@@ -1135,11 +1151,10 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		if (a->len < expected_len)
 			return -EAGAIN;
 
-		in6 = (struct sockaddr_in6 *)&d;
-		in6->sin6_family = AF_INET;
-		in6->sin6_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv6 + ipv6_sz);
-		asm volatile("int3");
-		memcpy(&in6->sin6_addr, &c->dst_addr.addr.ipv6, ipv6_sz);
+		d_in6 = (struct sockaddr_in6 *)&d;
+		d_in6->sin6_family = AF_INET6;
+		d_in6->sin6_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv6 + ipv6_sz);
+		memcpy(&d_in6->sin6_addr, &c->dst_addr.addr.ipv6, ipv6_sz);
 		break;
 
 	default:
@@ -1147,9 +1162,51 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 	}
 
+	/*
+	* TODO:
+	* check if the connection is successfuly established
+	* or fail before sending a reply
+	*/
 	ret = prepare_exchange(gwp, pc, &d);
 	if (ret < 0)
 		return -EXIT_FAILURE;
+
+	b_sz = sizeof(struct sockaddr_storage);
+	b_in = (struct sockaddr_in *)&b;
+	b_in6 = (struct sockaddr_in6 *)&b;
+
+	getsockname(ret, (struct sockaddr *)&b, &b_sz);
+	switch (b.ss_family) {
+	case AF_INET:
+		total_len = ipv4_sz;
+		reply_buf.bind_addr.type = IPv4;
+		memcpy(&reply_buf.bind_addr.addr.ipv4, &b_in->sin_addr, ipv4_sz);
+		*(uint16_t *)((char *)&reply_buf.bind_addr.addr.ipv4 + ipv4_sz) = b_in->sin_port;
+		break;
+	case AF_INET6:
+		total_len = ipv6_sz;
+		reply_buf.bind_addr.type = IPv6;
+		memcpy(&reply_buf.bind_addr.addr.ipv6, &b_in6->sin6_addr, ipv6_sz);
+		*(uint16_t *)((char *)&reply_buf.bind_addr.addr.ipv6 + ipv6_sz) = b_in6->sin6_port;
+		break;
+	}
+
+	reply_buf.ver = SOCKS5_VER;
+	reply_buf.status = 0x0;
+	reply_buf.rsv = 0x0;
+
+	/* re-use the variable */
+	fixed_len = sizeof(reply_buf) - sizeof(reply_buf.bind_addr.addr) + PORT_SZ;
+	total_len += fixed_len;
+	ret = send(a->sockfd, &reply_buf, total_len, 0);
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return -EAGAIN;
+		perror("send on request connect");
+		return -EXIT_FAILURE;
+	}
+
+	a->len = 0;
 
 	return 0;
 }
