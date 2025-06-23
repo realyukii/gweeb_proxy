@@ -1090,8 +1090,8 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	struct sockaddr_storage d;
 	/* bounded address to which client is bound. */
 	struct sockaddr_storage b;
-	struct sockaddr_in *d_in, *b_in;
-	struct sockaddr_in6 *d_in6, *b_in6;
+	struct sockaddr_in *in;
+	struct sockaddr_in6 *in6;
 	struct single_connection *a = &pc->client;
 	struct socks5_connect_reply reply_buf;
 	struct socks5_connect_request *c = (void *)a->buf;
@@ -1134,10 +1134,10 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		if (a->len < expected_len)
 			return -EAGAIN;
 
-		d_in = (struct sockaddr_in *)&d;
-		d_in->sin_family = AF_INET;
-		d_in->sin_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv4 + ipv4_sz);
-		memcpy(&d_in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
+		in = (struct sockaddr_in *)&d;
+		in->sin_family = AF_INET;
+		in->sin_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv4 + ipv4_sz);
+		memcpy(&in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
 
 		break;
 	case DOMAIN:
@@ -1151,10 +1151,10 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		if (a->len < expected_len)
 			return -EAGAIN;
 
-		d_in6 = (struct sockaddr_in6 *)&d;
-		d_in6->sin6_family = AF_INET6;
-		d_in6->sin6_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv6 + ipv6_sz);
-		memcpy(&d_in6->sin6_addr, &c->dst_addr.addr.ipv6, ipv6_sz);
+		in6 = (struct sockaddr_in6 *)&d;
+		in6->sin6_family = AF_INET6;
+		in6->sin6_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv6 + ipv6_sz);
+		memcpy(&in6->sin6_addr, &c->dst_addr.addr.ipv6, ipv6_sz);
 		break;
 
 	default:
@@ -1172,22 +1172,22 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 
 	b_sz = sizeof(struct sockaddr_storage);
-	b_in = (struct sockaddr_in *)&b;
-	b_in6 = (struct sockaddr_in6 *)&b;
+	in = (struct sockaddr_in *)&b;
+	in6 = (struct sockaddr_in6 *)&b;
 
 	getsockname(ret, (struct sockaddr *)&b, &b_sz);
 	switch (b.ss_family) {
 	case AF_INET:
 		total_len = ipv4_sz;
 		reply_buf.bind_addr.type = IPv4;
-		memcpy(&reply_buf.bind_addr.addr.ipv4, &b_in->sin_addr, ipv4_sz);
-		*(uint16_t *)((char *)&reply_buf.bind_addr.addr.ipv4 + ipv4_sz) = b_in->sin_port;
+		memcpy(&reply_buf.bind_addr.addr.ipv4, &in->sin_addr, ipv4_sz);
+		*(uint16_t *)((char *)&reply_buf.bind_addr.addr.ipv4 + ipv4_sz) = in->sin_port;
 		break;
 	case AF_INET6:
 		total_len = ipv6_sz;
 		reply_buf.bind_addr.type = IPv6;
-		memcpy(&reply_buf.bind_addr.addr.ipv6, &b_in6->sin6_addr, ipv6_sz);
-		*(uint16_t *)((char *)&reply_buf.bind_addr.addr.ipv6 + ipv6_sz) = b_in6->sin6_port;
+		memcpy(&reply_buf.bind_addr.addr.ipv6, &in6->sin6_addr, ipv6_sz);
+		*(uint16_t *)((char *)&reply_buf.bind_addr.addr.ipv6 + ipv6_sz) = in6->sin6_port;
 		break;
 	}
 
