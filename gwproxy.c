@@ -954,7 +954,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
 		if (ret < 0) {
 			if (errno == EAGAIN)
-				return 0;
+				return EAGAIN;
 			perror("recv");
 			goto exit_err;
 		}
@@ -986,20 +986,25 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 auth_method_found:
 		pc->preferred_method = preferred_auth;
 		pc->state = STATE_GREETING_ACCEPTED;
+		a->len = 0;
 	}
 
 	if (pc->state == STATE_GREETING_ACCEPTED) {
 		char server_choice[2];
+		a->len = 2;
 		server_choice[0] = SOCKS5_VER;
 		server_choice[1] = pc->preferred_method;
-		// TODO: handle short-send
-		ret = send(a->sockfd, server_choice, sizeof(server_choice), 0);
+		ret = send(a->sockfd, server_choice, a->len, 0);
 		if (ret < 0) {
 			if (errno == EAGAIN)
-				return 0;
+				return EAGAIN;
 
 			goto exit_err;
 		}
+		a->len -= ret;
+		if (a->len)
+			return EAGAIN;
+
 		asm volatile("int3");
 		/* for testing purpose, assume no auth is performed */
 		pc->state = STATE_REQUEST;
