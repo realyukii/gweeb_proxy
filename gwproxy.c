@@ -951,6 +951,62 @@ static int exchange_data(struct epoll_event *ev, struct pair_connection *pc,
 }
 
 /*
+* Handshake with the client.
+*
+* @param pc Pointer to pair_connection struct of current session.
+* @return zero on success, and a negative integer on failure.
+*/
+static int accept_greeting(struct pair_connection *pc)
+{
+	struct single_connection *a = &pc->client;
+	struct socks5_greeting *g = (void *)a->buf;
+	uint8_t *ptr;
+	unsigned preferred_auth = NONE;
+	int ret, i, rlen = DEFAULT_BUF_SZ - a->len;
+
+	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return -EAGAIN;
+		perror("recv");
+		return -EXIT_FAILURE;
+	}
+	a->len += ret;
+	if (a->len < 2)
+		return -EAGAIN;
+
+	if (g->ver != SOCKS5_VER) {
+		pr_debug(VERBOSE, "unsupported socks version.\n");
+		return -EXIT_FAILURE;
+	}
+	
+	if (g->nauth == 0) {
+		pr_debug(VERBOSE, "invalid value in field nauth.\n");
+		return -EXIT_FAILURE;
+	}
+
+	if (a->len - 2 < g->nauth)
+		return -EAGAIN;
+
+	ptr = &g->nauth + 1;
+	for (i = 0; i < g->nauth; i++, ptr++) {
+		switch (*ptr) {
+		case NO_AUTH:
+			preferred_auth = NO_AUTH;
+			goto auth_method_found;
+		case USERNAME_PWD:
+			preferred_auth = USERNAME_PWD;
+			goto auth_method_found;
+		}
+	}
+
+auth_method_found:
+	pc->preferred_method = preferred_auth;
+
+	return 0;
+}
+
+/*
 * Preparation before exchanging data.
 *
 * connecting to either the configured target supplied from cmdline args
@@ -1009,49 +1065,12 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			goto exit_err;
 		pc->state = STATE_EXCHANGE;
 	} else if (pc->state == STATE_ACCEPT_GREETING) {
-		struct socks5_greeting *g = (void *)a->buf;
-		uint8_t *ptr;
-		unsigned preferred_auth = NONE;
-		int i, rlen = DEFAULT_BUF_SZ - a->len;
-
-		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
+		ret = accept_greeting(pc);
 		if (ret < 0) {
-			if (errno == EAGAIN)
+			if (ret == -EAGAIN)
 				return EAGAIN;
-			perror("recv");
 			goto exit_err;
 		}
-		a->len += ret;
-		if (a->len < 2)
-			return EAGAIN;
-
-		if (g->ver != SOCKS5_VER) {
-			pr_debug(VERBOSE, "unsupported socks version.\n");
-			goto exit_err;
-		}
-		
-		if (g->nauth == 0) {
-			pr_debug(VERBOSE, "invalid value in field nauth.\n");
-			goto exit_err;
-		}
-
-		if (a->len - 2 < g->nauth)
-			return EAGAIN;
-
-		ptr = &g->nauth + 1;
-		for (i = 0; i < g->nauth; i++, ptr++) {
-			switch (*ptr) {
-			case NO_AUTH:
-				preferred_auth = NO_AUTH;
-				goto auth_method_found;
-			case USERNAME_PWD:
-				preferred_auth = USERNAME_PWD;
-				goto auth_method_found;
-			}
-		}
-
-auth_method_found:
-		pc->preferred_method = preferred_auth;
 		pc->state = STATE_GREETING_ACCEPTED;
 	}
 
