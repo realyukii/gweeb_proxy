@@ -1116,9 +1116,10 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		expected_len = fixed_len + ipv4_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
+
 		in = (struct sockaddr_in *)&d;
 		in->sin_family = AF_INET;
-		in->sin_port = (uint16_t)(&c->dst_addr.addr.ipv4 + ipv4_sz);
+		in->sin_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv4 + ipv4_sz);
 		asm volatile("int3");
 		memcpy(&in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
 
