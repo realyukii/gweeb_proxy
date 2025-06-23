@@ -951,6 +951,35 @@ static int exchange_data(struct epoll_event *ev, struct pair_connection *pc,
 }
 
 /*
+* Preparation before exchanging data.
+*
+* connecting to either the configured target supplied from cmdline args
+* or the specified target by client in socks5 mode.
+*
+* @param gwp Pointer to the gwproxy struct (thread data).
+* @param pc Pointer that need to be saved 
+* @param dst the address structure to which the client connects.
+* @return sockfd on success, or a negative integer on failure.
+*/
+static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
+				struct sockaddr_storage *dst)
+{
+	int ret, tsock = set_target(dst);
+	if (tsock < 0)
+		return -EXIT_FAILURE;
+
+	pc->target.sockfd = tsock;
+	ret = register_events(tsock, gwp->epfd, pc->target.epmask,
+				pc, EV_BIT_TARGET);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		return -EXIT_FAILURE;
+	}
+
+	return tsock;
+}
+
+/*
 * Process epoll event from tcp connection.
 *
 * currently, this function handle:
@@ -975,18 +1004,10 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		goto exit_err;
 
 	if (pc->state == NO_SOCKS5) {
-		tsock = set_target(d);
+		tsock = prepare_exchange(gwp, pc, d);
 		if (tsock < 0)
 			goto exit_err;
 		pc->state = STATE_EXCHANGE;
-
-		pc->target.sockfd = tsock;
-		ret = register_events(tsock, gwp->epfd, pc->target.epmask,
-					pc, EV_BIT_TARGET);
-		if (ret < 0) {
-			perror("epoll_ctl");
-			goto exit_err;
-		}
 	} else if (pc->state == STATE_ACCEPT_GREETING) {
 		struct socks5_greeting *g = (void *)a->buf;
 		uint8_t *ptr;
