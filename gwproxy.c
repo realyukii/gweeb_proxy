@@ -1070,6 +1070,7 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 * Handle client's connect request, evaluate it and return a reply.
 *
 * @param pc Pointer to pair_connection struct of current session.
+* @param gwp Pointer to the gwproxy struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
 static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
@@ -1120,7 +1121,6 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		in = (struct sockaddr_in *)&d;
 		in->sin_family = AF_INET;
 		in->sin_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv4 + ipv4_sz);
-		asm volatile("int3");
 		memcpy(&in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
 
 		break;
@@ -1128,6 +1128,7 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		expected_len = fixed_len + domainlen_sz + domainname_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
+		/* TODO: resolve domain name */
 		break;
 	case IPv6:
 		expected_len = fixed_len + ipv6_sz;
