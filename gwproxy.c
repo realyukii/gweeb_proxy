@@ -697,7 +697,7 @@ static int handle_data(struct single_connection *from,
 					goto try_send;
 				return 0;
 			}
-			perror("recv");
+			perror("recv on handle data");
 			return -EXIT_FAILURE;
 		} else if (!ret)
 			return -EXIT_FAILURE;
@@ -717,7 +717,7 @@ try_send:
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
 				return 0;
-			perror("send");
+			perror("send on handle data");
 			return -EXIT_FAILURE;
 		} else if (!ret)
 			return -EXIT_FAILURE;
@@ -980,7 +980,7 @@ static int accept_greeting(struct pair_connection *pc)
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
-		perror("recv");
+		perror("recv on accept greeting");
 		return -EXIT_FAILURE;
 	}
 	a->len += ret;
@@ -1037,7 +1037,7 @@ static int response_handshake(struct pair_connection *pc)
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
-		perror("send");
+		perror("send on response handshake");
 		return -EXIT_FAILURE;
 	}
 
@@ -1107,7 +1107,7 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
-		perror("recv");
+		perror("recv on request connect");
 		return -EXIT_FAILURE;
 	}
 
