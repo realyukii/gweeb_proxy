@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #define SOCKS5_VER 5
+#define MAX_DOMAIN_LEN 255
 #define MAX_FILEPATH 1024
 #define DEFAULT_TIMEOUT 5
 #define DEFAULT_THREAD_NR 4
@@ -64,6 +65,22 @@ enum auth_type {
 	// GSSAPI, not supported yet
 	USERNAME_PWD = 0x2,
 	NONE = 0xFF
+};
+
+enum cmd_type {
+	/*
+	* we will focus on CONNECT first,
+	* the rest implementation can follow later.
+	*/
+	CONNECT = 1,
+	// BIND = 2,
+	// UDP_ASSOCIATE = 3
+};
+
+enum addr_type {
+	IPv4 = 1,
+	DOMAIN = 3,
+	IPv6 = 4
 };
 
 #define ALL_EV_BIT	(EV_BIT_CLIENT | EV_BIT_TARGET | EV_BIT_TIMER)
@@ -137,8 +154,32 @@ struct gwproxy {
 };
 
 struct socks5_greeting {
-	unsigned char ver;
-	unsigned char nauth;
+	uint8_t ver;
+	uint8_t nauth;
+};
+
+struct socks5_addr {
+	/* see the available type in enum addr_type */
+	uint8_t type;
+	union {
+		uint8_t ipv4[4];
+		struct {
+			uint8_t len;
+			char domain[MAX_DOMAIN_LEN];
+		} domain;
+		uint8_t ipv6[16];
+	} addr;
+};
+
+struct socks5_connection_request {
+	uint8_t ver;
+	uint8_t cmd;
+	uint8_t rsv;
+	struct socks5_addr dst_addr;
+	/*
+	* since addr member of struct dst_addr use union,
+	* the destination port is not specified explicitly as a struct member.
+	*/
 };
 
 struct gwp_args {
@@ -948,7 +989,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		}
 	} else if (pc->state == STATE_ACCEPT_GREETING) {
 		struct socks5_greeting *g = (void *)a->buf;
-		unsigned char *ptr;
+		uint8_t *ptr;
 		unsigned preferred_auth = NONE;
 		int i, rlen = DEFAULT_BUF_SZ - a->len;
 
@@ -1005,15 +1046,16 @@ auth_method_found:
 		if (a->len)
 			return EAGAIN;
 
-		asm volatile("int3");
-		/* for testing purpose, assume no auth is performed */
+		/* focus for no auth first, assume no auth is performed */
 		pc->state = STATE_REQUEST;
 	}
 
 	if (pc->state == STATE_AUTH) {}
 
 	if (pc->state == STATE_REQUEST) {
+		struct socks5_connection_request *c = (void *)a->buf;
 		int rlen = DEFAULT_BUF_SZ - a->len;
+		size_t fixed_len, expected_len;
 
 		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
 		if (ret < 0) {
@@ -1023,9 +1065,52 @@ auth_method_found:
 			goto exit_err;
 		}
 
-		asm volatile("int3");
-		puts("TODO: handle state request");
+		a->len += ret;
+		fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr);
+		if (a->len < fixed_len)
+			return EAGAIN;
+
+		if (c->ver != SOCKS5_VER) {
+			pr_debug(VERBOSE, "unsupported socks version.\n");
+			goto exit_err;
+		}
 		
+		if (c->cmd != CONNECT) {
+			pr_debug(VERBOSE, "unsupported command, yet.\n");
+			goto exit_err;
+		}
+
+		char buf[255];
+		switch (c->dst_addr.type) {
+		case IPv4:
+			expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv4);
+			if (a->len < expected_len)
+				return EAGAIN;
+			inet_ntop(AF_INET, c->dst_addr.addr.ipv4, buf, INET_ADDRSTRLEN);
+			write(STDOUT_FILENO, buf, INET_ADDRSTRLEN);
+			break;
+		case DOMAIN:
+			expected_len = fixed_len + sizeof(c->dst_addr.addr.domain.len) + c->dst_addr.addr.domain.len;
+			if (a->len < expected_len)
+				return EAGAIN;
+			write(STDOUT_FILENO, c->dst_addr.addr.domain.domain, c->dst_addr.addr.domain.len);
+			break;
+		case IPv6:
+			expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv6);
+			if (a->len < expected_len)
+				return EAGAIN;
+			inet_ntop(AF_INET6, c->dst_addr.addr.ipv6, buf, INET6_ADDRSTRLEN);
+			printf("%s", buf);
+			break;
+
+		default:
+			pr_debug(VERBOSE, "unknown address type.\n");
+			goto exit_err;
+		}
+
+		puts("");
+		/* for testing purposes, print the address and close the session */
+		goto exit_err;
 	}
 
 	if (pc->state == STATE_EXCHANGE) {
