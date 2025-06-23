@@ -987,7 +987,6 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 auth_method_found:
 		pc->preferred_method = preferred_auth;
 		pc->state = STATE_GREETING_ACCEPTED;
-		a->len = 0;
 	}
 
 	if (pc->state == STATE_GREETING_ACCEPTED) {
