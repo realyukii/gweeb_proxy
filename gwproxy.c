@@ -1037,7 +1037,7 @@ static int response_handshake(struct pair_connection *pc)
 }
 
 /*
-* Handle client's connect request.
+* Handle client's connect request, evaluate it and return a reply.
 *
 * @param pc Pointer to pair_connection struct of current session.
 * @return zero on success, or a negative integer on failure.
@@ -1149,7 +1149,6 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			struct gwp_args *args)
 {
 	int ret, tsock;
-	struct sockaddr_storage *d = &args->dst_addr_st;
 	struct pair_connection *pc;
 	struct single_connection *a, *b;
 
@@ -1158,7 +1157,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		goto exit_err;
 
 	if (pc->state == NO_SOCKS5) {
-		tsock = prepare_exchange(gwp, pc, d);
+		tsock = prepare_exchange(gwp, pc, &args->dst_addr_st);
 		if (tsock < 0)
 			goto exit_err;
 
