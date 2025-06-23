@@ -1048,6 +1048,10 @@ static int request_connect(struct pair_connection *pc)
 	struct socks5_connection_request *c = (void *)a->buf;
 	int ret, rlen = DEFAULT_BUF_SZ - a->len;
 	size_t fixed_len, expected_len;
+	uint8_t ipv4_sz = sizeof(c->dst_addr.addr.ipv4),
+	ipv6_sz = sizeof(c->dst_addr.addr.ipv6),
+	domainlen_sz = sizeof(c->dst_addr.addr.domain.len),
+	domainname_sz;
 
 	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
 	if (ret < 0) {
@@ -1072,20 +1076,20 @@ static int request_connect(struct pair_connection *pc)
 		return -EXIT_FAILURE;
 	}
 
-	char buf[255];
+	domainname_sz = c->dst_addr.addr.domain.len;
 	switch (c->dst_addr.type) {
 	case IPv4:
-		expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv4);
+		expected_len = fixed_len + ipv4_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
 		break;
 	case DOMAIN:
-		expected_len = fixed_len + sizeof(c->dst_addr.addr.domain.len) + c->dst_addr.addr.domain.len;
+		expected_len = fixed_len + domainlen_sz + domainname_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
 		break;
 	case IPv6:
-		expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv6);
+		expected_len = fixed_len + ipv6_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
 		break;
