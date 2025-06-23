@@ -1038,6 +1038,35 @@ static int response_handshake(struct pair_connection *pc)
 }
 
 /*
+* Preparation before exchanging data.
+*
+* connecting to either the configured target supplied from cmdline args
+* or the specified target by client in socks5 mode.
+*
+* @param gwp Pointer to the gwproxy struct (thread data).
+* @param pc Pointer that need to be saved 
+* @param dst the address structure to which the client connects.
+* @return sockfd on success, or a negative integer on failure.
+*/
+static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
+				struct sockaddr_storage *dst)
+{
+	int ret, tsock = set_target(dst);
+	if (tsock < 0)
+		return -EXIT_FAILURE;
+
+	pc->target.sockfd = tsock;
+	ret = register_events(tsock, gwp->epfd, pc->target.epmask,
+				pc, EV_BIT_TARGET);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		return -EXIT_FAILURE;
+	}
+
+	return tsock;
+}
+
+/*
 * Handle client's connect request, evaluate it and return a reply.
 *
 * @param pc Pointer to pair_connection struct of current session.
@@ -1114,35 +1143,6 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 
 	return 0;
-}
-
-/*
-* Preparation before exchanging data.
-*
-* connecting to either the configured target supplied from cmdline args
-* or the specified target by client in socks5 mode.
-*
-* @param gwp Pointer to the gwproxy struct (thread data).
-* @param pc Pointer that need to be saved 
-* @param dst the address structure to which the client connects.
-* @return sockfd on success, or a negative integer on failure.
-*/
-static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
-				struct sockaddr_storage *dst)
-{
-	int ret, tsock = set_target(dst);
-	if (tsock < 0)
-		return -EXIT_FAILURE;
-
-	pc->target.sockfd = tsock;
-	ret = register_events(tsock, gwp->epfd, pc->target.epmask,
-				pc, EV_BIT_TARGET);
-	if (ret < 0) {
-		perror("epoll_ctl");
-		return -EXIT_FAILURE;
-	}
-
-	return tsock;
 }
 
 /*
