@@ -1037,6 +1037,75 @@ static int response_handshake(struct pair_connection *pc)
 }
 
 /*
+* Handle client's connect request.
+*
+* @param pc Pointer to pair_connection struct of current session.
+* @return zero on success, or a negative integer on failure.
+*/
+static int request_connect(struct pair_connection *pc)
+{
+	struct single_connection *a = &pc->client;
+	struct socks5_connection_request *c = (void *)a->buf;
+	int ret, rlen = DEFAULT_BUF_SZ - a->len;
+	size_t fixed_len, expected_len;
+
+	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return -EAGAIN;
+		perror("recv");
+		return -EXIT_FAILURE;
+	}
+
+	a->len += ret;
+	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr);
+	if (a->len < fixed_len)
+		return -EAGAIN;
+
+	if (c->ver != SOCKS5_VER) {
+		pr_debug(VERBOSE, "unsupported socks version.\n");
+		return -EXIT_FAILURE;
+	}
+
+	if (c->cmd != CONNECT) {
+		pr_debug(VERBOSE, "unsupported command, yet.\n");
+		return -EXIT_FAILURE;
+	}
+
+	char buf[255];
+	switch (c->dst_addr.type) {
+	case IPv4:
+		expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv4);
+		if (a->len < expected_len)
+			return -EAGAIN;
+		inet_ntop(AF_INET, c->dst_addr.addr.ipv4, buf, INET_ADDRSTRLEN);
+		write(STDOUT_FILENO, buf, INET_ADDRSTRLEN);
+		break;
+	case DOMAIN:
+		expected_len = fixed_len + sizeof(c->dst_addr.addr.domain.len) + c->dst_addr.addr.domain.len;
+		if (a->len < expected_len)
+			return -EAGAIN;
+		write(STDOUT_FILENO, c->dst_addr.addr.domain.domain, c->dst_addr.addr.domain.len);
+		break;
+	case IPv6:
+		expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv6);
+		if (a->len < expected_len)
+			return -EAGAIN;
+		inet_ntop(AF_INET6, c->dst_addr.addr.ipv6, buf, INET6_ADDRSTRLEN);
+		printf("%s", buf);
+		break;
+
+	default:
+		pr_debug(VERBOSE, "unknown address type.\n");
+		return -EXIT_FAILURE;
+	}
+
+	puts("");
+	/* for testing purposes, print the address and close the session */
+	return -EXIT_FAILURE;
+}
+
+/*
 * Preparation before exchanging data.
 *
 * connecting to either the configured target supplied from cmdline args
@@ -1095,6 +1164,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		tsock = prepare_exchange(gwp, pc, d);
 		if (tsock < 0)
 			goto exit_err;
+
 		pc->state = STATE_EXCHANGE;
 	} else if (pc->state == STATE_ACCEPT_GREETING) {
 		ret = accept_greeting(pc);
@@ -1103,6 +1173,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 				return EAGAIN;
 			goto exit_err;
 		}
+
 		pc->state = STATE_GREETING_ACCEPTED;
 	}
 
@@ -1121,64 +1192,14 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	if (pc->state == STATE_AUTH) {}
 
 	if (pc->state == STATE_REQUEST) {
-		struct socks5_connection_request *c = (void *)a->buf;
-		int rlen = DEFAULT_BUF_SZ - a->len;
-		size_t fixed_len, expected_len;
-
-		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
+		ret = request_connect(pc);
 		if (ret < 0) {
-			if (errno == EAGAIN)
+			if (ret == -EAGAIN)
 				return EAGAIN;
-			perror("recv");
 			goto exit_err;
 		}
 
-		a->len += ret;
-		fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr);
-		if (a->len < fixed_len)
-			return EAGAIN;
-
-		if (c->ver != SOCKS5_VER) {
-			pr_debug(VERBOSE, "unsupported socks version.\n");
-			goto exit_err;
-		}
-		
-		if (c->cmd != CONNECT) {
-			pr_debug(VERBOSE, "unsupported command, yet.\n");
-			goto exit_err;
-		}
-
-		char buf[255];
-		switch (c->dst_addr.type) {
-		case IPv4:
-			expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv4);
-			if (a->len < expected_len)
-				return EAGAIN;
-			inet_ntop(AF_INET, c->dst_addr.addr.ipv4, buf, INET_ADDRSTRLEN);
-			write(STDOUT_FILENO, buf, INET_ADDRSTRLEN);
-			break;
-		case DOMAIN:
-			expected_len = fixed_len + sizeof(c->dst_addr.addr.domain.len) + c->dst_addr.addr.domain.len;
-			if (a->len < expected_len)
-				return EAGAIN;
-			write(STDOUT_FILENO, c->dst_addr.addr.domain.domain, c->dst_addr.addr.domain.len);
-			break;
-		case IPv6:
-			expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv6);
-			if (a->len < expected_len)
-				return EAGAIN;
-			inet_ntop(AF_INET6, c->dst_addr.addr.ipv6, buf, INET6_ADDRSTRLEN);
-			printf("%s", buf);
-			break;
-
-		default:
-			pr_debug(VERBOSE, "unknown address type.\n");
-			goto exit_err;
-		}
-
-		puts("");
-		/* for testing purposes, print the address and close the session */
-		goto exit_err;
+		pc->state = STATE_EXCHANGE;
 	}
 
 	if (pc->state == STATE_EXCHANGE) {
