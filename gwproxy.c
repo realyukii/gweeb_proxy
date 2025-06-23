@@ -1074,7 +1074,7 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 */
 static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 {
-	struct sockaddr_storage *d;
+	struct sockaddr_storage d;
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
 	struct single_connection *a = &pc->client;
@@ -1110,12 +1110,13 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	}
 
 	domainname_sz = c->dst_addr.addr.domain.len;
+	memset(&d, 0, sizeof(d));
 	switch (c->dst_addr.type) {
 	case IPv4:
 		expected_len = fixed_len + ipv4_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
-		in = (struct sockaddr_in *)d;
+		in = (struct sockaddr_in *)&d;
 		in->sin_family = AF_INET;
 		in->sin_port = (uint16_t)(&c->dst_addr.addr.ipv4 + ipv4_sz);
 		asm volatile("int3");
@@ -1138,7 +1139,7 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 	}
 
-	ret = prepare_exchange(gwp, pc, d);
+	ret = prepare_exchange(gwp, pc, &d);
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
