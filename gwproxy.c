@@ -622,7 +622,7 @@ static int handle_data(struct single_connection *from,
 {
 	ssize_t ret;
 	size_t rlen;
-	
+
 	/* length of empty buffer */
 	rlen = DEFAULT_BUF_SZ - from->len;
 	pr_debug(
@@ -650,7 +650,8 @@ static int handle_data(struct single_connection *from,
 			return -EXIT_FAILURE;
 
 		from->len += (size_t)ret;
-		VT_HEXDUMP(from->buf, from->len);
+		if (DEBUG_LVL == VERBOSE)
+			VT_HEXDUMP(from->buf, from->len);
 		pr_debug(DEBUG_EPOLL_EVENTS, "buffer filled with %ld bytes\n", from->len);
 	}
 
