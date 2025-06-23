@@ -12,6 +12,7 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
+#define PORT_SZ 2
 #define SOCKS5_VER 5
 #define MAX_DOMAIN_LEN 255
 #define MAX_FILEPATH 1024
@@ -1042,8 +1043,11 @@ static int response_handshake(struct pair_connection *pc)
 * @param pc Pointer to pair_connection struct of current session.
 * @return zero on success, or a negative integer on failure.
 */
-static int request_connect(struct pair_connection *pc)
+static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 {
+	struct sockaddr_storage *d;
+	struct sockaddr_in *in;
+	struct sockaddr_in6 *in6;
 	struct single_connection *a = &pc->client;
 	struct socks5_connection_request *c = (void *)a->buf;
 	int ret, rlen = DEFAULT_BUF_SZ - a->len;
@@ -1062,7 +1066,7 @@ static int request_connect(struct pair_connection *pc)
 	}
 
 	a->len += ret;
-	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr);
+	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
 	if (a->len < fixed_len)
 		return -EAGAIN;
 
@@ -1082,6 +1086,12 @@ static int request_connect(struct pair_connection *pc)
 		expected_len = fixed_len + ipv4_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
+		in = (struct sockaddr_in *)d;
+		in->sin_family = AF_INET;
+		in->sin_port = (uint16_t)(&c->dst_addr.addr.ipv4 + ipv4_sz);
+		asm volatile("int3");
+		memcpy(&in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
+
 		break;
 	case DOMAIN:
 		expected_len = fixed_len + domainlen_sz + domainname_sz;
@@ -1098,6 +1108,10 @@ static int request_connect(struct pair_connection *pc)
 		pr_debug(VERBOSE, "unknown address type.\n");
 		return -EXIT_FAILURE;
 	}
+
+	ret = prepare_exchange(gwp, pc, d);
+	if (ret < 0)
+		return -EXIT_FAILURE;
 
 	return 0;
 }
@@ -1188,7 +1202,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	if (pc->state == STATE_AUTH) {}
 
 	if (pc->state == STATE_REQUEST) {
-		ret = request_connect(pc);
+		ret = request_connect(pc, gwp);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				return EAGAIN;
