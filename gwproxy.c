@@ -1004,11 +1004,15 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		if (a->len < 2)
 			return EAGAIN;
 
-		if (g->ver != SOCKS5_VER)
+		if (g->ver != SOCKS5_VER) {
+			pr_debug(VERBOSE, "unsupported socks version.\n");
 			goto exit_err;
+		}
 		
-		if (g->nauth == 0)
+		if (g->nauth == 0) {
+			pr_debug(VERBOSE, "invalid value in field nauth.\n");
 			goto exit_err;
+		}
 
 		if (a->len - 2 < g->nauth)
 			return EAGAIN;
@@ -1039,7 +1043,7 @@ auth_method_found:
 		if (ret < 0) {
 			if (errno == EAGAIN)
 				return EAGAIN;
-
+			perror("send");
 			goto exit_err;
 		}
 		a->len -= ret;
