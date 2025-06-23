@@ -1019,7 +1019,7 @@ auth_method_found:
 		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
 		if (ret < 0) {
 			if (errno == EAGAIN)
-				return 0;
+				return EAGAIN;
 			perror("recv");
 			goto exit_err;
 		}
