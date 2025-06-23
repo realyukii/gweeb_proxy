@@ -1132,6 +1132,12 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		expected_len = fixed_len + ipv6_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
+
+		in6 = (struct sockaddr_in6 *)&d;
+		in6->sin6_family = AF_INET;
+		in6->sin6_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv6 + ipv6_sz);
+		asm volatile("int3");
+		memcpy(&in6->sin6_addr, &c->dst_addr.addr.ipv6, ipv6_sz);
 		break;
 
 	default:
