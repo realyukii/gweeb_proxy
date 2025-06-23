@@ -1007,6 +1007,36 @@ auth_method_found:
 }
 
 /*
+* Send a response to the client's greeting.
+*
+* @param pc Pointer to pair_connection struct of current session.
+* @return zero on success, or a negative integer on failure.
+*/
+static int response_handshake(struct pair_connection *pc)
+{
+	struct single_connection *a = &pc->client;
+	char server_choice[2];
+	int ret;
+
+	a->len = 2;
+	server_choice[0] = SOCKS5_VER;
+	server_choice[1] = pc->preferred_method;
+	ret = send(a->sockfd, server_choice, a->len, 0);
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return -EAGAIN;
+		perror("send");
+		return -EXIT_FAILURE;
+	}
+
+	a->len -= ret;
+	if (a->len)
+		return -EAGAIN;
+
+	return 0;
+}
+
+/*
 * Preparation before exchanging data.
 *
 * connecting to either the configured target supplied from cmdline args
@@ -1075,20 +1105,12 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	}
 
 	if (pc->state == STATE_GREETING_ACCEPTED) {
-		char server_choice[2];
-		a->len = 2;
-		server_choice[0] = SOCKS5_VER;
-		server_choice[1] = pc->preferred_method;
-		ret = send(a->sockfd, server_choice, a->len, 0);
+		ret = response_handshake(pc);
 		if (ret < 0) {
-			if (errno == EAGAIN)
+			if (ret == -EAGAIN)
 				return EAGAIN;
-			perror("send");
 			goto exit_err;
 		}
-		a->len -= ret;
-		if (a->len)
-			return EAGAIN;
 
 		/* focus for no auth first, assume no auth is performed */
 		pc->state = STATE_REQUEST;
