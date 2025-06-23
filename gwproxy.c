@@ -187,10 +187,10 @@ struct socks5_connect_reply {
 	uint8_t ver;
 	uint8_t status;
 	uint8_t rsv;
-	struct socks5_addr bind_addr;
+	struct socks5_addr bnd_addr;
 	/*
-	* since addr member of struct bind_addr use union,
-	* the bind port is not specified explicitly as a struct member.
+	* since addr member of struct bnd_addr use union,
+	* the bnd port is not specified explicitly as a struct member.
 	*/
 };
 
@@ -1086,9 +1086,9 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 */
 static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 {
-	/* target address to which client connect. */
+	/* target address to which the client connect. */
 	struct sockaddr_storage d;
-	/* bounded address to which client is bound. */
+	/* bounded address to which the target is bound. */
 	struct sockaddr_storage b;
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
@@ -1179,15 +1179,15 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	switch (b.ss_family) {
 	case AF_INET:
 		total_len = ipv4_sz;
-		reply_buf.bind_addr.type = IPv4;
-		memcpy(&reply_buf.bind_addr.addr.ipv4, &in->sin_addr, ipv4_sz);
-		*(uint16_t *)((char *)&reply_buf.bind_addr.addr.ipv4 + ipv4_sz) = in->sin_port;
+		reply_buf.bnd_addr.type = IPv4;
+		memcpy(&reply_buf.bnd_addr.addr.ipv4, &in->sin_addr, ipv4_sz);
+		*(uint16_t *)((char *)&reply_buf.bnd_addr.addr.ipv4 + ipv4_sz) = in->sin_port;
 		break;
 	case AF_INET6:
 		total_len = ipv6_sz;
-		reply_buf.bind_addr.type = IPv6;
-		memcpy(&reply_buf.bind_addr.addr.ipv6, &in6->sin6_addr, ipv6_sz);
-		*(uint16_t *)((char *)&reply_buf.bind_addr.addr.ipv6 + ipv6_sz) = in6->sin6_port;
+		reply_buf.bnd_addr.type = IPv6;
+		memcpy(&reply_buf.bnd_addr.addr.ipv6, &in6->sin6_addr, ipv6_sz);
+		*(uint16_t *)((char *)&reply_buf.bnd_addr.addr.ipv6 + ipv6_sz) = in6->sin6_port;
 		break;
 	}
 
@@ -1196,7 +1196,7 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	reply_buf.rsv = 0x0;
 
 	/* re-use the variable */
-	fixed_len = sizeof(reply_buf) - sizeof(reply_buf.bind_addr.addr) + PORT_SZ;
+	fixed_len = sizeof(reply_buf) - sizeof(reply_buf.bnd_addr.addr) + PORT_SZ;
 	total_len += fixed_len;
 	ret = send(a->sockfd, &reply_buf, total_len, 0);
 	if (ret < 0) {
