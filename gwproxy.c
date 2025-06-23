@@ -1078,21 +1078,16 @@ static int request_connect(struct pair_connection *pc)
 		expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv4);
 		if (a->len < expected_len)
 			return -EAGAIN;
-		inet_ntop(AF_INET, c->dst_addr.addr.ipv4, buf, INET_ADDRSTRLEN);
-		write(STDOUT_FILENO, buf, INET_ADDRSTRLEN);
 		break;
 	case DOMAIN:
 		expected_len = fixed_len + sizeof(c->dst_addr.addr.domain.len) + c->dst_addr.addr.domain.len;
 		if (a->len < expected_len)
 			return -EAGAIN;
-		write(STDOUT_FILENO, c->dst_addr.addr.domain.domain, c->dst_addr.addr.domain.len);
 		break;
 	case IPv6:
 		expected_len = fixed_len + sizeof(c->dst_addr.addr.ipv6);
 		if (a->len < expected_len)
 			return -EAGAIN;
-		inet_ntop(AF_INET6, c->dst_addr.addr.ipv6, buf, INET6_ADDRSTRLEN);
-		printf("%s", buf);
 		break;
 
 	default:
@@ -1100,9 +1095,7 @@ static int request_connect(struct pair_connection *pc)
 		return -EXIT_FAILURE;
 	}
 
-	puts("");
-	/* for testing purposes, print the address and close the session */
-	return -EXIT_FAILURE;
+	return 0;
 }
 
 /*
