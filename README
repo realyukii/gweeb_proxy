@@ -10,3 +10,6 @@ ab -k -n 40000 -c 20000 http://[::1]:8080/zero & ab -k -n 40000 -c 20000 http://
 some tweak is needed:
 - sudo sysctl net.ipv4.ip_local_port_range="4000 65535"
 see: https://t.me/GNUWeeb/1174855
+
+UPDATE: https://t.me/GNUWeeb/1176752
+the project is extended to support socks5 proxy, see the help message for usage.
