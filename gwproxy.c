@@ -172,7 +172,7 @@ struct socks5_addr {
 	} addr;
 };
 
-struct socks5_connection_request {
+struct socks5_connect_request {
 	uint8_t ver;
 	uint8_t cmd;
 	uint8_t rsv;
@@ -1079,7 +1079,7 @@ static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
 	struct single_connection *a = &pc->client;
-	struct socks5_connection_request *c = (void *)a->buf;
+	struct socks5_connect_request *c = (void *)a->buf;
 	int ret, rlen = DEFAULT_BUF_SZ - a->len;
 	size_t fixed_len, expected_len;
 	uint8_t ipv4_sz = sizeof(c->dst_addr.addr.ipv4),
