@@ -1071,6 +1071,8 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 * currently, this function handle:
 * - connection established from EINPROGRESS (EPOLLOUT).
 * - socket that ready to read or write (EPOLLIN or EPOLLOUT).
+*   * communication on simple TCP proxy with pre-defined target.
+*   * communication on socks5 protocol.
 *
 * @param ev Pointer to epoll event structure.
 * @param gwp Pointer to the gwproxy struct (thread data).
