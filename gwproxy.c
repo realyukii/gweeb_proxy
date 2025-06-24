@@ -1241,7 +1241,11 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 
 	total_len = craft_reply(&reply_buf, &d, ret);
-	/* re-use the variable */
+	/*
+	* re-use the variable.
+	* actually the value is the same as fixed_len at request
+	* but this is just to emphasize.
+	*/
 	fixed_len = sizeof(reply_buf) - sizeof(reply_buf.bnd_addr.addr) + PORT_SZ;
 	total_len += fixed_len;
 	ret = send(a->sockfd, &reply_buf, total_len, 0);
