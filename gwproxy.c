@@ -1178,18 +1178,23 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 */
 static int parse_request(struct single_connection *a, struct sockaddr_storage *d)
 {
-	struct socks5_connect_request *c = (void *)a->buf;
+	struct socks5_connect_request *c;
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
-	uint8_t ipv4_sz = sizeof(c->dst_addr.addr.ipv4),
-	ipv6_sz = sizeof(c->dst_addr.addr.ipv6),
-	domainlen_sz = sizeof(c->dst_addr.addr.domain.len),
-	domainname_sz;
-	size_t expected_len, fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
+	struct socks5_addr *s;
+	uint8_t ipv4_sz, ipv6_sz, domainlen_sz, domainname_sz;
+	size_t expected_len, fixed_len;
 
-	domainname_sz = c->dst_addr.addr.domain.len;
+	c = (void *)a->buf;
+	s = &c->dst_addr;
+	ipv4_sz = sizeof(struct in_addr);
+	ipv6_sz = sizeof(struct in6_addr);
+	fixed_len = sizeof(*c) - sizeof(s->addr) + PORT_SZ;
+	domainlen_sz = sizeof(s->addr.domain.len);
+	domainname_sz = s->addr.domain.len;
 	memset(d, 0, sizeof(*d));
-	switch (c->dst_addr.type) {
+
+	switch (s->type) {
 	case IPv4:
 		expected_len = fixed_len + ipv4_sz;
 		if (a->len < expected_len)
@@ -1197,8 +1202,8 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 
 		in = (struct sockaddr_in *)d;
 		in->sin_family = AF_INET;
-		in->sin_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv4 + ipv4_sz);
-		memcpy(&in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
+		in->sin_port = *(uint16_t *)((char *)&s->addr.ipv4 + ipv4_sz);
+		memcpy(&in->sin_addr, &s->addr.ipv4, ipv4_sz);
 
 		break;
 	case DOMAIN:
@@ -1214,8 +1219,8 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 
 		in6 = (struct sockaddr_in6 *)d;
 		in6->sin6_family = AF_INET6;
-		in6->sin6_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv6 + ipv6_sz);
-		memcpy(&in6->sin6_addr, &c->dst_addr.addr.ipv6, ipv6_sz);
+		in6->sin6_port = *(uint16_t *)((char *)&s->addr.ipv6 + ipv6_sz);
+		memcpy(&in6->sin6_addr, &s->addr.ipv6, ipv6_sz);
 		break;
 
 	default:
