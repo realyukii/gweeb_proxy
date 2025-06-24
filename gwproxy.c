@@ -16,6 +16,7 @@
 #define SOCKS5_VER 5
 #define MAX_DOMAIN_LEN 255
 #define MAX_FILEPATH 1024
+#define MAX_USERPWD_PKT 1 + 1 + 255 + 1 + 255
 #define DEFAULT_TIMEOUT 5
 #define DEFAULT_THREAD_NR 4
 #define DEFAULT_BUF_SZ	1024
@@ -194,6 +195,12 @@ struct socks5_connect_reply {
 	* since addr member of struct bnd_addr use union,
 	* the bnd port is not specified explicitly as a struct member.
 	*/
+};
+
+struct socks5_userpwd {
+	uint8_t ver;
+	uint8_t ulen;
+	char rest_bytes[];
 };
 
 struct gwp_args {
@@ -1045,6 +1052,8 @@ static int accept_greeting(struct pair_connection *pc)
 
 auth_method_found:
 	pc->preferred_method = preferred_auth;
+	/* for testing username_pwd */
+	pc->preferred_method = USERNAME_PWD;
 	a->len = 0;
 
 	return 0;
@@ -1321,6 +1330,78 @@ static int handle_udp(void)
 }
 
 /*
+* Handle sub-negotiation with username/password auth method.
+*
+* @param pc Pointer to pair_connection struct of current session.
+* @return zero on success, or a negative integer on failure.
+*/
+static int handle_userpwd(struct pair_connection *pc)
+{
+	struct single_connection *c = &pc->client;
+	struct socks5_userpwd *pkt = (void *)c->buf;
+	char *username, *password, reply_buf[2];
+	uint8_t *plen;
+	int ret, expected_len = 2;
+
+	ret = recv(c->sockfd, c->buf, MAX_USERPWD_PKT, 0);
+	if (ret < 0) {
+		ret = errno;
+		if (ret == EAGAIN)
+			return -ret;
+		perror("recv on handle userpwd");
+		return -EXIT_FAILURE;
+	}
+
+	if (ret < expected_len)
+		return -EAGAIN;
+
+	if (pkt->ver != 1) {
+		pr_debug(
+			VERBOSE,
+			"invalid version, not comply with RFC standard.\n"
+		);
+		return -EXIT_FAILURE;
+	}
+
+	expected_len += pkt->ulen + 1;
+	if (ret < expected_len)
+		return -EAGAIN;
+	
+	username = pkt->rest_bytes;
+	plen = (void *)&pkt->rest_bytes[pkt->ulen];
+
+	expected_len += *plen;
+	if (ret < expected_len)
+		return -EAGAIN;
+
+	password = (void *)(plen + 1);
+
+	reply_buf[1] = 0x0;
+	ret = memcmp(username, "user", pkt->ulen);
+	if (ret)
+		reply_buf[1] = 0x1;
+
+	ret = memcmp(password, "pass", *plen);
+	if (ret)
+		reply_buf[1] = 0x1;
+
+	reply_buf[0] = 0x1;
+	ret = send(c->sockfd, reply_buf, sizeof(reply_buf), 0);
+	if (ret < 0) {
+		ret = errno;
+		if (ret == EAGAIN)
+			return -ret;
+		perror("send on handle userpwd");
+		return -EXIT_FAILURE;
+	}
+
+	if (reply_buf[1] == 0x1)
+		return -EXIT_FAILURE;
+
+	return 0;
+}
+
+/*
 * Handle client's request, evaluate it and return a reply.
 *
 * @param pc Pointer to pair_connection struct of current session.
@@ -1447,11 +1528,22 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			goto exit_err;
 		}
 
-		/* focus for no auth first, assume no auth is performed */
-		pc->state = STATE_REQUEST;
+		if (pc->preferred_method == NO_AUTH)
+			pc->state = STATE_REQUEST;
+		else
+			pc->state = STATE_AUTH;
 	}
 
-	if (pc->state == STATE_AUTH) {}
+	if (pc->state == STATE_AUTH) {
+		ret = handle_userpwd(pc);
+		if (ret < 0) {
+			if (ret == -EAGAIN)
+				return EAGAIN;
+			goto exit_err;
+		}
+
+		pc->state = STATE_REQUEST;
+	}
 
 	if (pc->state == STATE_REQUEST) {
 		ret = handle_request(pc, gwp);
