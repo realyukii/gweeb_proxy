@@ -1116,35 +1116,41 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 /*
 * Construct the reply message for each command of client's request.
 *
-* @param reply_buf
-* @param d
-* @param sockfd
-* @return length of address field on success, or a negative integer on failure.
+* @param reply_buf Pointer to the buffer.
+* @param d Pointer to be filled with bounded address to which the target is bound.
+* @param sockfd network socket file descriptor of target.
+* @return length of address field.
 */
-static int craft_reply(struct socks5_connect_reply *reply_buf,
+static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 			struct sockaddr_storage *d, int sockfd)
 {
+	struct sockaddr_in *in;
+	struct sockaddr_in6 *in6;
+	struct socks5_addr *s;
 	size_t bnd_len;
-	uint8_t ipv4_sz = sizeof(struct in_addr),
+	uint8_t ipv4_sz, ipv6_sz;
+	socklen_t d_sz;
+
+	s 	= &reply_buf->bnd_addr;
+	ipv4_sz = sizeof(struct in_addr);
 	ipv6_sz = sizeof(struct in6_addr);
-	socklen_t d_sz = sizeof(*d);
-	/* fill d with bounded address to which the target is bound. */
-	struct sockaddr_in *in = (struct sockaddr_in *)d;
-	struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)d;
+	d_sz 	= sizeof(*d);
+	in6	= (struct sockaddr_in6 *)d;
+	in	= (struct sockaddr_in *)d;
 
 	getsockname(sockfd, (struct sockaddr *)d, &d_sz);
 	switch (d->ss_family) {
 	case AF_INET:
 		bnd_len = ipv4_sz;
-		reply_buf->bnd_addr.type = IPv4;
-		memcpy(&reply_buf->bnd_addr.addr.ipv4, &in->sin_addr, ipv4_sz);
-		*(uint16_t *)((char *)&reply_buf->bnd_addr.addr.ipv4 + ipv4_sz) = in->sin_port;
+		s->type = IPv4;
+		memcpy(&s->addr.ipv4, &in->sin_addr, ipv4_sz);
+		*(uint16_t *)((char *)&s->addr.ipv4 + ipv4_sz) = in->sin_port;
 		break;
 	case AF_INET6:
 		bnd_len = ipv6_sz;
-		reply_buf->bnd_addr.type = IPv6;
-		memcpy(&reply_buf->bnd_addr.addr.ipv6, &in6->sin6_addr, ipv6_sz);
-		*(uint16_t *)((char *)&reply_buf->bnd_addr.addr.ipv6 + ipv6_sz) = in6->sin6_port;
+		s->type = IPv6;
+		memcpy(&s->addr.ipv6, &in6->sin6_addr, ipv6_sz);
+		*(uint16_t *)((char *)&s->addr.ipv6 + ipv6_sz) = in6->sin6_port;
 		break;
 	}
 
