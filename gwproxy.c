@@ -1172,6 +1172,9 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 /*
 * Read and evaluate client's request.
 *
+* @param a Pointer to the client's information.
+* @param d Pointer of sockaddr to initialize.
+* @return zero on success, or a negative integer on failure.
 */
 static int parse_request(struct single_connection *a, struct sockaddr_storage *d)
 {
@@ -1219,6 +1222,7 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 		pr_debug(VERBOSE, "unknown address type.\n");
 		return -EXIT_FAILURE;
 	}
+
 	return 0;
 }
 
