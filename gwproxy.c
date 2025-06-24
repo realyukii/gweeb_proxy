@@ -142,6 +142,8 @@ struct pair_connection {
 	struct single_connection target;
 	/* timer file descriptor for setting timeout */
 	int timerfd;
+	/* connection state of target */
+	bool is_connected;
 	/* state of the established session */
 	enum gwp_state state;
 	enum auth_type preferred_method;
@@ -974,11 +976,6 @@ static int exchange_data(struct epoll_event *ev, struct pair_connection *pc,
 			"current epoll events have EPOLLOUT bit set\n"
 		);
 
-		if (pc->timerfd != -1) {
-			close(pc->timerfd);
-			pc->timerfd = -1;
-		}
-
 		ret = handle_data(b, a);
 		if (ret < 0)
 			return -EXIT_FAILURE;
@@ -1377,6 +1374,21 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 }
 
 /*
+* is the state of the socket connected?
+*
+* @param sockfd the socket file descriptor.
+* @return true on connected, otherwise false.
+*/
+static bool is_sock_connected(int sockfd)
+{
+	int err;
+	socklen_t len = sizeof(err);
+	getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &err, &len);
+
+	return err == 0;
+}
+
+/*
 * Process epoll event from tcp connection.
 *
 * currently, this function handle:
@@ -1400,6 +1412,15 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	ret = extract_data(ev, &pc, &a, &b);
 	if (ret < 0)
 		goto exit_err;
+
+	if (!pc->is_connected && pc->target.sockfd != -1) {
+		ret = is_sock_connected(pc->target.sockfd);
+		if (ret && pc->timerfd != -1) {
+			close(pc->timerfd);
+			pc->timerfd = -1;
+			pc->is_connected = true;
+		}
+	}
 
 	if (pc->state == NO_SOCKS5) {
 		ret = prepare_exchange(gwp, pc, &args->dst_addr_st);
