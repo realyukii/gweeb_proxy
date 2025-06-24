@@ -1127,7 +1127,7 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
 	struct socks5_addr *s;
-	size_t bnd_len;
+	size_t bnd_len, reply_len;
 	uint8_t ipv4_sz, ipv6_sz;
 	socklen_t d_sz;
 
@@ -1164,7 +1164,9 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 	reply_buf->status = 0x0;
 	reply_buf->rsv = 0x0;
 
-	return bnd_len;
+	reply_len = sizeof(*reply_buf) - sizeof(s->addr) + PORT_SZ;
+	reply_len += bnd_len;
+	return reply_len;
 }
 
 /*
@@ -1234,7 +1236,7 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	struct single_connection *a = &pc->client;
 	struct socks5_connect_reply reply_buf;
 	int ret;
-	size_t reply_len, fixed_len;
+	size_t reply_len;
 
 	parse_request(a, &d);
 
@@ -1248,13 +1250,6 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 
 	reply_len = craft_reply(&reply_buf, &d, ret);
-	/*
-	* re-use the variable.
-	* actually the value is the same as fixed_len at request
-	* but this is just to emphasize.
-	*/
-	fixed_len = sizeof(reply_buf) - sizeof(reply_buf.bnd_addr.addr) + PORT_SZ;
-	reply_len += fixed_len;
 	ret = send(a->sockfd, &reply_buf, reply_len, 0);
 	if (ret < 0) {
 		if (errno == EAGAIN)
