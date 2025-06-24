@@ -1114,6 +1114,26 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 }
 
 /*
+* Construct the reply message for each command of client's request.
+*
+*/
+__attribute__((__unused__))
+static int craft_reply(void)
+{
+	return 0;
+}
+
+/*
+* Parse and evaluate client's request.
+*
+*/
+__attribute__((__unused__))
+static int parse_request(void)
+{
+	return 0;
+}
+
+/*
 * Handle client's CONNECT command.
 * 
 * @param pc Pointer to pair_connection struct of current session.
@@ -1301,7 +1321,7 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 
 	ret = handle_connect(pc, gwp);
 	if (ret < 0)
-		ret;
+		return ret;
 
 	return 0;
 }
