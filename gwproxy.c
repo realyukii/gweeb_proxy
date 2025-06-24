@@ -1238,7 +1238,12 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	int ret;
 	size_t reply_len;
 
-	parse_request(a, &d);
+	ret = parse_request(a, &d);
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return -EAGAIN;
+		return -EXIT_FAILURE;
+	}
 
 	/*
 	* TODO:
