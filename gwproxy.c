@@ -1043,6 +1043,7 @@ static int accept_greeting(struct pair_connection *pc)
 
 auth_method_found:
 	pc->preferred_method = preferred_auth;
+	a->len = 0;
 
 	return 0;
 }
@@ -1059,10 +1060,15 @@ static int response_handshake(struct pair_connection *pc)
 	char server_choice[2];
 	int ret;
 
-	a->len = 2;
+	if (!a->len)
+		a->len = sizeof(server_choice);
 	server_choice[0] = SOCKS5_VER;
 	server_choice[1] = pc->preferred_method;
-	ret = send(a->sockfd, server_choice, a->len, 0);
+	ret = send(
+		a->sockfd,
+		&server_choice[sizeof(server_choice) - a->len],
+		a->len, 0
+	);
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
@@ -1264,7 +1270,13 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 
 	reply_len = craft_reply(&reply_buf, &d, ret);
-	ret = send(a->sockfd, &reply_buf, reply_len, 0);
+	if (!a->len)
+		a->len = reply_len;
+	ret = send(
+		a->sockfd,
+		((char *)(&reply_buf)) + (reply_len - a->len),
+		a->len, 0
+	);
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
@@ -1279,7 +1291,10 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	if (DEBUG_LVL == DEBUG_SEND_RECV)
 		VT_HEXDUMP(&reply_buf, ret);
 
-	a->len = 0;
+	a->len -= ret;
+	if (a->len)
+		return -EAGAIN;
+
 	return 0;
 }
 
