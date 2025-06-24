@@ -129,6 +129,8 @@ struct single_connection {
 	char *buf;
 	/* length of filled buffer */
 	size_t len;
+	/* offset (for short-send) */
+	size_t off;
 	/* epoll mask used to store epoll event*/
 	uint32_t epmask;
 };
@@ -454,6 +456,8 @@ static struct pair_connection *init_pair(void)
 	}
 	client->len = 0;
 	target->len = 0;
+	client->off = 0;
+	target->off = 0;
 
 	client->epmask = EPOLLIN;
 	target->epmask = EPOLLIN | EPOLLOUT;
@@ -728,7 +732,7 @@ try_send:
 	pr_debug(DEBUG_EPOLL_EVENTS, "send to socket %d.\n", to->sockfd);
 	/* length of filled buffer */
 	if (from->len > 0) {
-		ret = send(to->sockfd, from->buf, from->len, MSG_NOSIGNAL);
+		ret = send(to->sockfd, &from->buf[from->off], from->len, MSG_NOSIGNAL);
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
@@ -744,13 +748,14 @@ try_send:
 		);
 
 		from->len -= ret;
+		from->off += ret;
 		pr_debug(
 			DEBUG_EPOLL_EVENTS,
 			"remaining bytes on the buffer: %ld\n",
 			from->len
 		);
-		if (from->len)
-			memmove(from->buf, &from->buf[ret], from->len);
+		if (!from->len)
+			from->off = 0;
 	}
 
 	return 0;
