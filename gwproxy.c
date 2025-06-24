@@ -1104,7 +1104,7 @@ static int response_handshake(struct pair_connection *pc)
 * @param gwp Pointer to the gwproxy struct (thread data).
 * @param pc Pointer that need to be saved 
 * @param dst the address structure to which the client connects.
-* @return sockfd on success, or a negative integer on failure.
+* @return zero on success, or a negative integer on failure.
 */
 static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 				struct sockaddr_storage *dst)
@@ -1121,7 +1121,7 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 		return -EXIT_FAILURE;
 	}
 
-	return tsock;
+	return 0;
 }
 
 /*
@@ -1274,7 +1274,7 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
-	reply_len = craft_reply(&reply_buf, &d, ret);
+	reply_len = craft_reply(&reply_buf, &d, pc->target.sockfd);
 	if (!a->len)
 		a->len = reply_len;
 	ret = send(
@@ -1393,7 +1393,7 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			struct gwp_args *args)
 {
-	int ret, tsock;
+	int ret;
 	struct pair_connection *pc;
 	struct single_connection *a, *b;
 
@@ -1402,8 +1402,8 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		goto exit_err;
 
 	if (pc->state == NO_SOCKS5) {
-		tsock = prepare_exchange(gwp, pc, &args->dst_addr_st);
-		if (tsock < 0)
+		ret = prepare_exchange(gwp, pc, &args->dst_addr_st);
+		if (ret < 0)
 			goto exit_err;
 
 		pc->state = STATE_EXCHANGE;
