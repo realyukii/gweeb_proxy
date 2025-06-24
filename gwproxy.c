@@ -1113,7 +1113,7 @@ static int handle_udp(void)
 */
 static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 {
-	/* target address to which the client connect. */
+	/* filled with target address to which the client connect. */
 	struct sockaddr_storage d;
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
@@ -1199,7 +1199,7 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 	b_sz = sizeof(struct sockaddr_storage);
 	/*
 	* re-use the d variable
-	* to fill bounded address to which the target is bound.
+	* to fill with bounded address to which the target is bound.
 	*/
 	in = (struct sockaddr_in *)&d;
 	in6 = (struct sockaddr_in6 *)&d;
