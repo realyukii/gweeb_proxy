@@ -27,6 +27,7 @@
 #define DEBUG 2
 #define VERBOSE 3
 #define DEBUG_EPOLL_EVENTS 4
+#define DEBUG_SEND_RECV 5
 #define pr_debug(lvl, fmt, ...)				\
 do {							\
 	if (DEBUG_LVL == (lvl)) {			\
@@ -696,17 +697,35 @@ static int handle_data(struct single_connection *from,
 			}
 			perror("recv on handle data");
 			return -EXIT_FAILURE;
-		} else if (!ret)
+		} else if (!ret) {
+			pr_debug(
+				DEBUG_SEND_RECV,
+				"EoF received on sockfd %d, closing the connection."
+				" terminating the session.\n",
+				from->sockfd
+			);
 			return -EXIT_FAILURE;
+		}
+		pr_debug(
+			DEBUG_SEND_RECV,
+			"%ld bytes were received from sockfd %d.\n",
+			ret,
+			from->sockfd
+		);
+		if (DEBUG_LVL == DEBUG_SEND_RECV)
+			VT_HEXDUMP(&from->buf[from->len], ret);
 
 		from->len += (size_t)ret;
-		if (DEBUG_LVL == VERBOSE)
-			VT_HEXDUMP(from->buf, from->len);
-		pr_debug(DEBUG_EPOLL_EVENTS, "buffer filled with %ld bytes\n", from->len);
+
+		pr_debug(
+			DEBUG_EPOLL_EVENTS,
+			"buffer filled with %ld bytes\n",
+			from->len
+		);
 	}
 
 try_send:
-	pr_debug(DEBUG_EPOLL_EVENTS, "send to socket %d\n", to->sockfd);
+	pr_debug(DEBUG_EPOLL_EVENTS, "send to socket %d.\n", to->sockfd);
 	/* length of filled buffer */
 	if (from->len > 0) {
 		ret = send(to->sockfd, from->buf, from->len, MSG_NOSIGNAL);
@@ -718,6 +737,11 @@ try_send:
 			return -EXIT_FAILURE;
 		} else if (!ret)
 			return -EXIT_FAILURE;
+		pr_debug(
+			DEBUG_SEND_RECV,
+			"%ld bytes were sent to sockfd %d.\n",
+			ret, to->sockfd
+		);
 
 		from->len -= ret;
 		pr_debug(
@@ -980,6 +1004,14 @@ static int accept_greeting(struct pair_connection *pc)
 		perror("recv on accept greeting");
 		return -EXIT_FAILURE;
 	}
+	pr_debug(
+		DEBUG_SEND_RECV,
+		"%d bytes were received from sockfd %d.\n",
+		ret,
+		a->sockfd
+	);
+	if (DEBUG_LVL == DEBUG_SEND_RECV)
+		VT_HEXDUMP(&a->buf[a->len], ret);
 	a->len += ret;
 	if (a->len < 2)
 		return -EAGAIN;
@@ -1037,6 +1069,13 @@ static int response_handshake(struct pair_connection *pc)
 		perror("send on response handshake");
 		return -EXIT_FAILURE;
 	}
+	pr_debug(
+		DEBUG_SEND_RECV,
+		"%d bytes were sent to sockfd %d.\n",
+		ret, a->sockfd
+	);
+	if (DEBUG_LVL == DEBUG_SEND_RECV)
+		VT_HEXDUMP(&server_choice, ret);
 
 	a->len -= ret;
 	if (a->len)
@@ -1135,6 +1174,14 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 		perror("recv on request connect");
 		return -EXIT_FAILURE;
 	}
+	pr_debug(
+		DEBUG_SEND_RECV,
+		"%d bytes were received from sockfd %d.\n",
+		ret,
+		a->sockfd
+	);
+	if (DEBUG_LVL == DEBUG_SEND_RECV)
+		VT_HEXDUMP(&a->buf[a->len], ret);
 
 	a->len += ret;
 	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
@@ -1234,6 +1281,13 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 		perror("send on request connect");
 		return -EXIT_FAILURE;
 	}
+	pr_debug(
+		DEBUG_SEND_RECV,
+		"%d bytes were sent to sockfd %d.\n",
+		ret, a->sockfd
+	);
+	if (DEBUG_LVL == DEBUG_SEND_RECV)
+		VT_HEXDUMP(&reply_buf, ret);
 
 	a->len = 0;
 

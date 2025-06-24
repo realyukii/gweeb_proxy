@@ -1,7 +1,7 @@
 all: build/gwproxy build/gwproxy_gdb build/gwproxy_memcheck
 
 build/gwproxy: gwproxy.c
-	gcc -Wmaybe-uninitialized -Wall -Wextra $^ -o $@
+	gcc -Wmaybe-uninitialized -DDEBUG_LVL=5 -Wall -Wextra $^ -o $@
 build/gwproxy_memcheck: gwproxy.c
 	gcc -fsanitize=address -Wall -Wextra -DDEBUG_LVL=1 -g3 $^ -o $@
 build/gwproxy_gdb: gwproxy.c
@@ -9,4 +9,4 @@ build/gwproxy_gdb: gwproxy.c
 test_conventional: all
 	./build/gwproxy -t [::1]:8088 -b [::1]:8080 -T 1
 test_socks5: all
-	./build/gwproxy -s -b [::1]:1080 -T 1
+	./build/gwproxy -s -b [::]:1080 -T 1
