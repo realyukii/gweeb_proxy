@@ -1116,6 +1116,9 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 /*
 * Handle client's CONNECT command.
 * 
+* @param pc Pointer to pair_connection struct of current session.
+* @param gwp Pointer to the gwproxy struct (thread data).
+* @return zero on success, or a negative integer on failure.
 */
 static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 {
