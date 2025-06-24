@@ -1168,48 +1168,29 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 }
 
 /*
-* Parse and evaluate client's request.
+* Read and evaluate client's request.
 *
 */
-__attribute__((__unused__))
-static int parse_request(void)
+static int parse_request(struct single_connection *a, struct sockaddr_storage *d)
 {
-	return 0;
-}
-
-/*
-* Handle client's CONNECT command.
-* 
-* @param pc Pointer to pair_connection struct of current session.
-* @param gwp Pointer to the gwproxy struct (thread data).
-* @return zero on success, or a negative integer on failure.
-*/
-static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
-{
-	/* filled with target address to which the client connect. */
-	struct sockaddr_storage d;
+	struct socks5_connect_request *c = (void *)a->buf;
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
-	struct single_connection *a = &pc->client;
-	struct socks5_connect_reply reply_buf;
-	struct socks5_connect_request *c = (void *)a->buf;
-	int ret;
-	size_t expected_len, total_len,
-	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
 	uint8_t ipv4_sz = sizeof(c->dst_addr.addr.ipv4),
 	ipv6_sz = sizeof(c->dst_addr.addr.ipv6),
 	domainlen_sz = sizeof(c->dst_addr.addr.domain.len),
 	domainname_sz;
+	size_t expected_len, fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
 
 	domainname_sz = c->dst_addr.addr.domain.len;
-	memset(&d, 0, sizeof(d));
+	memset(d, 0, sizeof(*d));
 	switch (c->dst_addr.type) {
 	case IPv4:
 		expected_len = fixed_len + ipv4_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
 
-		in = (struct sockaddr_in *)&d;
+		in = (struct sockaddr_in *)d;
 		in->sin_family = AF_INET;
 		in->sin_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv4 + ipv4_sz);
 		memcpy(&in->sin_addr, &c->dst_addr.addr.ipv4, ipv4_sz);
@@ -1226,7 +1207,7 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		if (a->len < expected_len)
 			return -EAGAIN;
 
-		in6 = (struct sockaddr_in6 *)&d;
+		in6 = (struct sockaddr_in6 *)d;
 		in6->sin6_family = AF_INET6;
 		in6->sin6_port = *(uint16_t *)((char *)&c->dst_addr.addr.ipv6 + ipv6_sz);
 		memcpy(&in6->sin6_addr, &c->dst_addr.addr.ipv6, ipv6_sz);
@@ -1236,6 +1217,26 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 		pr_debug(VERBOSE, "unknown address type.\n");
 		return -EXIT_FAILURE;
 	}
+	return 0;
+}
+
+/*
+* Handle client's CONNECT command.
+* 
+* @param pc Pointer to pair_connection struct of current session.
+* @param gwp Pointer to the gwproxy struct (thread data).
+* @return zero on success, or a negative integer on failure.
+*/
+static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
+{
+	/* filled with target address to which the client connect. */
+	struct sockaddr_storage d;
+	struct single_connection *a = &pc->client;
+	struct socks5_connect_reply reply_buf;
+	int ret;
+	size_t total_len, fixed_len;
+
+	parse_request(a, &d);
 
 	/*
 	* TODO:
