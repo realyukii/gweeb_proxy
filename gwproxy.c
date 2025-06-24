@@ -1075,6 +1075,36 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 }
 
 /*
+* Handle client's CONNECT command.
+* 
+*/
+__attribute__((__unused__))
+static int handle_connect()
+{
+	return 0;
+}
+
+/*
+* Handle client's BIND command.
+* 
+*/
+__attribute__((__unused__))
+static int handle_bind()
+{
+	return 0;
+}
+
+/*
+* Handle client's UDP ASSOCIATE command.
+* 
+*/
+__attribute__((__unused__))
+static int handle_udp(void)
+{
+	return 0;
+}
+
+/*
 * Handle client's request, evaluate it and return a reply.
 *
 * @param pc Pointer to pair_connection struct of current session.
