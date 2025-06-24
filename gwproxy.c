@@ -1234,7 +1234,7 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	struct single_connection *a = &pc->client;
 	struct socks5_connect_reply reply_buf;
 	int ret;
-	size_t total_len, fixed_len;
+	size_t reply_len, fixed_len;
 
 	parse_request(a, &d);
 
@@ -1247,15 +1247,15 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
-	total_len = craft_reply(&reply_buf, &d, ret);
+	reply_len = craft_reply(&reply_buf, &d, ret);
 	/*
 	* re-use the variable.
 	* actually the value is the same as fixed_len at request
 	* but this is just to emphasize.
 	*/
 	fixed_len = sizeof(reply_buf) - sizeof(reply_buf.bnd_addr.addr) + PORT_SZ;
-	total_len += fixed_len;
-	ret = send(a->sockfd, &reply_buf, total_len, 0);
+	reply_len += fixed_len;
+	ret = send(a->sockfd, &reply_buf, reply_len, 0);
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
