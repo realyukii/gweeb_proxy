@@ -1117,40 +1117,7 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 * Handle client's CONNECT command.
 * 
 */
-__attribute__((__unused__))
-static int handle_connect()
-{
-	return 0;
-}
-
-/*
-* Handle client's BIND command.
-* 
-*/
-__attribute__((__unused__))
-static int handle_bind()
-{
-	return 0;
-}
-
-/*
-* Handle client's UDP ASSOCIATE command.
-* 
-*/
-__attribute__((__unused__))
-static int handle_udp(void)
-{
-	return 0;
-}
-
-/*
-* Handle client's request, evaluate it and return a reply.
-*
-* @param pc Pointer to pair_connection struct of current session.
-* @param gwp Pointer to the gwproxy struct (thread data).
-* @return zero on success, or a negative integer on failure.
-*/
-static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
+static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 {
 	/* filled with target address to which the client connect. */
 	struct sockaddr_storage d;
@@ -1159,44 +1126,14 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 	struct single_connection *a = &pc->client;
 	struct socks5_connect_reply reply_buf;
 	struct socks5_connect_request *c = (void *)a->buf;
-	int ret, rlen = DEFAULT_BUF_SZ - a->len;
+	int ret;
 	socklen_t b_sz;
-	size_t fixed_len, expected_len, total_len;
+	size_t expected_len, total_len,
+	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
 	uint8_t ipv4_sz = sizeof(c->dst_addr.addr.ipv4),
 	ipv6_sz = sizeof(c->dst_addr.addr.ipv6),
 	domainlen_sz = sizeof(c->dst_addr.addr.domain.len),
 	domainname_sz;
-
-	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
-	if (ret < 0) {
-		if (errno == EAGAIN)
-			return -EAGAIN;
-		perror("recv on request connect");
-		return -EXIT_FAILURE;
-	}
-	pr_debug(
-		DEBUG_SEND_RECV,
-		"%d bytes were received from sockfd %d.\n",
-		ret,
-		a->sockfd
-	);
-	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&a->buf[a->len], ret);
-
-	a->len += ret;
-	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
-	if (a->len < fixed_len)
-		return -EAGAIN;
-
-	if (c->ver != SOCKS5_VER) {
-		pr_debug(VERBOSE, "unsupported socks version.\n");
-		return -EXIT_FAILURE;
-	}
-
-	if (c->cmd != CONNECT) {
-		pr_debug(VERBOSE, "unsupported command, yet.\n");
-		return -EXIT_FAILURE;
-	}
 
 	domainname_sz = c->dst_addr.addr.domain.len;
 	memset(&d, 0, sizeof(d));
@@ -1290,6 +1227,78 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 		VT_HEXDUMP(&reply_buf, ret);
 
 	a->len = 0;
+	return 0;
+}
+
+/*
+* Handle client's BIND command.
+* 
+*/
+__attribute__((__unused__))
+static int handle_bind()
+{
+	return 0;
+}
+
+/*
+* Handle client's UDP ASSOCIATE command.
+* 
+*/
+__attribute__((__unused__))
+static int handle_udp(void)
+{
+	return 0;
+}
+
+/*
+* Handle client's request, evaluate it and return a reply.
+*
+* @param pc Pointer to pair_connection struct of current session.
+* @param gwp Pointer to the gwproxy struct (thread data).
+* @return zero on success, or a negative integer on failure.
+*/
+static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
+{
+	/* filled with target address to which the client connect. */
+	struct single_connection *a = &pc->client;
+	struct socks5_connect_request *c = (void *)a->buf;
+	int ret, rlen = DEFAULT_BUF_SZ - a->len;
+	size_t fixed_len;
+
+	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return -EAGAIN;
+		perror("recv on handle request");
+		return -EXIT_FAILURE;
+	}
+	pr_debug(
+		DEBUG_SEND_RECV,
+		"%d bytes were received from sockfd %d.\n",
+		ret,
+		a->sockfd
+	);
+	if (DEBUG_LVL == DEBUG_SEND_RECV)
+		VT_HEXDUMP(&a->buf[a->len], ret);
+
+	a->len += ret;
+	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
+	if (a->len < fixed_len)
+		return -EAGAIN;
+
+	if (c->ver != SOCKS5_VER) {
+		pr_debug(VERBOSE, "unsupported socks version.\n");
+		return -EXIT_FAILURE;
+	}
+
+	if (c->cmd != CONNECT) {
+		pr_debug(VERBOSE, "unsupported command, yet.\n");
+		return -EXIT_FAILURE;
+	}
+
+	ret = handle_connect(pc, gwp);
+	if (ret < 0)
+		ret;
 
 	return 0;
 }
