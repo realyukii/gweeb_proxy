@@ -1153,6 +1153,12 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 		*(uint16_t *)((char *)&s->addr.ipv6 + ipv6_sz) = in6->sin6_port;
 		break;
 	}
+	/*
+	* TODO: as per RFC, the bnd.addr is allowed to be filled with FQDN
+	* however, I'm not sure in which scenario,
+	* that the server would fill bnd.addr of the reply with FQDN?
+	* is this common and practical cases?
+	*/
 
 	reply_buf->ver = SOCKS5_VER;
 	reply_buf->status = 0x0;
