@@ -1116,11 +1116,43 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 /*
 * Construct the reply message for each command of client's request.
 *
+* @param reply_buf
+* @param d
+* @param sockfd
+* @return length of address field on success, or a negative integer on failure.
 */
-__attribute__((__unused__))
-static int craft_reply(void)
+static int craft_reply(struct socks5_connect_reply *reply_buf,
+			struct sockaddr_storage *d, int sockfd)
 {
-	return 0;
+	size_t bnd_len;
+	uint8_t ipv4_sz = sizeof(struct in_addr),
+	ipv6_sz = sizeof(struct in6_addr);
+	socklen_t d_sz = sizeof(*d);
+	/* fill d with bounded address to which the target is bound. */
+	struct sockaddr_in *in = (struct sockaddr_in *)d;
+	struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)d;
+
+	getsockname(sockfd, (struct sockaddr *)d, &d_sz);
+	switch (d->ss_family) {
+	case AF_INET:
+		bnd_len = ipv4_sz;
+		reply_buf->bnd_addr.type = IPv4;
+		memcpy(&reply_buf->bnd_addr.addr.ipv4, &in->sin_addr, ipv4_sz);
+		*(uint16_t *)((char *)&reply_buf->bnd_addr.addr.ipv4 + ipv4_sz) = in->sin_port;
+		break;
+	case AF_INET6:
+		bnd_len = ipv6_sz;
+		reply_buf->bnd_addr.type = IPv6;
+		memcpy(&reply_buf->bnd_addr.addr.ipv6, &in6->sin6_addr, ipv6_sz);
+		*(uint16_t *)((char *)&reply_buf->bnd_addr.addr.ipv6 + ipv6_sz) = in6->sin6_port;
+		break;
+	}
+
+	reply_buf->ver = SOCKS5_VER;
+	reply_buf->status = 0x0;
+	reply_buf->rsv = 0x0;
+
+	return bnd_len;
 }
 
 /*
@@ -1150,7 +1182,6 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	struct socks5_connect_reply reply_buf;
 	struct socks5_connect_request *c = (void *)a->buf;
 	int ret;
-	socklen_t b_sz;
 	size_t expected_len, total_len,
 	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
 	uint8_t ipv4_sz = sizeof(c->dst_addr.addr.ipv4),
@@ -1203,34 +1234,7 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
-	b_sz = sizeof(struct sockaddr_storage);
-	/*
-	* re-use the d variable
-	* to fill with bounded address to which the target is bound.
-	*/
-	in = (struct sockaddr_in *)&d;
-	in6 = (struct sockaddr_in6 *)&d;
-
-	getsockname(ret, (struct sockaddr *)&d, &b_sz);
-	switch (d.ss_family) {
-	case AF_INET:
-		total_len = ipv4_sz;
-		reply_buf.bnd_addr.type = IPv4;
-		memcpy(&reply_buf.bnd_addr.addr.ipv4, &in->sin_addr, ipv4_sz);
-		*(uint16_t *)((char *)&reply_buf.bnd_addr.addr.ipv4 + ipv4_sz) = in->sin_port;
-		break;
-	case AF_INET6:
-		total_len = ipv6_sz;
-		reply_buf.bnd_addr.type = IPv6;
-		memcpy(&reply_buf.bnd_addr.addr.ipv6, &in6->sin6_addr, ipv6_sz);
-		*(uint16_t *)((char *)&reply_buf.bnd_addr.addr.ipv6 + ipv6_sz) = in6->sin6_port;
-		break;
-	}
-
-	reply_buf.ver = SOCKS5_VER;
-	reply_buf.status = 0x0;
-	reply_buf.rsv = 0x0;
-
+	total_len = craft_reply(&reply_buf, &d, ret);
 	/* re-use the variable */
 	fixed_len = sizeof(reply_buf) - sizeof(reply_buf.bnd_addr.addr) + PORT_SZ;
 	total_len += fixed_len;
