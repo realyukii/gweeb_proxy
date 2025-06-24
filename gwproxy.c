@@ -1085,8 +1085,6 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 {
 	/* target address to which the client connect. */
 	struct sockaddr_storage d;
-	/* bounded address to which the target is bound. */
-	struct sockaddr_storage b;
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
 	struct single_connection *a = &pc->client;
@@ -1169,11 +1167,15 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 
 	b_sz = sizeof(struct sockaddr_storage);
-	in = (struct sockaddr_in *)&b;
-	in6 = (struct sockaddr_in6 *)&b;
+	/*
+	* re-use the d variable
+	* to fill bounded address to which the target is bound.
+	*/
+	in = (struct sockaddr_in *)&d;
+	in6 = (struct sockaddr_in6 *)&d;
 
-	getsockname(ret, (struct sockaddr *)&b, &b_sz);
-	switch (b.ss_family) {
+	getsockname(ret, (struct sockaddr *)&d, &b_sz);
+	switch (d.ss_family) {
 	case AF_INET:
 		total_len = ipv4_sz;
 		reply_buf.bnd_addr.type = IPv4;
