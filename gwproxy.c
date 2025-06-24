@@ -52,10 +52,7 @@ enum gwp_state {
 	STATE_GREETING_ACCEPTED,
 	/* negotiating authentication method */
 	STATE_AUTH,
-	/*
-	* client connection request.
-	* determine which target the client want to connect to
-	*/
+	/* client request. */
 	STATE_REQUEST,
 	/* exchange the data between client and destination */
 	STATE_EXCHANGE
@@ -1078,13 +1075,13 @@ static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
 }
 
 /*
-* Handle client's connect request, evaluate it and return a reply.
+* Handle client's request, evaluate it and return a reply.
 *
 * @param pc Pointer to pair_connection struct of current session.
 * @param gwp Pointer to the gwproxy struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
-static int request_connect(struct pair_connection *pc, struct gwproxy *gwp)
+static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 {
 	/* target address to which the client connect. */
 	struct sockaddr_storage d;
@@ -1268,7 +1265,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	if (pc->state == STATE_AUTH) {}
 
 	if (pc->state == STATE_REQUEST) {
-		ret = request_connect(pc, gwp);
+		ret = handle_request(pc, gwp);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				return EAGAIN;
