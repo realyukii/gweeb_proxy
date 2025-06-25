@@ -564,16 +564,6 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	client_fd = -1;
 	if (args->timeout) {
 		int tmfd, flg;
-		struct itimerspec it = {
-			.it_value = {
-				.tv_sec = args->timeout,
-				.tv_nsec = 0
-			},
-			.it_interval = {
-				.tv_sec = 0,
-				.tv_nsec = 0
-			}
-		};
 
 		flg = TFD_NONBLOCK;
 		tmfd = timerfd_create(CLOCK_MONOTONIC, flg);
@@ -586,11 +576,6 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 		ret = register_events(tmfd, gwp->epfd, EPOLLIN, pc, EV_BIT_TIMER);
 		if (ret < 0) {
 			perror("epoll_ctl");
-			goto exit_err;
-		}
-		ret = timerfd_settime(pc->timerfd, 0, &it, NULL);
-		if (ret < 0) {
-			perror("timerfd_settime");
 			goto exit_err;
 		}
 	}
@@ -1128,14 +1113,33 @@ static int response_handshake(struct pair_connection *pc)
 * @param gwp Pointer to the gwproxy struct (thread data).
 * @param pc Pointer that need to be saved 
 * @param dst the address structure to which the client connects.
+* @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
 static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
-				struct sockaddr_storage *dst)
+			struct sockaddr_storage *dst, struct gwp_args *args)
 {
 	int ret, tsock = set_target(dst);
 	if (tsock < 0)
 		return -EXIT_FAILURE;
+
+	if (args->timeout) {
+		const struct itimerspec it = {
+			.it_value = {
+				.tv_sec = args->timeout,
+				.tv_nsec = 0
+			},
+			.it_interval = {
+				.tv_sec = 0,
+				.tv_nsec = 0
+			}
+		};
+		ret = timerfd_settime(pc->timerfd, 0, &it, NULL);
+		if (ret < 0) {
+			perror("timerfd_settime");
+			return -EXIT_FAILURE;
+		}
+	}
 
 	pc->target.sockfd = tsock;
 	ret = register_events(tsock, gwp->epfd, pc->target.epmask,
@@ -1271,9 +1275,11 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 * 
 * @param pc Pointer to pair_connection struct of current session.
 * @param gwp Pointer to the gwproxy struct (thread data).
+* @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
+static int handle_connect(struct pair_connection *pc,
+			struct gwproxy *gwp, struct gwp_args *args)
 {
 	/* filled with target address to which the client connect. */
 	struct sockaddr_storage d;
@@ -1294,7 +1300,7 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp)
 	* check if the connection is successfuly established
 	* or fail before sending a reply
 	*/
-	ret = prepare_exchange(gwp, pc, &d);
+	ret = prepare_exchange(gwp, pc, &d, args);
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
@@ -1459,9 +1465,11 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 *
 * @param pc Pointer to pair_connection struct of current session.
 * @param gwp Pointer to the gwproxy struct (thread data).
+* @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
+static int handle_request(struct pair_connection *pc,
+			struct gwproxy *gwp, struct gwp_args *args)
 {
 	/* filled with target address to which the client connect. */
 	struct single_connection *a = &pc->client;
@@ -1500,7 +1508,7 @@ static int handle_request(struct pair_connection *pc, struct gwproxy *gwp)
 		return -EXIT_FAILURE;
 	}
 
-	ret = handle_connect(pc, gwp);
+	ret = handle_connect(pc, gwp, args);
 	if (ret < 0)
 		return ret;
 
@@ -1557,7 +1565,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	}
 
 	if (pc->state == NO_SOCKS5) {
-		ret = prepare_exchange(gwp, pc, &args->dst_addr_st);
+		ret = prepare_exchange(gwp, pc, &args->dst_addr_st, args);
 		if (ret < 0)
 			goto exit_err;
 
@@ -1599,7 +1607,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	}
 
 	if (pc->state == STATE_REQUEST) {
-		ret = handle_request(pc, gwp);
+		ret = handle_request(pc, gwp, args);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				return EAGAIN;
