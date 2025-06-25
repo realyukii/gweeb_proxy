@@ -1361,9 +1361,11 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 	struct userpwd_pair *p;
 	char *username, *password, reply_buf[2];
 	uint8_t *plen;
-	int i, ret, expected_len = 2;
+	size_t expected_len = 2;
+	int rlen, i, ret;
 
-	ret = recv(c->sockfd, c->buf, MAX_USERPWD_PKT, 0);
+	rlen = MAX_USERPWD_PKT - c->len;
+	ret = recv(c->sockfd, &c->buf[c->len], rlen, 0);
 	if (ret < 0) {
 		ret = errno;
 		if (ret == EAGAIN)
@@ -1379,26 +1381,31 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 	);
 	if (DEBUG_LVL == DEBUG_SEND_RECV)
 		VT_HEXDUMP(&c->buf[c->len], ret);
+
+	c->len += ret;
+
+	if (c->len < expected_len)
 		return -EAGAIN;
 
 	if (pkt->ver != 1) {
 		pr_debug(
 			VERBOSE,
-			"invalid version, not comply with RFC standard.\n"
+			"invalid version, not comply with the RFC standard.\n"
 		);
 		return -EXIT_FAILURE;
 	}
 
 	expected_len += pkt->ulen + 1;
-	if (ret < expected_len)
+	if (c->len < expected_len)
 		return -EAGAIN;
 	
 	username = pkt->rest_bytes;
 	plen = (void *)&pkt->rest_bytes[pkt->ulen];
 
 	expected_len += *plen;
-	if (ret < expected_len)
+	if (c->len < expected_len)
 		return -EAGAIN;
+	c->len = 0;
 
 	password = (void *)(plen + 1);
 
