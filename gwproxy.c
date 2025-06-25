@@ -1371,8 +1371,14 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		perror("recv on handle userpwd");
 		return -EXIT_FAILURE;
 	}
-
-	if (ret < expected_len)
+	pr_debug(
+		DEBUG_SEND_RECV,
+		"%d bytes were received from sockfd %d.\n",
+		ret,
+		c->sockfd
+	);
+	if (DEBUG_LVL == DEBUG_SEND_RECV)
+		VT_HEXDUMP(&c->buf[c->len], ret);
 		return -EAGAIN;
 
 	if (pkt->ver != 1) {
@@ -1420,6 +1426,13 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		perror("send on handle userpwd");
 		return -EXIT_FAILURE;
 	}
+	pr_debug(
+		DEBUG_SEND_RECV,
+		"%d bytes were sent to sockfd %d.\n",
+		ret, c->sockfd
+	);
+	if (DEBUG_LVL == DEBUG_SEND_RECV)
+		VT_HEXDUMP(&reply_buf, ret);
 
 	if (reply_buf[1] == 0x1)
 		return -EXIT_FAILURE;
