@@ -1095,7 +1095,7 @@ static int response_handshake(struct pair_connection *pc)
 		ret, a->sockfd
 	);
 	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&server_choice, ret);
+		VT_HEXDUMP(&server_choice[sizeof(server_choice) - a->len], ret);
 
 	a->len -= ret;
 	if (a->len)
@@ -1324,7 +1324,7 @@ static int handle_connect(struct pair_connection *pc,
 		ret, a->sockfd
 	);
 	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&reply_buf, ret);
+		VT_HEXDUMP(((char *)(&reply_buf)) + (reply_len - a->off), ret);
 
 	a->off -= ret;
 	if (a->off)
@@ -1448,7 +1448,7 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		ret, c->sockfd
 	);
 	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&reply_buf, ret);
+		VT_HEXDUMP(&reply_buf[sizeof(reply_buf) - c->len], ret);
 
 	c->len -= ret;
 	if (c->len)
