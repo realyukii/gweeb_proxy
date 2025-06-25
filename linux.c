@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdio.h> // temporary for printf
 
 #define MAX_LEN 255
@@ -51,17 +52,18 @@ static int rfile(char *f, int *filefd)
 */
 int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 {
-	char *pbuf, c;
-	int filefd, item_nr, i, l;
+	char *svptr, *bptr, *tok, *colon, c;
+	int filefd, item_nr, i, ulen, plen;
 	long fsize;
-	__uint8_t ulen, plen;
 	struct userpwd_pair *p;
 
 	fsize = rfile(filename, &filefd);
 	if (fsize < 0)
 		return -1;
 
-	// extra one bytes for null-terminated byte
+	*ptr = NULL;
+
+	/* extra one bytes for null-terminated byte */
 	*buf = malloc(fsize + 1);
 	if (!*buf)
 		goto error;
@@ -72,7 +74,7 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 	close(filefd);
 	filefd = -1;
 
-	item_nr = ulen = plen = 0;
+	item_nr = 0;
 	for (i = 0; i < fsize; i++) {
 		c = (*buf)[i];
 		if (c == '\n')
@@ -84,39 +86,59 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 		goto error;
 	}
 
-	/*
-	* plus one extra space for file that didn't contain newline at the EoF
-	*/
+	/* if last line isn’t newline-terminated, we still have an entry */
 	if ((*buf)[fsize - 1] != '\n')
 		item_nr++;
-	// asm volatile("int3");
 	*ptr = malloc((item_nr) * sizeof(**ptr));
 	if (!*ptr)
 		goto error;
 
-	l = 0;
-	p = &(*ptr)[l];
-	p->username = NULL;
-	for (i = 0; i < fsize; i++) {
-		pbuf = &(*buf)[i];
+	/* begin parsing buffer */
+	tok = strtok_r(*buf, "\n", &svptr);
+	bptr = *buf;
+	i = 0;
+	while (tok) {
+		colon = strchr(bptr, ':');
+		if (!colon) {
+			fprintf(
+				stderr,
+				"missing ':' as delimiter, malformed line\n"
+			);
+			goto error;
+		}
+		*colon = '\0';
 
-		if (p->username == NULL)
-			p->username = *buf;
-		if (*pbuf == '\n') {
-			// asm volatile("int3");
-			*pbuf = '\0';
-			pbuf++;
-			l++;
-			p = &(*ptr)[l];
-			p->username = pbuf;
+		p = &(*ptr)[i];
+		ulen = colon - bptr;
+		if (ulen > MAX_LEN) {
+			fprintf(
+				stderr,
+				"username only allowed up to 255 character\n"
+			);
+			goto error;
+		}
+		plen = (svptr - 1) - colon;
+		if (plen > MAX_LEN) {
+			fprintf(
+				stderr,
+				"password only allowed up to 255 character\n"
+			);
+			goto error;
+		}
+		if (!ulen || !plen) {
+			fprintf(
+				stderr,
+				"username or password is not allowed to be empty\n"
+			);
+			goto error;
 		}
 
-		if (*pbuf == ':') {
-			// asm volatile("int3");
-			*pbuf = '\0';
-			pbuf++;
-			p->password = pbuf;
-		}
+		p->username = bptr;
+		p->password = colon + 1;
+		i++;
+
+		bptr = svptr;
+		tok = strtok_r(NULL, "\n", &svptr);
 	}
 
 	return item_nr;
@@ -124,11 +146,12 @@ error:
 	if (filefd != -1)
 		close(filefd);
 	if (*buf)
-		free(buf);
+		free(*buf);
+	if (*ptr)
+		free(*ptr);
 
 	return -1;
 }
-
 
 int main(void)
 {
@@ -138,7 +161,6 @@ int main(void)
 	if (ret < 0)
 		return -1;
 
-	// asm volatile ("int3");
 	for (i = 0; i < ret; i++)
 		printf("%d. %s:%s\n", i, ptr[i].username, ptr[i].password);
 
