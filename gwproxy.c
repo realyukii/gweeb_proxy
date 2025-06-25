@@ -486,7 +486,7 @@ static struct pair_connection *init_pair(void)
 	client->off = 0;
 	target->off = 0;
 
-	client->epmask = EPOLLIN;
+	client->epmask = EPOLLIN | EPOLLOUT;
 	target->epmask = EPOLLIN | EPOLLOUT;
 
 	return pc;
