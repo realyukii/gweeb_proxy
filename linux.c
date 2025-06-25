@@ -70,6 +70,7 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 	if (read(filefd, *buf, fsize) < 0)
 		goto error;
 	close(filefd);
+	filefd = -1;
 
 	item_nr = ulen = plen = 0;
 	for (i = 0; i < fsize; i++) {
@@ -120,7 +121,8 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 
 	return item_nr;
 error:
-	close(filefd);
+	if (filefd != -1)
+		close(filefd);
 	if (*buf)
 		free(buf);
 
