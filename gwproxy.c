@@ -327,7 +327,7 @@ static int init_addr(char *addr, struct sockaddr_storage *addr_st)
 * 
 * @param argc total argument passed.
 * @param argv Pointer to an array of string.
-* @param args Pointer to cmdline arguments to initialize.
+* @param args Pointer to application configuration to initialize.
 * @return zero on success, or a negative integer on failure.
 */
 static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
@@ -1351,7 +1351,7 @@ static int handle_udp(void)
 * Handle sub-negotiation with username/password auth method.
 *
 * @param pc Pointer to pair_connection struct of current session.
-* @param args Pointer to cmdline arguments.
+* @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
 static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
@@ -1506,7 +1506,7 @@ static bool is_sock_connected(int sockfd)
 *
 * @param ev Pointer to epoll event structure.
 * @param gwp Pointer to the gwproxy struct (thread data).
-* @param args Pointer to cmdline arguments.
+* @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
 static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
@@ -1607,7 +1607,7 @@ exit_err:
 * Process epoll event that are 'ready'.
 *
 * @param ready_nr Number of ready events.
-* @param args Pointer to cmdline arguments.
+* @param args Pointer to application configuration.
 * @param evs Pointer to epoll event struct.
 * @param gwp Pointer to the gwproxy struct (thread data).
 */
@@ -1634,7 +1634,7 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 /*
 * Start the TCP proxy server.
 * 
-* @param args Pointer to cmdline arguments.
+* @param args Pointer to application configuration.
 * @return negative integer on failure.
 */
 static int start_server(struct gwp_args *args)
@@ -1704,7 +1704,7 @@ err:
 /*
 * Thread callback
 *
-* @param args Pointer to cmdline arguments.
+* @param args Pointer to application configuration.
 * @return NULL
 */
 static void *thread_cb(void *args)
