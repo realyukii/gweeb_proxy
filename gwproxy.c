@@ -1425,7 +1425,9 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 	}
 
 	reply_buf[0] = 0x1;
-	ret = send(c->sockfd, reply_buf, sizeof(reply_buf), 0);
+	if (!c->len)
+		c->len = sizeof(reply_buf);
+	ret = send(c->sockfd, &reply_buf[sizeof(reply_buf) - c->len], c->len, 0);
 	if (ret < 0) {
 		ret = errno;
 		if (ret == EAGAIN)
@@ -1440,6 +1442,10 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 	);
 	if (DEBUG_LVL == DEBUG_SEND_RECV)
 		VT_HEXDUMP(&reply_buf, ret);
+
+	c->len -= ret;
+	if (c->len)
+		return -EAGAIN;
 
 	if (reply_buf[1] == 0x1)
 		return -EXIT_FAILURE;
