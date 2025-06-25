@@ -377,3 +377,146 @@ Each of those tools is optimized for exactly that job.
 [1]: https://www.phoronix.com/news/Glibc-More-AVX-512-October-2022?utm_source=chatgpt.com "Glibc Picks Up More AVX-512 Optimizations - ~30% Less Cycles ... - Phoronix"
 [2]: https://www.wpfastworld.com/10/21/glibc-gets-avx-512-optimization-some-function-cycles-are-reduced-by-about-30/?utm_source=chatgpt.com "Glibc gets AVX-512 optimization, some function cycles are reduced by ..."
 [3]: https://gms.tf/stdfind-and-memchr-optimizations.html?utm_source=chatgpt.com "std::find () and memchr () Optimizations - Georg's Log"
+
+me:
+I've refactored my code based on your suggestion, what do you think? <3 (see on commit 44ffa9c0f63decff3821f311c9d0fcd37f2e32f3)
+
+ChatGPT:
+You’ve definitely pulled in the core ideas—splitting into an explicit “count” phase and then a clean “split-lines” + “split-fields” phase—and your error handling is much tighter now. A few notes:
+
+---
+
+### 👍 What’s great
+
+* **Explicit error cleanup**
+  You close `filefd` on every failure path and free both `*buf` and `*ptr` if anything goes wrong.
+
+* **Single character-set for counting**
+  You only walk the buffer once to count `\n`, then you know exactly how many entries to allocate.
+
+* **Logical separation**
+  The two loops (one for counting, one for tokenizing) are clear and maintainable.
+
+---
+
+### 🤔 Room to make it even better
+
+1. **Initialize your out-parameters**
+   At the top of `parse_auth_file` do
+
+   ```c
+   *ptr = NULL;
+   *buf = NULL;
+   ```
+
+   so that in any `goto error` path you never attempt `free()` on an uninitialized pointer.
+
+2. **Use `fstat()` instead of `lseek()`**
+
+   ```c
+   struct stat st;
+   if (fstat(fd, &st) < 0) …
+   off_t fsize = st.st_size;
+   ```
+
+   avoids the extra `lseek(fd, 0, SEEK_SET)` and is a bit more idiomatic.
+
+3. **Prefer `strsep()` over `strtok_r()`**
+
+   * `strtok_r` treats consecutive delimiters as one, so it will silently skip empty lines.
+   * Under the hood glibc implements `strsep()` with `strpbrk()`, which will vectorize (SIMD) when scanning for your single-byte delimiter, so you still get the same “fast C library” benefit.
+   * The API is even simpler:
+
+     ```c
+     char *line, *savep = *buf;
+     size_t idx = 0;
+     while ((line = strsep(&savep, "\n")) != NULL && idx < item_nr) {
+         if (*line == '\0') continue;  // skip blank lines if you like
+         char *colon = strchr(line, ':');
+         …
+     }
+     ```
+
+4. **Check your `read()` length**
+   Always verify that `read(...) == fsize`, or loop until you’ve consumed exactly `fsize` bytes.
+
+5. **Tidy unused variables**
+   You declared `__uint8_t ulen, plen` (and `MAX_LEN`) but never use them—feel free to drop them.
+
+---
+
+### Revised sketch
+
+Putting it all together, here’s how your parsing loop might look with those changes:
+
+```c
+int parse_auth_file(const char *filename,
+                    struct userpwd_pair **ptr,
+                    char **buf)
+{
+    struct stat st;
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) < 0) { close(fd); return -1; }
+    off_t fsize = st.st_size;
+
+    *ptr = NULL;
+    *buf = malloc(fsize + 1);
+    if (!*buf) { close(fd); return -1; }
+
+    ssize_t r = read(fd, *buf, fsize);
+    close(fd);
+    if (r != fsize) goto error;
+
+    (*buf)[fsize] = '\0';
+
+    /* count lines */
+    size_t count = 0;
+    for (char *p = *buf; *p; ++p)
+        if (*p == '\n') ++count;
+    if (fsize > 0 && (*buf)[fsize-1] != '\n') ++count;
+    if (count == 0) {
+        fprintf(stderr, "empty file\n");
+        goto error;
+    }
+
+    *ptr = calloc(count, sizeof **ptr);
+    if (!*ptr) goto error;
+
+    /* split lines then fields */
+    char *savep = *buf;
+    size_t i = 0;
+    char *line;
+    while ((line = strsep(&savep, "\n")) &&
+           i < count)
+    {
+        if (*line == '\0') continue;  // skip blank lines
+
+        char *colon = strchr(line, ':');
+        if (!colon) {
+            fprintf(stderr, "malformed line\n");
+            goto error;
+        }
+        *colon = '\0';
+        (*ptr)[i].username = line;
+        (*ptr)[i].password = colon + 1;
+        i++;
+    }
+
+    return (int)i;
+
+error:
+    free(*buf);
+    free(*ptr);
+    return -1;
+}
+```
+
+With these tweaks you:
+
+* Guarantee safe cleanup on any path.
+* Lean on `strsep`/`strpbrk` (vectorized in glibc) instead of the two-scan behavior of `strtok_r`.
+* Keep the same two-phase structure (count → parse) that is both clear and high-throughput.
+
+Overall your refactor is solid—these changes just tighten up correctness, clarity, and squeeze out every last drop of libc’s optimizations. 😊
+
