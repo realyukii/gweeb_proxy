@@ -716,7 +716,8 @@ static int handle_data(struct single_connection *from,
 		} else if (!ret) {
 			pr_debug(
 				DEBUG_SEND_RECV,
-				"EoF received on sockfd %d, closing the connection."
+				"EoF received on sockfd %d, "
+				"closing the connection."
 				" terminating the session.\n",
 				from->sockfd
 			);
@@ -1014,6 +1015,15 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 		if (errno == EAGAIN)
 			return -EAGAIN;
 		perror("recv on accept greeting");
+		return -EXIT_FAILURE;
+	}
+	if (!ret) {
+		pr_debug(
+			VERBOSE,
+			"sockfd %d closes the connection "
+			"while accept greeting\n",
+			a->sockfd
+		);
 		return -EXIT_FAILURE;
 	}
 	pr_debug(
@@ -1380,6 +1390,15 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		perror("recv on handle userpwd");
 		return -EXIT_FAILURE;
 	}
+	if (!ret) {
+		pr_debug(
+			VERBOSE,
+			"sockfd %d closes the connection "
+			"while handle usr/pwd auth\n",
+			c->sockfd
+		);
+		return -EXIT_FAILURE;
+	}
 	pr_debug(
 		DEBUG_SEND_RECV,
 		"%d bytes were received from sockfd %d.\n",
@@ -1482,6 +1501,15 @@ static int handle_request(struct pair_connection *pc,
 		if (errno == EAGAIN)
 			return -EAGAIN;
 		perror("recv on handle request");
+		return -EXIT_FAILURE;
+	}
+	if (!ret) {
+		pr_debug(
+			VERBOSE,
+			"sockfd %d closes the connection "
+			"while handle request\n",
+			a->sockfd
+		);
 		return -EXIT_FAILURE;
 	}
 	pr_debug(
