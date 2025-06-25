@@ -120,7 +120,11 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 			);
 			goto error;
 		}
-		plen = (svptr - 1) - (colon + 1);
+		/* no more svptr, indicating this is the last line */
+		if (!svptr)
+			plen = &(*buf)[fsize - 1] - (colon + 1);
+		else
+			plen = (svptr - 1) - (colon + 1);
 		printf("plen %d\n", plen);
 		if (plen > MAX_LEN) {
 			fprintf(
