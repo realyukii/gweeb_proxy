@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <stdio.h> // temporary for printf
 
 #define MAX_LEN 255
@@ -23,17 +24,15 @@ struct userpwd_pair {
 */
 static int rfile(char *f, int *filefd)
 {
-	off_t off;
+	struct stat st;
 	*filefd = open(f, O_RDONLY);
 	if (*filefd < 0)
 		return -1;
 
-	off = lseek(*filefd, 0, SEEK_END);
-	if (off < 0)
+	if (fstat(*filefd, &st) < 0)
 		return -1;
 
-	lseek(*filefd, 0, SEEK_SET);
-	return off;
+	return st.st_size;
 }
 
 /*
