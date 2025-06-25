@@ -225,7 +225,7 @@ static const struct rlimit file_limits = {
 	.rlim_max = 100000
 };
 static pthread_t *threads;
-static const char opts[] = "hb:t:T:f:s";
+static const char opts[] = "hw:b:t:T:f:s";
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-s\tenable socks5 mode\n"
