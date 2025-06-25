@@ -52,7 +52,7 @@ static int rfile(char *f, int *filefd)
 */
 int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 {
-	char *svptr, *bptr, *tok, *colon, c;
+	char *svptr, *line, *colon, c;
 	int filefd, item_nr, i, ulen, plen;
 	long fsize;
 	struct userpwd_pair *p;
@@ -94,11 +94,14 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 		goto error;
 
 	/* begin parsing buffer */
-	tok = strtok_r(*buf, "\n", &svptr);
-	bptr = *buf;
+	svptr = *buf;
 	i = 0;
-	while (tok) {
-		colon = strchr(bptr, ':');
+	while ((line = strsep(&svptr, "\n"))) {
+		if (*line == '\0') {
+			item_nr--;
+			continue;
+		}
+		colon = strchr(line, ':');
 		if (!colon) {
 			fprintf(
 				stderr,
@@ -109,7 +112,7 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 		*colon = '\0';
 
 		p = &(*ptr)[i];
-		ulen = colon - bptr;
+		ulen = colon - line;
 		if (ulen > MAX_LEN) {
 			fprintf(
 				stderr,
@@ -117,7 +120,8 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 			);
 			goto error;
 		}
-		plen = (svptr - 1) - colon;
+		plen = (svptr - 1) - (colon + 1);
+		printf("plen %d\n", plen);
 		if (plen > MAX_LEN) {
 			fprintf(
 				stderr,
@@ -133,12 +137,9 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 			goto error;
 		}
 
-		p->username = bptr;
+		p->username = line;
 		p->password = colon + 1;
 		i++;
-
-		bptr = svptr;
-		tok = strtok_r(NULL, "\n", &svptr);
 	}
 
 	return item_nr;
