@@ -64,11 +64,12 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 	// extra one bytes for null-terminated byte
 	*buf = malloc(fsize + 1);
 	if (!*buf)
-		return -1;
+		goto error;
 	(*buf)[fsize] = '\0';
 
 	if (read(filefd, *buf, fsize) < 0)
-		return -1;
+		goto error;
+	close(filefd);
 
 	item_nr = ulen = plen = 0;
 	for (i = 0; i < fsize; i++) {
@@ -79,7 +80,7 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 
 	if (!item_nr) {
 		fprintf(stderr, "file is empty.\n");
-		return -1;
+		goto error;
 	}
 
 	/*
@@ -90,7 +91,7 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 	// asm volatile("int3");
 	*ptr = malloc((item_nr) * sizeof(**ptr));
 	if (!*ptr)
-		return -1;
+		goto error;
 
 	l = 0;
 	p = &(*ptr)[l];
@@ -118,6 +119,12 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 	}
 
 	return item_nr;
+error:
+	close(filefd);
+	if (*buf)
+		free(buf);
+
+	return -1;
 }
 
 
