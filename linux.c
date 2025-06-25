@@ -98,6 +98,8 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 	i = 0;
 	while ((line = strsep(&svptr, "\n"))) {
 		if (*line == '\0') {
+			if (!svptr)
+				break;
 			item_nr--;
 			continue;
 		}
@@ -125,7 +127,6 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 			plen = &(*buf)[fsize - 1] - (colon + 1);
 		else
 			plen = (svptr - 1) - (colon + 1);
-		printf("plen %d\n", plen);
 		if (plen > MAX_LEN) {
 			fprintf(
 				stderr,
