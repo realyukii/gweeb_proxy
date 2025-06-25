@@ -15,6 +15,11 @@ struct userpwd_pair {
 	char *password;
 };
 
+struct userpwd_list {
+	int nr_entry;
+	struct userpwd_pair *arr;
+};
+
 /*
 * Calculate length of file contents.
 *
@@ -47,19 +52,21 @@ static int rfile(char *f, int *filefd)
 * @param filename path to the filename.
 * @param ptr unallocated buffer to be initialized with array of struct.
 * @param buffer to free after you are done using it.
-* @return number of item on success, or a negative integer on failure.
+* @return zero on success, or a negative integer on failure.
 */
-int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
+int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
 {
 	char *svptr, *line, *colon, c;
 	int filefd, item_nr, i, ulen, plen;
 	long fsize;
+	struct userpwd_pair **ptr;
 	struct userpwd_pair *p;
 
 	fsize = rfile(filename, &filefd);
 	if (fsize < 0)
 		return -1;
 
+	ptr = &l->arr;
 	*ptr = NULL;
 
 	/* extra one bytes for null-terminated byte */
@@ -146,7 +153,8 @@ int parse_auth_file(char *filename, struct userpwd_pair **ptr, char **buf)
 		i++;
 	}
 
-	return item_nr;
+	l->nr_entry = item_nr;
+	return 0;
 error:
 	if (filefd != -1)
 		close(filefd);
@@ -158,18 +166,18 @@ error:
 	return -1;
 }
 
-int main(void)
-{
-	char *buf;
-	struct userpwd_pair *ptr;
-	int i, ret = parse_auth_file("./socks5_userpwd_list.db", &ptr, &buf);
-	if (ret < 0)
-		return -1;
+// int main(void)
+// {
+// 	char *buf;
+// 	struct userpwd_pair *ptr;
+// 	int i, ret = parse_auth_file("./socks5_userpwd_list.db", &ptr, &buf);
+// 	if (ret < 0)
+// 		return -1;
 
-	for (i = 0; i < ret; i++)
-		printf("%d. %s:%s\n", i, ptr[i].username, ptr[i].password);
+// 	for (i = 0; i < ret; i++)
+// 		printf("%d. %s:%s\n", i, ptr[i].username, ptr[i].password);
 
-	free(buf);
-	free(ptr);
-	return 0;
-}
+// 	free(buf);
+// 	free(ptr);
+// 	return 0;
+// }

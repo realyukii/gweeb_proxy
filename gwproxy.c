@@ -11,6 +11,7 @@
 #include <sys/resource.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+#include "linux.c"
 
 #define PORT_SZ 2
 #define SOCKS5_VER 5
@@ -204,11 +205,18 @@ struct socks5_userpwd {
 };
 
 struct gwp_args {
+	struct userpwd_list userpwd_arr;
+	/*
+	* pointe to the buffer where content of auth file is stored
+	* TODO:
+	* only useful to store in this struct
+	* if this program can perform graceful exit
+	*/
+	char *userpwd_buf;
 	struct sockaddr_storage src_addr_st, dst_addr_st;
 	size_t thread_nr;
 	size_t timeout;
 	bool socks5_mode;
-	char auth_file[MAX_FILEPATH];
 };
 
 extern char *optarg;
@@ -334,7 +342,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 		return 0;
 	}
 
-	wait_opt = thread_opt = bind_opt = target_opt = NULL;
+	auth_file_opt = wait_opt = thread_opt = bind_opt = target_opt = NULL;
 	args->socks5_mode = false;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
@@ -365,8 +373,18 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 		}
 	}
 
-	/* TODO: parse auth file */
-	(void)auth_file_opt;
+	if (auth_file_opt) {
+		ret = parse_auth_file(
+			auth_file_opt,
+			&args->userpwd_arr,
+			&args->userpwd_buf
+		);
+		if (ret < 0)
+			return -EXIT_FAILURE;
+		if (!args->userpwd_arr.nr_entry)
+			return -EINVAL;
+	} else
+		args->userpwd_arr.nr_entry = 0;
 
 	if (!target_opt && !args->socks5_mode) {
 		fprintf(stderr, "-t option is required\n");
@@ -998,7 +1016,7 @@ static int exchange_data(struct epoll_event *ev, struct pair_connection *pc,
 * @param pc Pointer to pair_connection struct of current session.
 * @return zero on success, and a negative integer on failure.
 */
-static int accept_greeting(struct pair_connection *pc)
+static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 {
 	struct single_connection *a = &pc->client;
 	struct socks5_greeting *g = (void *)a->buf;
@@ -1042,6 +1060,8 @@ static int accept_greeting(struct pair_connection *pc)
 	for (i = 0; i < g->nauth; i++, ptr++) {
 		switch (*ptr) {
 		case NO_AUTH:
+			if (args->userpwd_arr.nr_entry)
+				continue;
 			preferred_auth = NO_AUTH;
 			goto auth_method_found;
 		case USERNAME_PWD:
@@ -1052,8 +1072,6 @@ static int accept_greeting(struct pair_connection *pc)
 
 auth_method_found:
 	pc->preferred_method = preferred_auth;
-	/* for testing username_pwd */
-	pc->preferred_method = USERNAME_PWD;
 	a->len = 0;
 
 	return 0;
@@ -1333,15 +1351,17 @@ static int handle_udp(void)
 * Handle sub-negotiation with username/password auth method.
 *
 * @param pc Pointer to pair_connection struct of current session.
+* @param args Pointer to cmdline arguments.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_userpwd(struct pair_connection *pc)
+static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 {
 	struct single_connection *c = &pc->client;
 	struct socks5_userpwd *pkt = (void *)c->buf;
+	struct userpwd_pair *p;
 	char *username, *password, reply_buf[2];
 	uint8_t *plen;
-	int ret, expected_len = 2;
+	int i, ret, expected_len = 2;
 
 	ret = recv(c->sockfd, c->buf, MAX_USERPWD_PKT, 0);
 	if (ret < 0) {
@@ -1376,14 +1396,20 @@ static int handle_userpwd(struct pair_connection *pc)
 
 	password = (void *)(plen + 1);
 
-	reply_buf[1] = 0x0;
-	ret = memcmp(username, "user", pkt->ulen);
-	if (ret)
-		reply_buf[1] = 0x1;
+	reply_buf[1] = 0x1;
+	for (i = 0; i < args->userpwd_arr.nr_entry; i++) {
+		p = &args->userpwd_arr.arr[i];
+		ret = memcmp(username, p->username, pkt->ulen);
+		if (ret)
+			continue;
 
-	ret = memcmp(password, "pass", *plen);
-	if (ret)
-		reply_buf[1] = 0x1;
+		ret = memcmp(password, p->password, *plen);
+		if (ret)
+			continue;
+
+		reply_buf[1] = 0x0;
+		break;
+	}
 
 	reply_buf[0] = 0x1;
 	ret = send(c->sockfd, reply_buf, sizeof(reply_buf), 0);
@@ -1510,7 +1536,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 
 		pc->state = STATE_EXCHANGE;
 	} else if (pc->state == STATE_ACCEPT_GREETING) {
-		ret = accept_greeting(pc);
+		ret = accept_greeting(pc, args);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				return EAGAIN;
@@ -1535,7 +1561,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	}
 
 	if (pc->state == STATE_AUTH) {
-		ret = handle_userpwd(pc);
+		ret = handle_userpwd(pc, args);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				return EAGAIN;
