@@ -1317,12 +1317,12 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp,
 	}
 
 	reply_len = craft_reply(&reply_buf, d, pc->target.sockfd);
-	if (!a->off)
-		a->off = reply_len;
+	if (!a->len)
+		a->len = reply_len;
 	ret = send(
 		a->sockfd,
-		((char *)(&reply_buf)) + (reply_len - a->off),
-		a->off, 0
+		((char *)(&reply_buf)) + (reply_len - a->len),
+		a->len, 0
 	);
 	if (ret < 0) {
 		if (errno == EAGAIN)
@@ -1336,10 +1336,10 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp,
 		ret, a->sockfd
 	);
 	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(((char *)(&reply_buf)) + (reply_len - a->off), ret);
+		VT_HEXDUMP(((char *)(&reply_buf)) + (reply_len - a->len), ret);
 
-	a->off -= ret;
-	if (a->off)
+	a->len -= ret;
+	if (a->len)
 		return -EAGAIN;
 	a->len = 0;
 
@@ -1580,6 +1580,7 @@ static int handle_request(struct pair_connection *pc,
 				return ret;
 			return -EXIT_FAILURE;
 		}
+		a->len = 0;
 
 		pc->state |= STATE_SEND;
 	}
