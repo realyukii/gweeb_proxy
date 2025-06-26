@@ -783,6 +783,28 @@ try_send:
 }
 
 /*
+* Set EPOLLOUT bit for SOCKS5 mode only.
+*
+* @param a Pointer to struct client.
+* @param epmask_changed Pointer to boolean.
+*/
+static void adjust_single_pollout(struct single_connection *a,
+					bool *epmask_changed)
+{
+	if (a->len > 0) {
+		if (!(a->epmask & EPOLLOUT)) {
+			a->epmask |= EPOLLOUT;
+			*epmask_changed = true;
+		}
+	} else {
+		if (a->epmask & EPOLLOUT) {
+			a->epmask &= ~EPOLLOUT;
+			*epmask_changed = true;
+		}
+	}
+}
+
+/*
 * Set EPOLLOUT bit on epmask member of dst.
 *
 * @param src Pointer to struct single_connection.
@@ -795,6 +817,10 @@ static void adjust_pollout(struct single_connection *src,
 	/*
 	* set EPOLLOUT to epmask when there's remaining bytes in the buffer
 	* waiting to be sent, otherwise, unset it.
+	*
+	* indonesian version:
+	* kalau di src masih ada buffer yang belum dikirim, segera kirim ke-
+	* dst
 	*/
 	if (src->len > 0) {
 		pr_debug(
@@ -913,10 +939,15 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 	struct epoll_event ev;
 	struct single_connection *client = &pc->client, *target = &pc->target;
 
-	adjust_pollout(client, target, &is_target_changed);
-	adjust_pollout(target, client, &is_client_changed);
+	if (pc->state == STATE_EXCHANGE)
+		adjust_pollout(target, client, &is_client_changed);
+	else
+		adjust_single_pollout(client, &is_client_changed);
 	adjust_pollin(client, &is_client_changed);
-	adjust_pollin(target, &is_target_changed);
+	if (target->sockfd != -1) {
+		adjust_pollout(client, target, &is_target_changed);
+		adjust_pollin(target, &is_target_changed);
+	}
 
 	if (is_client_changed) {
 		ev.data.u64 = 0;
@@ -967,15 +998,12 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 * Handle exchange data.
 *
 * @param ev Pointer to epoll event.
-* @param pc Pointer to pair_connection struct of current session.
 * @param a Pointer to the connection (can be either client or target).
 * @param b Pointer to the connection (can be either client or target).
-* @param gwp Pointer to the gwproxy struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
-static int exchange_data(struct epoll_event *ev, struct pair_connection *pc,
-			struct single_connection *a, struct single_connection *b,
-			struct gwproxy *gwp)
+static int exchange_data(struct epoll_event *ev,
+			struct single_connection *a, struct single_connection *b)
 {
 	int ret;
 
@@ -1000,7 +1028,6 @@ static int exchange_data(struct epoll_event *ev, struct pair_connection *pc,
 			return -EXIT_FAILURE;
 	}
 
-	adjust_events(gwp->epfd, pc);
 	return 0;
 }
 
@@ -1664,7 +1691,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			ret = accept_greeting(pc, args);
 			if (ret < 0) {
 				if (ret == -EAGAIN)
-					return EAGAIN;
+					goto adjust_epoll;
 				goto exit_err;
 			}
 		}
@@ -1673,7 +1700,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			ret = response_handshake(pc);
 			if (ret < 0) {
 				if (ret == -EAGAIN)
-					return EAGAIN;
+					goto adjust_epoll;
 				goto exit_err;
 			}
 		}
@@ -1688,7 +1715,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		ret = handle_userpwd(pc, args);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
-				return EAGAIN;
+				goto adjust_epoll;
 			goto exit_err;
 		}
 
@@ -1699,7 +1726,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		ret = handle_request(pc, gwp, args);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
-				return EAGAIN;
+				goto adjust_epoll;
 			goto exit_err;
 		}
 
@@ -1707,10 +1734,13 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	}
 
 	if (pc->state & STATE_EXCHANGE) {
-		ret = exchange_data(ev, pc, a, b, gwp);
+		ret = exchange_data(ev, a, b);
 		if (ret < 0)
 			goto exit_err;
 	}
+
+adjust_epoll:
+	adjust_events(gwp->epfd, pc);
 
 	return 0;
 exit_err:
