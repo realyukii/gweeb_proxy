@@ -1689,14 +1689,18 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 	} else if (pc->state & STATE_GREETING) {
 		if (!(pc->state & STATE_SEND)) {
 			ret = accept_greeting(pc, args);
-			if (ret < 0 && ret != -EAGAIN) {
+			if (ret < 0) {
+				if (ret == -EAGAIN)
+					goto adjust_epoll;
 				goto exit_err;
 			}
 		}
 
 		if (pc->state & STATE_SEND) {
 			ret = response_handshake(pc);
-			if (ret < 0 && ret != -EAGAIN) {
+			if (ret < 0) {
+				if (ret == -EAGAIN)
+					goto adjust_epoll;
 				goto exit_err;
 			}
 		}
@@ -1709,7 +1713,9 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 
 	if (pc->state & STATE_AUTH) {
 		ret = handle_userpwd(pc, args);
-		if (ret < 0 && ret != -EAGAIN) {
+		if (ret < 0) {
+			if (ret == -EAGAIN)
+				goto adjust_epoll;
 			goto exit_err;
 		}
 
@@ -1718,7 +1724,9 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 
 	if (pc->state & STATE_REQUEST) {
 		ret = handle_request(pc, gwp, args);
-		if (ret < 0 && ret != -EAGAIN) {
+		if (ret < 0) {
+			if (ret == -EAGAIN)
+				goto adjust_epoll;
 			goto exit_err;
 		}
 
@@ -1731,6 +1739,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			goto exit_err;
 	}
 
+adjust_epoll:
 	adjust_events(gwp->epfd, pc);
 
 	return 0;
