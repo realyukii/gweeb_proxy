@@ -1578,8 +1578,8 @@ static int handle_request(struct pair_connection *pc,
 
 		ret = parse_request(a, &d);
 		if (ret < 0) {
-			if (errno == EAGAIN)
-				return -EAGAIN;
+			if (ret == -EAGAIN)
+				return ret;
 			return -EXIT_FAILURE;
 		}
 
