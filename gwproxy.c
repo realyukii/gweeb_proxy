@@ -57,15 +57,13 @@ enum gwp_state {
 	/* not in socks5 mode */
 	NO_SOCKS5		= 0x0,
 	/* hello packet from client */
-	STATE_ACCEPT_GREETING	= 0x1,
-	/* send reply to the client */
-	STATE_GREETING_ACCEPTED	= 0x2,
+	STATE_GREETING		= 0x1,
 	/* negotiating authentication method */
-	STATE_AUTH		= 0x4,
+	STATE_AUTH		= 0x2,
 	/* client request. */
-	STATE_REQUEST		= 0x8,
+	STATE_REQUEST		= 0x4,
 	/* exchange the data between client and destination */
-	STATE_EXCHANGE		= 0x10
+	STATE_EXCHANGE		= 0x8
 };
 
 enum auth_type {
@@ -605,7 +603,7 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	}
 
 	if (args->socks5_mode)
-		pc->state = STATE_ACCEPT_GREETING;
+		pc->state = STATE_GREETING;
 	else
 		pc->state = NO_SOCKS5;
 
@@ -1077,6 +1075,7 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 auth_method_found:
 	pc->preferred_method = preferred_auth;
 	a->len = 0;
+	pc->state |= STATE_SEND;
 
 	return 0;
 }
@@ -1660,23 +1659,23 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			goto exit_err;
 
 		pc->state = STATE_EXCHANGE;
-	} else if (pc->state & STATE_ACCEPT_GREETING) {
-		ret = accept_greeting(pc, args);
-		if (ret < 0) {
-			if (ret == -EAGAIN)
-				return EAGAIN;
-			goto exit_err;
+	} else if (pc->state & STATE_GREETING) {
+		if (!(pc->state & STATE_SEND)) {
+			ret = accept_greeting(pc, args);
+			if (ret < 0) {
+				if (ret == -EAGAIN)
+					return EAGAIN;
+				goto exit_err;
+			}
 		}
 
-		pc->state = STATE_GREETING_ACCEPTED;
-	}
-
-	if (pc->state & STATE_GREETING_ACCEPTED) {
-		ret = response_handshake(pc);
-		if (ret < 0) {
-			if (ret == -EAGAIN)
-				return EAGAIN;
-			goto exit_err;
+		if (pc->state & STATE_SEND) {
+			ret = response_handshake(pc);
+			if (ret < 0) {
+				if (ret == -EAGAIN)
+					return EAGAIN;
+				goto exit_err;
+			}
 		}
 
 		if (pc->preferred_method == NO_AUTH)
