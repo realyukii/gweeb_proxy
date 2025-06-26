@@ -1295,24 +1295,17 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 * @param pc Pointer to pair_connection struct of current session.
 * @param gwp Pointer to the gwproxy struct (thread data).
 * @param args Pointer to application configuration.
+* @param d Pointer to initialized target address.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_connect(struct pair_connection *pc,
-			struct gwproxy *gwp, struct gwp_args *args)
+static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp,
+			struct gwp_args *args, struct sockaddr_storage *d)
 {
 	/* filled with target address to which the client connect. */
-	struct sockaddr_storage d;
 	struct single_connection *a = &pc->client;
 	struct socks5_connect_reply reply_buf;
 	int ret;
 	size_t reply_len;
-
-	ret = parse_request(a, &d);
-	if (ret < 0) {
-		if (errno == EAGAIN)
-			return -EAGAIN;
-		return -EXIT_FAILURE;
-	}
 
 	/*
 	* TODO:
@@ -1320,12 +1313,12 @@ static int handle_connect(struct pair_connection *pc,
 	* or fail before sending a reply
 	*/
 	if (pc->target.sockfd == -1) {
-		ret = prepare_exchange(gwp, pc, &d, args);
+		ret = prepare_exchange(gwp, pc, d, args);
 		if (ret < 0)
 			return -EXIT_FAILURE;
 	}
 
-	reply_len = craft_reply(&reply_buf, &d, pc->target.sockfd);
+	reply_len = craft_reply(&reply_buf, d, pc->target.sockfd);
 	if (!a->off)
 		a->off = reply_len;
 	ret = send(
@@ -1546,6 +1539,7 @@ static int handle_request(struct pair_connection *pc,
 			struct gwproxy *gwp, struct gwp_args *args)
 {
 	/* filled with target address to which the client connect. */
+	struct sockaddr_storage d;
 	struct single_connection *a = &pc->client;
 	struct socks5_connect_request *c = (void *)a->buf;
 	int ret, rlen = DEFAULT_BUF_SZ - a->len;
@@ -1582,6 +1576,13 @@ static int handle_request(struct pair_connection *pc,
 		if (a->len < fixed_len)
 			return -EAGAIN;
 
+		ret = parse_request(a, &d);
+		if (ret < 0) {
+			if (errno == EAGAIN)
+				return -EAGAIN;
+			return -EXIT_FAILURE;
+		}
+
 		pc->state |= STATE_SEND;
 	}
 
@@ -1596,7 +1597,7 @@ static int handle_request(struct pair_connection *pc,
 			return -EXIT_FAILURE;
 		}
 
-		ret = handle_connect(pc, gwp, args);
+		ret = handle_connect(pc, gwp, args, &d);
 		if (ret < 0)
 			return ret;
 	}
