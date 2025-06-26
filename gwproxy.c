@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include "linux.c"
 
+#define REPLY_LEN 2
 #define PORT_SZ 2
 #define SOCKS5_VER 5
 #define MAX_DOMAIN_LEN 255
@@ -47,18 +48,24 @@ enum typemask {
 	EV_BIT_TIMER		= (0x0003ULL << 48ULL)
 };
 
+enum gwp_substate {
+	STATE_RECV	= (0x0 << 12ULL),
+	STATE_SEND	= (0x1 << 12ULL)
+};
+
 enum gwp_state {
 	/* not in socks5 mode */
-	NO_SOCKS5,
+	NO_SOCKS5		= 0x0,
 	/* hello packet from client */
-	STATE_ACCEPT_GREETING,
-	STATE_GREETING_ACCEPTED,
+	STATE_ACCEPT_GREETING	= 0x1,
+	/* send reply to the client */
+	STATE_GREETING_ACCEPTED	= 0x2,
 	/* negotiating authentication method */
-	STATE_AUTH,
+	STATE_AUTH		= 0x4,
 	/* client request. */
-	STATE_REQUEST,
+	STATE_REQUEST		= 0x8,
 	/* exchange the data between client and destination */
-	STATE_EXCHANGE
+	STATE_EXCHANGE		= 0x10
 };
 
 enum auth_type {
@@ -147,8 +154,10 @@ struct pair_connection {
 	/* connection state of target */
 	bool is_connected;
 	/* state of the established session */
-	enum gwp_state state;
+	uint16_t state;
+	/* the following is used on socks5 mode */
 	enum auth_type preferred_method;
+	bool is_authenticated;
 };
 
 struct gwproxy {
@@ -1310,9 +1319,11 @@ static int handle_connect(struct pair_connection *pc,
 	* check if the connection is successfuly established
 	* or fail before sending a reply
 	*/
-	ret = prepare_exchange(gwp, pc, &d, args);
-	if (ret < 0)
-		return -EXIT_FAILURE;
+	if (pc->target.sockfd == -1) {
+		ret = prepare_exchange(gwp, pc, &d, args);
+		if (ret < 0)
+			return -EXIT_FAILURE;
+	}
 
 	reply_len = craft_reply(&reply_buf, &d, pc->target.sockfd);
 	if (!a->off)
@@ -1365,18 +1376,18 @@ static int handle_udp(void)
 }
 
 /*
-* Handle sub-negotiation with username/password auth method.
+* Read user/password auth data.
 *
 * @param pc Pointer to pair_connection struct of current session.
 * @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
+static int req_userpwd(struct pair_connection *pc, struct gwp_args *args)
 {
 	struct single_connection *c = &pc->client;
 	struct socks5_userpwd *pkt = (void *)c->buf;
 	struct userpwd_pair *p;
-	char *username, *password, reply_buf[2];
+	char *username, *password;
 	uint8_t *plen;
 	size_t expected_len = 2;
 	int rlen, i, ret;
@@ -1435,7 +1446,7 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 
 	password = (void *)(plen + 1);
 
-	reply_buf[1] = 0x1;
+	pc->is_authenticated = 0x1;
 	for (i = 0; i < args->userpwd_arr.nr_entry; i++) {
 		p = &args->userpwd_arr.arr[i];
 		ret = memcmp(username, p->username, pkt->ulen);
@@ -1446,14 +1457,29 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		if (ret)
 			continue;
 
-		reply_buf[1] = 0x0;
+		pc->is_authenticated = 0x0;
 		break;
 	}
 
-	reply_buf[0] = 0x1;
+	pc->state |= STATE_SEND;
+
+	return 0;
+}
+
+/*
+* Reply user/password auth sub-negotiation.
+*
+* @param c Pointer to client data
+* @param reply_buf Pointer to the buffer.
+* @return zero on success, or a negative integer on failure.
+*/
+static int rep_userpwd(struct single_connection *c, char *reply_buf)
+{
+	int ret;
+
 	if (!c->len)
-		c->len = sizeof(reply_buf);
-	ret = send(c->sockfd, &reply_buf[sizeof(reply_buf) - c->len], c->len, 0);
+		c->len = REPLY_LEN;
+	ret = send(c->sockfd, &reply_buf[REPLY_LEN - c->len], c->len, 0);
 	if (ret < 0) {
 		ret = errno;
 		if (ret == EAGAIN)
@@ -1467,14 +1493,43 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		ret, c->sockfd
 	);
 	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&reply_buf[sizeof(reply_buf) - c->len], ret);
+		VT_HEXDUMP(&reply_buf[REPLY_LEN - c->len], ret);
 
 	c->len -= ret;
 	if (c->len)
 		return -EAGAIN;
 
-	if (reply_buf[1] == 0x1)
-		return -EXIT_FAILURE;
+	return 0;
+}
+
+/*
+* Handle sub-negotiation with username/password auth method.
+*
+* @param pc Pointer to pair_connection struct of current session.
+* @param args Pointer to application configuration.
+* @return zero on success, or a negative integer on failure.
+*/
+static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
+{
+	char reply_buf[2];
+	int ret;
+
+	if (!(pc->state & STATE_SEND)) {
+		ret = req_userpwd(pc, args);
+		if (ret < 0)
+			return ret;
+	}
+
+	if ((pc->state & STATE_SEND)) {
+		reply_buf[0] = 0x1;
+		reply_buf[1] = pc->is_authenticated;
+		ret = rep_userpwd(&pc->client, reply_buf);
+		if (ret < 0)
+			return ret;
+
+		if (reply_buf[1] == 0x1)
+			return -EXIT_FAILURE;
+	}
 
 	return 0;
 }
@@ -1496,49 +1551,55 @@ static int handle_request(struct pair_connection *pc,
 	int ret, rlen = DEFAULT_BUF_SZ - a->len;
 	size_t fixed_len;
 
-	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
-	if (ret < 0) {
-		if (errno == EAGAIN)
-			return -EAGAIN;
-		perror("recv on handle request");
-		return -EXIT_FAILURE;
-	}
-	if (!ret) {
+	if (!(pc->state & STATE_SEND)) {
+		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
+		if (ret < 0) {
+			if (errno == EAGAIN)
+				return -EAGAIN;
+			perror("recv on handle request");
+			return -EXIT_FAILURE;
+		}
+		if (!ret) {
+			pr_debug(
+				VERBOSE,
+				"sockfd %d closes the connection "
+				"while handle request\n",
+				a->sockfd
+			);
+			return -EXIT_FAILURE;
+		}
 		pr_debug(
-			VERBOSE,
-			"sockfd %d closes the connection "
-			"while handle request\n",
+			DEBUG_SEND_RECV,
+			"%d bytes were received from sockfd %d.\n",
+			ret,
 			a->sockfd
 		);
-		return -EXIT_FAILURE;
-	}
-	pr_debug(
-		DEBUG_SEND_RECV,
-		"%d bytes were received from sockfd %d.\n",
-		ret,
-		a->sockfd
-	);
-	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&a->buf[a->len], ret);
+		if (DEBUG_LVL == DEBUG_SEND_RECV)
+			VT_HEXDUMP(&a->buf[a->len], ret);
 
-	a->len += ret;
-	fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
-	if (a->len < fixed_len)
-		return -EAGAIN;
+		a->len += ret;
+		fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
+		if (a->len < fixed_len)
+			return -EAGAIN;
 
-	if (c->ver != SOCKS5_VER) {
-		pr_debug(VERBOSE, "unsupported socks version.\n");
-		return -EXIT_FAILURE;
+		pc->state |= STATE_SEND;
 	}
 
-	if (c->cmd != CONNECT) {
-		pr_debug(VERBOSE, "unsupported command, yet.\n");
-		return -EXIT_FAILURE;
-	}
+	if (pc->state & STATE_SEND) {
+		if (c->ver != SOCKS5_VER) {
+			pr_debug(VERBOSE, "unsupported socks version.\n");
+			return -EXIT_FAILURE;
+		}
 
-	ret = handle_connect(pc, gwp, args);
-	if (ret < 0)
-		return ret;
+		if (c->cmd != CONNECT) {
+			pr_debug(VERBOSE, "unsupported command, yet.\n");
+			return -EXIT_FAILURE;
+		}
+
+		ret = handle_connect(pc, gwp, args);
+		if (ret < 0)
+			return ret;
+	}
 
 	return 0;
 }
@@ -1598,7 +1659,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			goto exit_err;
 
 		pc->state = STATE_EXCHANGE;
-	} else if (pc->state == STATE_ACCEPT_GREETING) {
+	} else if (pc->state & STATE_ACCEPT_GREETING) {
 		ret = accept_greeting(pc, args);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
@@ -1609,7 +1670,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		pc->state = STATE_GREETING_ACCEPTED;
 	}
 
-	if (pc->state == STATE_GREETING_ACCEPTED) {
+	if (pc->state & STATE_GREETING_ACCEPTED) {
 		ret = response_handshake(pc);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
@@ -1623,7 +1684,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 			pc->state = STATE_AUTH;
 	}
 
-	if (pc->state == STATE_AUTH) {
+	if (pc->state & STATE_AUTH) {
 		ret = handle_userpwd(pc, args);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
@@ -1634,7 +1695,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		pc->state = STATE_REQUEST;
 	}
 
-	if (pc->state == STATE_REQUEST) {
+	if (pc->state & STATE_REQUEST) {
 		ret = handle_request(pc, gwp, args);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
@@ -1645,7 +1706,7 @@ static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
 		pc->state = STATE_EXCHANGE;
 	}
 
-	if (pc->state == STATE_EXCHANGE) {
+	if (pc->state & STATE_EXCHANGE) {
 		ret = exchange_data(ev, pc, a, b, gwp);
 		if (ret < 0)
 			goto exit_err;
