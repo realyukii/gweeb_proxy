@@ -168,6 +168,7 @@ struct gwproxy {
 struct socks5_greeting {
 	uint8_t ver;
 	uint8_t nauth;
+	uint8_t methods[255];
 };
 
 struct socks5_addr {
@@ -1013,9 +1014,8 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 {
 	struct single_connection *a = &pc->client;
 	struct socks5_greeting *g = (void *)a->buf;
-	uint8_t *ptr;
 	unsigned preferred_auth = NONE;
-	int ret, i, rlen = DEFAULT_BUF_SZ - a->len;
+	int ret, i, rlen = sizeof(*g) - a->len;
 
 	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
 	if (ret < 0) {
@@ -1058,9 +1058,8 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 	if (a->len - 2 < g->nauth)
 		return -EAGAIN;
 
-	ptr = &g->nauth + 1;
-	for (i = 0; i < g->nauth; i++, ptr++) {
-		switch (*ptr) {
+	for (i = 0; i < g->nauth; i++) {
+		switch (g->methods[i]) {
 		case NO_AUTH:
 			if (args->userpwd_arr.nr_entry)
 				continue;
@@ -1541,7 +1540,7 @@ static int handle_request(struct pair_connection *pc,
 	struct sockaddr_storage d;
 	struct single_connection *a = &pc->client;
 	struct socks5_connect_request *c = (void *)a->buf;
-	int ret, rlen = DEFAULT_BUF_SZ - a->len;
+	int ret, rlen = (sizeof(*c) + PORT_SZ) - a->len;
 	size_t fixed_len;
 
 	if (!(pc->state & STATE_SEND)) {
