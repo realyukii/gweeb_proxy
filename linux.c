@@ -59,6 +59,7 @@ int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
 	char *svptr, *line, *colon, c;
 	int filefd, item_nr, i, ulen, plen;
 	long fsize;
+	int ret;
 	struct userpwd_pair **ptr;
 	struct userpwd_pair *p;
 
@@ -75,10 +76,16 @@ int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
 		goto error;
 	(*buf)[fsize] = '\0';
 
-	if (read(filefd, *buf, fsize) < 0)
+	ret = read(filefd, *buf, fsize);
+	if (ret < 0)
 		goto error;
 	close(filefd);
 	filefd = -1;
+
+	if (!ret) {
+		fprintf(stderr, "file is empty.\n");
+		goto error;
+	}
 
 	item_nr = 0;
 	for (i = 0; i < fsize; i++) {
@@ -87,14 +94,10 @@ int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
 			item_nr++;
 	}
 
-	if (!item_nr) {
-		fprintf(stderr, "file is empty.\n");
-		goto error;
-	}
-
 	/* if last line isn’t newline-terminated, we still have an entry */
 	if ((*buf)[fsize - 1] != '\n')
 		item_nr++;
+
 	*ptr = malloc((item_nr) * sizeof(**ptr));
 	if (!*ptr)
 		goto error;
@@ -130,7 +133,7 @@ int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
 		}
 		/* no more svptr, indicating this is the last line */
 		if (!svptr)
-			plen = &(*buf)[fsize - 1] - (colon + 1);
+			plen = &(*buf)[fsize - 1] - (colon);
 		else
 			plen = (svptr - 1) - (colon + 1);
 		if (plen > MAX_LEN) {
@@ -151,6 +154,15 @@ int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
 		p->username = line;
 		p->password = colon + 1;
 		i++;
+	}
+
+	if (!item_nr) {
+		fprintf(
+			stderr,
+			"file is still empty, "
+			"don't try to fool me with newline.\n"
+		);
+		goto error;
 	}
 
 	l->nr_entry = item_nr;
