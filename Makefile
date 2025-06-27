@@ -1,5 +1,7 @@
-all: build/gwproxy build/gwproxy_gdb build/gwproxy_memcheck
+all: build/ip_converter build/gwproxy build/gwproxy_gdb build/gwproxy_memcheck
 
+build/ip_converter: ip_converter.c
+	gcc -Wextra -Wall $^ -o $@
 build/gwproxy: gwproxy.c
 	gcc -Wmaybe-uninitialized -DDEBUG_LVL=5 -Wall -Wextra $^ -o $@
 build/gwproxy_memcheck: gwproxy.c

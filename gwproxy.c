@@ -1754,7 +1754,7 @@ err:
 * Thread callback
 *
 * @param args Pointer to application configuration.
-* @return NULL
+* @return negative integer on failure.
 */
 static void *thread_cb(void *args)
 {
