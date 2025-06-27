@@ -20,7 +20,7 @@
 #define SOCKS5_VER 5
 #define MAX_DOMAIN_LEN 255
 #define MAX_FILEPATH 1024
-#define MAX_USERPWD_PKT 1 + 1 + 255 + 1 + 255
+#define MAX_USERPWD_PKT (1 + 1 + 255 + 1 + 255)
 #define DEFAULT_TIMEOUT 5
 #define DEFAULT_THREAD_NR 4
 #define DEFAULT_BUF_SZ	1024
