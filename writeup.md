@@ -58,3 +58,13 @@ testing socks5 proxy with curl:
 ```bash
 strace -x -e trace=recvfrom  curl -so /dev/null -v -x socks5://lorem:ipsum@[::1]:1080 [::1]:8081
 ```
+
+for observing established connection from client to socks5 proxy server:
+```bash
+ss -tpn -o state established '( dport = 1080 )'
+```
+
+for observing established connection from socks5 proxy server to target:
+```
+ss -tpn -o state established '( sport != 1080 )' | grep gwproxy
+```
