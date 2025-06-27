@@ -21,26 +21,6 @@ struct userpwd_list {
 };
 
 /*
-* Calculate length of file contents.
-*
-* @param f file name.
-* @param filefd pointer to the caller to initialize.
-* @return length of file contents on success, or a negative integer on failure.
-*/
-static int rfile(char *f, int *filefd)
-{
-	struct stat st;
-	*filefd = open(f, O_RDONLY);
-	if (*filefd < 0)
-		return -1;
-
-	if (fstat(*filefd, &st) < 0)
-		return -1;
-
-	return st.st_size;
-}
-
-/*
 * Parse auth file.
 *
 * The function expect file content format with newline-terminated
@@ -49,24 +29,25 @@ static int rfile(char *f, int *filefd)
 *
 * maximum length for each username and password is 255.
 *
-* @param filename path to the filename.
+* @param filefd open file descriptor to the auth file.
 * @param ptr unallocated buffer to be initialized with array of struct.
 * @param buffer to free after you are done using it.
 * @return zero on success, or a negative integer on failure.
 */
-int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
+int parse_auth_file(int filefd, struct userpwd_list *l, char **buf)
 {
 	char *svptr, *line, *colon, c;
-	int filefd, item_nr, i, ulen, plen;
+	int item_nr, i, ulen, plen;
 	long fsize;
 	int ret;
 	struct userpwd_pair **ptr;
 	struct userpwd_pair *p;
+	struct stat st;
 
-	fsize = rfile(filename, &filefd);
-	if (fsize < 0)
+	if (fstat(filefd, &st) < 0)
 		return -1;
 
+	fsize = st.st_size;
 	ptr = &l->arr;
 	*ptr = NULL;
 
@@ -79,8 +60,6 @@ int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
 	ret = read(filefd, *buf, fsize);
 	if (ret < 0)
 		goto error;
-	close(filefd);
-	filefd = -1;
 
 	if (!ret) {
 		fprintf(stderr, "file is empty.\n");
@@ -168,8 +147,6 @@ int parse_auth_file(char *filename, struct userpwd_list *l, char **buf)
 	l->nr_entry = item_nr;
 	return 0;
 error:
-	if (filefd != -1)
-		close(filefd);
 	if (*buf)
 		free(*buf);
 	if (*ptr)

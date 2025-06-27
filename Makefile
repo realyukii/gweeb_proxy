@@ -1,5 +1,7 @@
-all: build/ip_converter build/gwproxy build/gwproxy_gdb build/gwproxy_memcheck
+all: build/test_inotify build/ip_converter build/gwproxy build/gwproxy_gdb build/gwproxy_memcheck
 
+build/test_inotify: test_inotify.c
+	gcc -Wextra -Wall $^ -o $@
 build/ip_converter: ip_converter.c
 	gcc -Wextra -Wall $^ -o $@
 build/gwproxy: gwproxy.c
