@@ -9,4 +9,4 @@ build/gwproxy_gdb: gwproxy.c
 test_conventional: all
 	./build/gwproxy -t [::1]:8088 -b [::1]:8080 -T 1
 test_socks5: all
-	./build/gwproxy -s -b [::]:1080 -T 1
+	strace -x -f ./build/gwproxy -f ./auth.db -s -b [::]:1080 -T 1 -w 60
