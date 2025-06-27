@@ -11,6 +11,7 @@
 #include <sys/resource.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+#include <netdb.h>
 #include "general.c"
 #include "linux.c"
 
@@ -1157,11 +1158,14 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 static int parse_request(struct single_connection *a, struct sockaddr_storage *d)
 {
 	struct socks5_connect_request *c;
-	struct sockaddr_in *in;
-	struct sockaddr_in6 *in6;
+	struct sockaddr_in *in, *tmp;
+	struct sockaddr_in6 *in6, *tmp6;
 	struct socks5_addr *s;
+	struct addrinfo *l;
 	uint8_t ipv4_sz, ipv6_sz, domainlen_sz, domainname_sz;
 	size_t expected_len, fixed_len;
+	char dname[MAX_DOMAIN_LEN], *dname_ptr;
+	int ret;
 
 	c = (void *)a->buf;
 	s = &c->dst_addr;
@@ -1188,7 +1192,30 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 		expected_len = fixed_len + domainlen_sz + domainname_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
-		/* TODO: resolve domain name */
+		dname_ptr = s->addr.domain.domain;
+		memcpy(dname, dname_ptr, domainname_sz);
+		dname[domainname_sz] = '\0';
+		ret = getaddrinfo(dname, NULL, NULL, &l);
+		if (ret != 0)
+			return -EINVAL;
+
+		switch (l->ai_family) {
+		case AF_INET:
+			in = (struct sockaddr_in *)d;
+			in->sin_family = AF_INET;
+			tmp = (struct sockaddr_in *)l->ai_addr;
+			memcpy(&in->sin_addr, &tmp->sin_addr, sizeof(in->sin_addr));
+			in->sin_port = *(uint16_t *)(dname_ptr + domainname_sz);
+			break;
+		case AF_INET6:
+			in6 = (struct sockaddr_in6 *)d;
+			in6->sin6_family = AF_INET6;
+			tmp6 = (struct sockaddr_in6 *)l->ai_addr;
+			memcpy(&in6->sin6_addr, &tmp6->sin6_addr, sizeof(in6->sin6_addr));
+			in6->sin6_port = *(uint16_t *)(dname_ptr + domainname_sz);
+			break;
+		}
+		freeaddrinfo(l);
 		break;
 	case IPv6:
 		expected_len = fixed_len + ipv6_sz;
