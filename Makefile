@@ -13,7 +13,7 @@ TARGET2		:= $(BUILDDIR)/ip_converter
 TARGET3		:= $(BUILDDIR)/test_inotify
 
 CC		:= gcc
-CFLAGS		:= -Wmaybe-uninitialized -DDEBUG_LVL=0 -Wall -Wextra
+CFLAGS		:= -Wmaybe-uninitialized -DDEBUG_LVL=0 -Wall -Wextra -g3
 
 all: $(TARGET1) $(TARGET2) $(TARGET3)
 

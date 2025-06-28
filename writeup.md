@@ -65,6 +65,6 @@ ss -tpn -o state established '( dport = 1080 )'
 ```
 
 for observing established connection from socks5 proxy server to target:
-```
+```bash
 ss -tpn -o state established '( sport != 1080 )' | grep gwproxy
 ```
