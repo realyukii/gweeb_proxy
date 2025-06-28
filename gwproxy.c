@@ -973,9 +973,11 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 	if (a->len - 2 < g->nauth)
 		return -EAGAIN;
 
-	pthread_rwlock_rdlock(&args->authlock);
-	have_entry = args->userpwd_arr.nr_entry;
-	pthread_rwlock_unlock(&args->authlock);
+	if (args->auth_file) {
+		pthread_rwlock_rdlock(&args->authlock);
+		have_entry = args->userpwd_arr.nr_entry;
+		pthread_rwlock_unlock(&args->authlock);
+	}
 
 	for (i = 0; i < g->nauth; i++) {
 		switch (g->methods[i]) {
@@ -985,8 +987,10 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 			preferred_auth = NO_AUTH;
 			goto auth_method_found;
 		case USERNAME_PWD:
-			preferred_auth = USERNAME_PWD;
-			goto auth_method_found;
+			if (have_entry) {
+				preferred_auth = USERNAME_PWD;
+				goto auth_method_found;
+			}
 		}
 	}
 
@@ -1938,7 +1942,8 @@ int main(int argc, char *argv[])
 		if (ret < 0)
 			return -EXIT_FAILURE;
 		pthread_create(&inotify_t, NULL, inotify_thread, &args);
-	}
+	} else
+		args.userpwd_arr.nr_entry = 0;
 
 	ret = setrlimit(RLIMIT_NOFILE, &file_limits);
 	if (ret < 0) {
