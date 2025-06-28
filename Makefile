@@ -1,16 +1,40 @@
-all: build/test_inotify build/ip_converter build/gwproxy build/gwproxy_gdb build/gwproxy_memcheck
+BUILDDIR	:= build
 
-build/test_inotify: test_inotify.c
-	gcc -Wextra -Wall $^ -o $@
-build/ip_converter: ip_converter.c
-	gcc -Wextra -Wall $^ -o $@
-build/gwproxy: gwproxy.c
-	gcc -Wmaybe-uninitialized -DDEBUG_LVL=5 -Wall -Wextra $^ -o $@
-build/gwproxy_memcheck: gwproxy.c
-	gcc -fsanitize=address -Wall -Wextra -DDEBUG_LVL=1 -g3 $^ -o $@
-build/gwproxy_gdb: gwproxy.c
-	gcc -Wall -Wextra -DDEBUG_LVL=3 -g3 $^ -o $@
-test_conventional: all
-	./build/gwproxy -t [::1]:8088 -b [::1]:8080 -T 1
-test_socks5: all
-	strace -x -f ./build/gwproxy -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+GWPROXYSRC	:= gwproxy.c linux.c general.c
+CONVERTERSRC	:= ip_converter.c general.c
+INOTIFYSRC	:= test_inotify.c linux.c
+
+OBJS1		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(GWPROXYSRC))
+OBJS2		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(CONVERTERSRC))
+OBJS3		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(INOTIFYSRC))
+
+TARGET1		:= $(BUILDDIR)/gwproxy
+TARGET2		:= $(BUILDDIR)/ip_converter
+TARGET3		:= $(BUILDDIR)/test_inotify
+
+CC		:= gcc
+CFLAGS		:= -Wmaybe-uninitialized -DDEBUG_LVL=0 -Wall -Wextra
+
+all: $(TARGET1) $(TARGET2) $(TARGET3)
+
+$(BUILDDIR):
+	mkdir -p $@
+
+$(BUILDDIR)/%.o: %.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET1): $(OBJS1)
+	$(CC) $^ -o $@
+$(TARGET2): $(OBJS2)
+	$(CC) $^ -o $@
+$(TARGET3): $(OBJS3)
+	$(CC) $^ -o $@
+
+test_conventional: $(TARGET1)
+	$< -t [::1]:8081 -b [::1]:8080 -T 1
+test_socks5: $(TARGET1)
+	$< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+
+.PHONY: clean
+clean:
+	rm -rf $(BUILDDIR)/*.o $(TARGET1) $(TARGET2) $(TARGET3)

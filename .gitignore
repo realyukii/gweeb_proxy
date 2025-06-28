@@ -1,1 +1,4 @@
 build
+debug.so
+log.txt
+auth.db

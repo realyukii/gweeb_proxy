@@ -12,8 +12,9 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 #include <netdb.h>
-#include "general.c"
-#include "linux.c"
+#include <sys/inotify.h>
+#include "general.h"
+#include "linux.h"
 
 #define REPLY_LEN 2
 #define PORT_SZ 2
@@ -180,17 +181,13 @@ struct socks5_userpwd {
 
 struct gwp_args {
 	struct userpwd_list userpwd_arr;
-	/*
-	* pointe to the buffer where content of auth file is stored
-	* TODO:
-	* only useful to store in this struct
-	* if this program can perform graceful exit
-	*/
 	char *userpwd_buf;
+	char *prev_userpwd_buf;
 	struct sockaddr_storage src_addr_st, dst_addr_st;
 	size_t thread_nr;
 	size_t timeout;
 	bool socks5_mode;
+	char *auth_file;
 };
 
 extern char *optarg;
@@ -277,18 +274,10 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 		}
 	}
 
-	if (auth_file_opt) {
-		ret = parse_auth_file(
-			auth_file_opt,
-			&args->userpwd_arr,
-			&args->userpwd_buf
-		);
-		if (ret < 0)
-			return -EXIT_FAILURE;
-		if (!args->userpwd_arr.nr_entry)
-			return -EINVAL;
-	} else
-		args->userpwd_arr.nr_entry = 0;
+	if (auth_file_opt)
+		args->auth_file = auth_file_opt;
+	else
+		args->auth_file = NULL;
 
 	if (!target_opt && !args->socks5_mode) {
 		fprintf(stderr, "-t option is required\n");
@@ -1389,6 +1378,10 @@ static int req_userpwd(struct pair_connection *pc, struct gwp_args *args)
 	pc->is_authenticated = 0x1;
 	for (i = 0; i < args->userpwd_arr.nr_entry; i++) {
 		p = &args->userpwd_arr.arr[i];
+
+		if (pkt->ulen != p->ulen || *plen != p->plen)
+			continue;
+
 		ret = memcmp(username, p->username, pkt->ulen);
 		if (ret)
 			continue;
@@ -1790,16 +1783,120 @@ static void *thread_cb(void *args)
 	return (void *)(intptr_t)ret;
 }
 
+/*
+* Inotify thread.
+*
+* @param args Pointer to application configuration.
+* @return negative integer on failure.
+*/
+static void *inotify_thread(void *args)
+{
+	int ret, ifd, epfd, afd;
+	size_t counter = 0;
+	struct gwp_args *a;
+	struct userpwd_pair *pr;
+	struct epoll_event ev;
+	struct inotify_event iev;
+
+	ret = ifd = epfd = afd = -1;
+
+	a = args;
+	a->userpwd_arr.nr_entry = 0;
+	a->userpwd_arr.arr = NULL;
+	a->userpwd_buf = NULL;
+
+	ifd = inotify_init1(IN_NONBLOCK);
+	if (ifd < 0) {
+		perror("inotify_init");
+		goto exit_err;
+	}
+
+	inotify_add_watch(ifd, a->auth_file, IN_CLOSE_WRITE);
+
+	epfd = epoll_create(1);
+	if (epfd < 0) {
+		perror("epoll_create");
+		goto exit_err;
+	}
+
+	ev.events = EPOLLIN;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		goto exit_err;
+	}
+
+	afd = open(a->auth_file, O_RDONLY);
+	if (afd < 0) {
+		perror("open");
+		goto exit_err;
+	}
+
+	ret = parse_auth_file(afd, &a->userpwd_arr, &a->userpwd_buf);
+	if (ret < 0)
+		goto exit_err;
+
+	while (true) {
+		ret = epoll_wait(epfd, &ev, 1, -1);
+		if (ret < 0) {
+			if (errno == EINTR)
+				continue;
+			perror("epoll_wait");
+			goto exit_err;
+		}
+		read(ifd, &iev, sizeof(iev));
+		printf("\e[1;1H\e[2J");
+		printf(
+			"File changed %ld times since program started, "
+			"re-read the file content...\n",
+			++counter
+		);
+
+		if (a->userpwd_arr.nr_entry) {
+			a->userpwd_arr.prev_arr = a->userpwd_arr.arr;
+			a->prev_userpwd_buf = a->userpwd_buf;
+		}
+
+		ret = parse_auth_file(afd, &a->userpwd_arr, &a->userpwd_buf);
+		if (!ret) {
+			free(a->userpwd_arr.prev_arr);
+			free(a->prev_userpwd_buf);
+		}
+
+		for (int i = 0; i < a->userpwd_arr.nr_entry; i++) {
+			pr = &a->userpwd_arr.arr[i];
+			printf("%d. %s:%s\n", i, pr->username, pr->password);
+		}
+	}
+
+exit_err:
+	if (ifd != -1)
+		close(ifd);
+	if (epfd != -1)
+		close(epfd);
+	if (afd != -1)
+		close(afd);
+	if (a->userpwd_arr.arr)
+		free(a->userpwd_arr.arr);
+	if (a->userpwd_buf)
+		free(a->userpwd_buf);
+	return (void *)(intptr_t)ret;
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
 	size_t i;
 	void *retval;
+	pthread_t inotify_t;
 	struct gwp_args args;
 
 	ret = handle_cmdline(argc, argv, &args);
 	if (ret < 0)
 		return ret;
+
+	if (args.auth_file)
+		pthread_create(&inotify_t, NULL, inotify_thread, &args);
 
 	ret = setrlimit(RLIMIT_NOFILE, &file_limits);
 	if (ret < 0) {

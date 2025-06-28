@@ -1,7 +1,7 @@
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "general.c"
+#include "general.h"
 
 extern char *optarg;
 static const char usage[] =
