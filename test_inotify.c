@@ -36,6 +36,7 @@ int main(void)
 	authfd = open(auth_file, O_RDONLY);
 	buf = NULL;
 	l.arr = NULL;
+	l.nr_entry = 0;
 	while (true) {
 		ret = epoll_wait(epfd, &ev, 1, -1);
 		if (stop) {
