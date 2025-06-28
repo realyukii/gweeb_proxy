@@ -1,10 +1,19 @@
 #include <sys/epoll.h>
 #include <sys/inotify.h>
 #include <stdio.h>
+#include <stdbool.h>
+#include <signal.h>
 #include "linux.h"
 
 static const char auth_file[] = "./auth.db";
 static size_t counter = 0;
+
+static bool stop = false;
+
+static void intrHandler(__attribute__((__unused__))int c)
+{
+	stop = true;
+}
 
 int main(void)
 {
@@ -15,6 +24,8 @@ int main(void)
 	char *buf;
 	struct inotify_event iev[2];
 
+	signal(SIGINT, intrHandler);
+
 	ifd = inotify_init1(IN_NONBLOCK);
 	inotify_add_watch(ifd, auth_file, IN_CLOSE_WRITE);
 	epfd = epoll_create(1);
@@ -22,8 +33,18 @@ int main(void)
 	epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
 
 	authfd = open(auth_file, O_RDONLY);
-	while (1) {
+	while (true) {
 		ret = epoll_wait(epfd, &ev, 1, -1);
+		if (stop) {
+			fprintf(
+				stderr,
+				"interrupt signal received, "
+				"stopping the program\n"
+			);
+			break;
+			
+		}
+
 		read(ifd, iev, sizeof(iev));
 		printf("\e[1;1H\e[2J");
 		printf(
