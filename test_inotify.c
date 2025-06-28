@@ -2,6 +2,9 @@
 #include <sys/inotify.h>
 #include <stdio.h>
 #include <stdbool.h>
+#ifndef __USE_POSIX
+#define __USE_POSIX
+#endif
 #include <signal.h>
 #include "linux.h"
 
@@ -23,8 +26,11 @@ int main(void)
 	struct userpwd_pair *pr;
 	char *buf, *prevbuf;
 	struct inotify_event iev[2];
+	struct sigaction s = {
+		.sa_handler = intrHandler
+	};
 
-	signal(SIGINT, intrHandler);
+	sigaction(SIGINT, &s, NULL);
 
 	ifd = inotify_init1(IN_NONBLOCK);
 	inotify_add_watch(ifd, auth_file, IN_CLOSE_WRITE);
