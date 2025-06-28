@@ -28,18 +28,21 @@ int main(void)
 
 	ifd = inotify_init1(IN_NONBLOCK);
 	inotify_add_watch(ifd, auth_file, IN_CLOSE_WRITE);
+
 	epfd = epoll_create(1);
 	ev.events = EPOLLIN;
 	epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
 
 	authfd = open(auth_file, O_RDONLY);
+	buf = NULL;
+	l.arr = NULL;
 	while (true) {
 		ret = epoll_wait(epfd, &ev, 1, -1);
 		if (stop) {
 			fprintf(
 				stderr,
 				"interrupt signal received, "
-				"stopping the program\n"
+				"exiting the program...\n"
 			);
 			break;
 			
@@ -60,6 +63,45 @@ int main(void)
 			printf("%d. %s:%s\n", i, pr->username, pr->password);
 		}
 		free(buf);
+		free(l.arr);
+	}
+
+	fprintf(
+		stderr,
+		"closing file descriptor of %s file\n",
+		auth_file
+	);
+	close(authfd);
+
+	fprintf(
+		stderr,
+		"closing file descriptor of inotify: %d\n",
+		ifd
+	);
+	close(ifd);
+
+	fprintf(
+		stderr,
+		"closing file descriptor of epoll: %d\n",
+		epfd
+	);
+	close(epfd);
+
+	if (buf) {
+		fprintf(
+			stderr,
+			"free memory of file content at %p\n",
+			buf
+		);
+		free(buf);
+	}
+
+	if (l.arr) {
+		fprintf(
+			stderr,
+			"free memory of array of username/password struct at %p\n",
+			l.arr
+		);
 		free(l.arr);
 	}
 
