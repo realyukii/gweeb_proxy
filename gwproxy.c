@@ -189,6 +189,7 @@ struct gwp_args {
 	bool socks5_mode;
 	char *auth_file;
 	int auth_fd;
+	pthread_rwlock_t authlock;
 };
 
 extern char *optarg;
@@ -928,6 +929,7 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 	struct single_connection *a = &pc->client;
 	struct socks5_greeting *g = (void *)a->buf;
 	unsigned preferred_auth = NONE;
+	bool have_entry;
 	int ret, i, rlen = sizeof(*g) - a->len;
 
 	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
@@ -971,10 +973,14 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 	if (a->len - 2 < g->nauth)
 		return -EAGAIN;
 
+	pthread_rwlock_rdlock(&args->authlock);
+	have_entry = args->userpwd_arr.nr_entry;
+	pthread_rwlock_unlock(&args->authlock);
+
 	for (i = 0; i < g->nauth; i++) {
 		switch (g->methods[i]) {
 		case NO_AUTH:
-			if (args->userpwd_arr.nr_entry)
+			if (have_entry)
 				continue;
 			preferred_auth = NO_AUTH;
 			goto auth_method_found;
@@ -1377,6 +1383,7 @@ static int req_userpwd(struct pair_connection *pc, struct gwp_args *args)
 	password = (void *)(plen + 1);
 
 	pc->is_authenticated = 0x1;
+	pthread_rwlock_rdlock(&args->authlock);
 	for (i = 0; i < args->userpwd_arr.nr_entry; i++) {
 		p = &args->userpwd_arr.arr[i];
 
@@ -1394,6 +1401,7 @@ static int req_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		pc->is_authenticated = 0x0;
 		break;
 	}
+	pthread_rwlock_unlock(&args->authlock);
 
 	pc->state |= STATE_SEND;
 
@@ -1845,11 +1853,15 @@ static void *inotify_thread(void *args)
 			a->prev_userpwd_buf = a->userpwd_buf;
 		}
 
+		pthread_rwlock_wrlock(&a->authlock);
+
 		ret = parse_auth_file(a->auth_fd, &a->userpwd_arr, &a->userpwd_buf);
 		if (!ret) {
 			free(a->userpwd_arr.prev_arr);
 			free(a->prev_userpwd_buf);
 		}
+
+		pthread_rwlock_unlock(&a->authlock);
 
 		for (int i = 0; i < a->userpwd_arr.nr_entry; i++) {
 			pr = &a->userpwd_arr.arr[i];
@@ -1895,6 +1907,7 @@ static int init_auth_file(struct gwp_args *args)
 	if (ret < 0)
 		goto exit_err;
 
+	pthread_rwlock_init(&args->authlock, NULL);
 	return 0;
 exit_err:
 	if (afd != -1)
