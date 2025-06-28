@@ -219,3 +219,9 @@ That Makefile is looking solid! A few more tweaks you might consider to make it 
    (You’ve already done this nicely.)
 
 With those additions, you’ll have a “one‑stop” build system that’s clean, efficient, and flexible. Great work getting the linkage sorted out!
+
+
+note:
+keyword regarding Makefile script syntax:
+- order‑only prerequisite (see the pipe character in the Makefile)
+make will ensure the build directory exists before compiling, but changes to the directory’s timestamp won’t force your .o files to rebuild.
