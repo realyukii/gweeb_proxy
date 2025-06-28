@@ -188,6 +188,7 @@ struct gwp_args {
 	size_t timeout;
 	bool socks5_mode;
 	char *auth_file;
+	int auth_fd;
 };
 
 extern char *optarg;
@@ -1791,19 +1792,16 @@ static void *thread_cb(void *args)
 */
 static void *inotify_thread(void *args)
 {
-	int ret, ifd, epfd, afd;
+	int ret, ifd, epfd;
 	size_t counter = 0;
 	struct gwp_args *a;
 	struct userpwd_pair *pr;
 	struct epoll_event ev;
 	struct inotify_event iev;
 
-	ret = ifd = epfd = afd = -1;
+	ret = ifd = epfd = -1;
 
 	a = args;
-	a->userpwd_arr.nr_entry = 0;
-	a->userpwd_arr.arr = NULL;
-	a->userpwd_buf = NULL;
 
 	ifd = inotify_init1(IN_NONBLOCK);
 	if (ifd < 0) {
@@ -1826,16 +1824,6 @@ static void *inotify_thread(void *args)
 		goto exit_err;
 	}
 
-	afd = open(a->auth_file, O_RDONLY);
-	if (afd < 0) {
-		perror("open");
-		goto exit_err;
-	}
-
-	ret = parse_auth_file(afd, &a->userpwd_arr, &a->userpwd_buf);
-	if (ret < 0)
-		goto exit_err;
-
 	while (true) {
 		ret = epoll_wait(epfd, &ev, 1, -1);
 		if (ret < 0) {
@@ -1857,7 +1845,7 @@ static void *inotify_thread(void *args)
 			a->prev_userpwd_buf = a->userpwd_buf;
 		}
 
-		ret = parse_auth_file(afd, &a->userpwd_arr, &a->userpwd_buf);
+		ret = parse_auth_file(a->auth_fd, &a->userpwd_arr, &a->userpwd_buf);
 		if (!ret) {
 			free(a->userpwd_arr.prev_arr);
 			free(a->prev_userpwd_buf);
@@ -1870,17 +1858,54 @@ static void *inotify_thread(void *args)
 	}
 
 exit_err:
+	close(a->auth_fd);
 	if (ifd != -1)
 		close(ifd);
 	if (epfd != -1)
 		close(epfd);
-	if (afd != -1)
-		close(afd);
 	if (a->userpwd_arr.arr)
 		free(a->userpwd_arr.arr);
 	if (a->userpwd_buf)
 		free(a->userpwd_buf);
 	return (void *)(intptr_t)ret;
+}
+
+/*
+* Load specified auth file.
+*
+* @param args Pointer to application configuration.
+* @return zero on success, or a negative integer on failure.
+*/
+static int init_auth_file(struct gwp_args *args)
+{
+	int ret, afd;
+
+	args->userpwd_arr.nr_entry = 0;
+	args->userpwd_arr.arr = NULL;
+	args->userpwd_buf = NULL;
+
+	afd = open(args->auth_file, O_RDONLY);
+	if (afd < 0) {
+		perror("open");
+		goto exit_err;
+	}
+
+	args->auth_fd = afd;
+	ret = parse_auth_file(afd, &args->userpwd_arr, &args->userpwd_buf);
+	if (ret < 0)
+		goto exit_err;
+
+	return 0;
+exit_err:
+	if (afd != -1)
+		close(afd);
+	if (args->userpwd_arr.arr)
+		free(args->userpwd_arr.arr);
+	if (args->userpwd_buf)
+		free(args->userpwd_buf);
+
+	fprintf(stderr, "failed to load %s file\n", args->auth_file);
+	return -EXIT_FAILURE;
 }
 
 int main(int argc, char *argv[])
@@ -1895,8 +1920,12 @@ int main(int argc, char *argv[])
 	if (ret < 0)
 		return ret;
 
-	if (args.auth_file)
+	if (args.auth_file) {
+		ret = init_auth_file(&args);
+		if (ret < 0)
+			return -EXIT_FAILURE;
 		pthread_create(&inotify_t, NULL, inotify_thread, &args);
+	}
 
 	ret = setrlimit(RLIMIT_NOFILE, &file_limits);
 	if (ret < 0) {
