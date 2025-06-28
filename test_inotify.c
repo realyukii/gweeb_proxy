@@ -21,7 +21,7 @@ int main(void)
 	struct epoll_event ev;
 	struct userpwd_list l;
 	struct userpwd_pair *pr;
-	char *buf;
+	char *buf, *prevbuf;
 	struct inotify_event iev[2];
 
 	signal(SIGINT, intrHandler);
@@ -54,16 +54,24 @@ int main(void)
 			"File changed %ld times, re-read the file content:\n",
 			++counter
 		);
+
+		if (l.nr_entry) {
+			l.prev_arr = l.arr;
+			prevbuf = buf;
+		}
+
 		ret = parse_auth_file(authfd, &l, &buf);
 		lseek(authfd, 0, SEEK_SET);
-		if (ret < 0)
-			continue;
+
+		if (!ret) {
+			free(l.prev_arr);
+			free(prevbuf);
+		}
+
 		for (i = 0; i < l.nr_entry; i++) {
 			pr = &l.arr[i];
 			printf("%d. %s:%s\n", i, pr->username, pr->password);
 		}
-		free(buf);
-		free(l.arr);
 	}
 
 	fprintf(
