@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <sys/inotify.h>
+#include <sys/eventfd.h>
 #include <signal.h>
 #include "general.h"
 #include "linux.h"
@@ -190,6 +191,7 @@ struct gwp_args {
 	bool socks5_mode;
 	char *auth_file;
 	int auth_fd;
+	int eventfd;
 	pthread_rwlock_t authlock;
 	volatile bool stop;
 };
@@ -1695,13 +1697,15 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 {
 	int i;
 	pr_debug(VERBOSE, "number of epoll events %d\n", ready_nr);
-
 	for (i = 0; i < ready_nr; i++) {
 		struct epoll_event *ev = &evs[i];
+		printf("fd: %d\n", ev->data.fd);
 
 		if (ev->data.fd == gwp->listen_sock) {
 			pr_debug(VERBOSE, "serving new client\n");
 			handle_incoming_client(gwp, args);
+		} else if (ev->data.fd == args->eventfd) {
+			break;
 		} else
 			if (process_tcp(ev, gwp, args) < 0)
 				return;
@@ -1760,6 +1764,15 @@ static int start_server(struct gwp_args *args)
 		perror("epoll_ctl");
 		goto exit;
 	}
+
+	ev.events = EPOLLIN;
+	ev.data.fd = args->eventfd;
+	ret = epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, args->eventfd, &ev);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		goto exit;
+	}
+	printf("register %d to epoll\n", args->eventfd);
 
 	while (!args->stop) {
 		ready_nr = epoll_wait(gwp.epfd, evs, NR_EVENTS, -1);
@@ -1834,6 +1847,15 @@ static void *inotify_thread(void *args)
 		goto exit_err;
 	}
 
+	ev.events = EPOLLIN;
+	ev.data.fd = a->eventfd;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, a->eventfd, &ev);
+	if (ret < 0) {
+		perror("epoll_ctl");
+		goto exit_err;
+	}
+	printf("register %d to epoll\n", a->eventfd);
+
 	while (!a->stop) {
 		ret = epoll_wait(epfd, &ev, 1, -1);
 		if (ret < 0) {
@@ -1842,6 +1864,11 @@ static void *inotify_thread(void *args)
 			perror("epoll_wait");
 			goto exit_err;
 		}
+
+		printf("fd: %d\n", ev.data.fd);
+		if (ev.data.fd == a->eventfd)
+			break;
+
 		read(ifd, &iev, sizeof(iev));
 		printf("\e[1;1H\e[2J");
 		printf(
@@ -1922,6 +1949,9 @@ exit_err:
 */
 static void signal_handler(int c)
 {
+	int ret;
+	uint64_t val = 1;
+
 	switch (c) {
 	case SIGTERM:
 		fprintf(
@@ -1940,6 +1970,9 @@ static void signal_handler(int c)
 	}
 
 	g_args->stop = true;
+	ret = write(g_args->eventfd, &val, sizeof(val));
+	perror("write");
+	printf("write %d bytes to %d with size %ld\n", ret, g_args->eventfd, sizeof(val));
 }
 
 int main(int argc, char *argv[])
@@ -1957,6 +1990,8 @@ int main(int argc, char *argv[])
 	};
 
 	g_args = &args;
+	args.eventfd = eventfd(0, EFD_NONBLOCK);
+
 	sigaction(SIGTERM, &s, NULL);
 	sigaction(SIGINT, &s, NULL);
 
