@@ -134,10 +134,14 @@ int parse_auth_file(int filefd, struct userpwd_list *l, char **buf)
 	l->nr_entry = item_nr;
 	return 0;
 error:
-	if (*ptr && *ptr != tmpp)
+	if (*ptr && *ptr != tmpp) {
 		free(*ptr);
-	if (*buf && *buf != tmpbuf)
+		*ptr = NULL;
+	}
+	if (*buf && *buf != tmpbuf) {
 		free(*buf);
+		*buf = NULL;
+	}
 	/* restore previous state (if any) when something wrong occured */
 	if (tmpp)
 		fprintf(

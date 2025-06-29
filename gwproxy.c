@@ -252,7 +252,6 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 	}
 
 	auth_file_opt = wait_opt = thread_opt = bind_opt = target_opt = NULL;
-	args->socks5_mode = false;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 's':
@@ -284,8 +283,6 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 
 	if (auth_file_opt)
 		args->auth_file = auth_file_opt;
-	else
-		args->auth_file = NULL;
 
 	if (!target_opt && !args->socks5_mode) {
 		fprintf(stderr, "-t option is required\n");
@@ -1809,7 +1806,7 @@ static void *inotify_thread(void *args)
 	size_t counter = 0;
 	struct gwp_args *a;
 	struct userpwd_pair *pr;
-	struct epoll_event ev;
+	struct epoll_event ev = {0};
 	struct inotify_event iev;
 
 	ret = ifd = epfd = -1;
@@ -1874,16 +1871,17 @@ static void *inotify_thread(void *args)
 		}
 	}
 
+	ret = 0;
 exit_err:
 	close(a->auth_fd);
-	if (ifd != -1)
+	if (ifd != -1) {
+		fprintf(stderr, "closing inotify file descriptor: %d\n", ifd);
 		close(ifd);
-	if (epfd != -1)
+	}
+	if (epfd != -1) {
+		fprintf(stderr, "closing epoll file descriptor: %d\n", epfd);
 		close(epfd);
-	if (a->userpwd_arr.arr)
-		free(a->userpwd_arr.arr);
-	if (a->userpwd_buf)
-		free(a->userpwd_buf);
+	}
 	return (void *)(intptr_t)ret;
 }
 
@@ -1896,10 +1894,6 @@ exit_err:
 static int init_auth_file(struct gwp_args *args)
 {
 	int ret, afd;
-
-	args->userpwd_arr.nr_entry = 0;
-	args->userpwd_arr.arr = NULL;
-	args->userpwd_buf = NULL;
 
 	afd = open(args->auth_file, O_RDONLY);
 	if (afd < 0) {
@@ -1915,12 +1909,6 @@ static int init_auth_file(struct gwp_args *args)
 	pthread_rwlock_init(&args->authlock, NULL);
 	return 0;
 exit_err:
-	if (afd != -1)
-		close(afd);
-	if (args->userpwd_arr.arr)
-		free(args->userpwd_arr.arr);
-	if (args->userpwd_buf)
-		free(args->userpwd_buf);
 
 	fprintf(stderr, "failed to load %s file\n", args->auth_file);
 	return -EXIT_FAILURE;
@@ -1960,7 +1948,10 @@ int main(int argc, char *argv[])
 	size_t i;
 	void *retval;
 	pthread_t inotify_t;
-	struct gwp_args args;
+	struct gwp_args args = {
+		.auth_fd = -1,
+		.eventfd = -1
+	};
 	struct sigaction s = {
 		.sa_handler = signal_handler
 	};
@@ -1976,32 +1967,39 @@ int main(int argc, char *argv[])
 	if (args.auth_file) {
 		ret = init_auth_file(&args);
 		if (ret < 0)
-			return -EXIT_FAILURE;
+			goto exit_err;
 		pthread_create(&inotify_t, NULL, inotify_thread, &args);
-	} else
-		args.userpwd_arr.nr_entry = 0;
+	}
 
 	ret = setrlimit(RLIMIT_NOFILE, &file_limits);
 	if (ret < 0) {
 		perror("setrlimit");
-		return ret;
+		goto exit_err;
 	}
 
 	threads = calloc(args.thread_nr, sizeof(pthread_t));
-	if (!threads)
-		return -ENOMEM;
+	if (!threads) {
+		fprintf(
+			stderr,
+			"out of memory, can't allocate memory for threads\n"
+		);
+		ret = -EXIT_FAILURE;
+		goto exit_err;
+	}
 
 	for (i = 0; i < args.thread_nr; i++) {
 		ret = pthread_create(&threads[i], NULL, thread_cb, &args);
 		if (ret) {
 			errno = ret;
 			perror("pthread_create");
-			free(threads);
-			return ret;
+			ret = -EXIT_FAILURE;
+			goto exit_err;
 		}
 	}
 
 	start_server(&args);
+
+	pthread_join(inotify_t, &retval);
 
 	for (i = 0; i < args.thread_nr; i++) {
 		pthread_kill(threads[i], SIGINT);
@@ -2009,16 +2007,46 @@ int main(int argc, char *argv[])
 		if (ret) {
 			errno = ret;
 			perror("pthread_join");
-			free(threads);
-			return ret;
+			ret = -EXIT_FAILURE;
+			goto exit_err;
 		}
 
 		if ((intptr_t)retval < 0) {
 			fprintf(stderr, "fatal: failed to start server\n");
-			free(threads);
-			return -EXIT_FAILURE;
+			ret = (intptr_t)retval;
+			goto exit_err;
 		}
 	}
 
-	return 0;
+	ret = 0;
+exit_err:
+	if (args.auth_fd != -1) {
+		fprintf(stderr, "closing open file descriptor %d\n", args.auth_fd);
+		close(args.auth_fd);
+	}
+	if (args.eventfd != -1) {
+		fprintf(stderr, "closing eventfd file descriptor %d\n", args.eventfd);
+		close(args.eventfd);
+	}
+	if (threads) {
+		fprintf(stderr, "free threads: %p\n", threads);
+		free(threads);
+	}
+	if (args.userpwd_arr.arr) {
+		fprintf(stderr, "free userpwd_arr: %p\n", args.userpwd_arr.arr);
+		free(args.userpwd_arr.arr);
+	}
+	if (args.userpwd_buf) {
+		fprintf(stderr, "free userpwd_buf: %p\n", args.userpwd_buf);
+		free(args.userpwd_buf);
+	}
+
+	fprintf(
+		stderr,
+		"all system resources were freed, "
+		"now program can exit peacefully.\n"
+		"transfer control back to the kernel.\n"
+	);
+
+	return ret;
 }
