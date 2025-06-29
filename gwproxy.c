@@ -1726,6 +1726,7 @@ static int start_server(struct gwp_args *args)
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
+	pid_t tid;
 	struct sockaddr_storage *s = &args->src_addr_st;
 	struct epoll_event evs[NR_EVENTS];
 	static const int val = 1;
@@ -1786,8 +1787,19 @@ static int start_server(struct gwp_args *args)
 	}
 
 	ret = 0;
+	tid = gettid();
 exit:
+	fprintf(
+		stderr,
+		"[thread %d] closing tcp file descriptor: %d\n",
+		tid, gwp.listen_sock
+	);
 	close(gwp.listen_sock);
+	fprintf(
+		stderr,
+		"[thread %d] closing epoll file descriptor: %d\n",
+		tid, gwp.epfd
+	);
 	if (gwp.epfd != -1)
 		close(gwp.epfd);
 	return ret;
@@ -1815,6 +1827,7 @@ static void *thread_cb(void *args)
 static void *inotify_thread(void *args)
 {
 	int ret, ifd, epfd;
+	pid_t tid;
 	size_t counter = 0;
 	struct gwp_args *a;
 	struct userpwd_pair *pr;
@@ -1896,14 +1909,14 @@ static void *inotify_thread(void *args)
 	}
 
 	ret = 0;
+	tid = gettid();
 exit_err:
-	close(a->auth_fd);
 	if (ifd != -1) {
-		fprintf(stderr, "closing inotify file descriptor: %d\n", ifd);
+		fprintf(stderr, "[thread %d] closing inotify file descriptor: %d\n", tid, ifd);
 		close(ifd);
 	}
 	if (epfd != -1) {
-		fprintf(stderr, "closing epoll file descriptor: %d\n", epfd);
+		fprintf(stderr, "[thread %d] closing epoll file descriptor: %d\n", tid, epfd);
 		close(epfd);
 	}
 	return (void *)(intptr_t)ret;
@@ -1972,6 +1985,7 @@ static void signal_handler(int c)
 int main(int argc, char *argv[])
 {
 	int ret;
+	pid_t pid;
 	size_t i;
 	void *retval;
 	pthread_t inotify_t;
@@ -2047,26 +2061,27 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	pid = getpid();
 	ret = 0;
 exit_err:
 	if (args.auth_fd != -1) {
-		fprintf(stderr, "closing open file descriptor %d\n", args.auth_fd);
+		fprintf(stderr, "[thread %d] closing open file descriptor %d\n", pid, args.auth_fd);
 		close(args.auth_fd);
 	}
 	if (args.eventfd != -1) {
-		fprintf(stderr, "closing eventfd file descriptor %d\n", args.eventfd);
+		fprintf(stderr, "[thread %d] closing eventfd file descriptor %d\n", pid, args.eventfd);
 		close(args.eventfd);
 	}
 	if (threads) {
-		fprintf(stderr, "free threads: %p\n", threads);
+		fprintf(stderr, "[thread %d] free threads: %p\n", pid, threads);
 		free(threads);
 	}
 	if (args.userpwd_arr.arr) {
-		fprintf(stderr, "free userpwd_arr: %p\n", args.userpwd_arr.arr);
+		fprintf(stderr, "[thread %d] free userpwd_arr: %p\n", pid, args.userpwd_arr.arr);
 		free(args.userpwd_arr.arr);
 	}
 	if (args.userpwd_buf) {
-		fprintf(stderr, "free userpwd_buf: %p\n", args.userpwd_buf);
+		fprintf(stderr, "[thread %d] free userpwd_buf: %p\n", pid, args.userpwd_buf);
 		free(args.userpwd_buf);
 	}
 
