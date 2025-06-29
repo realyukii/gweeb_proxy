@@ -1699,7 +1699,6 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 	pr_debug(VERBOSE, "number of epoll events %d\n", ready_nr);
 	for (i = 0; i < ready_nr; i++) {
 		struct epoll_event *ev = &evs[i];
-		printf("fd: %d\n", ev->data.fd);
 
 		if (ev->data.fd == gwp->listen_sock) {
 			pr_debug(VERBOSE, "serving new client\n");
@@ -1772,7 +1771,6 @@ static int start_server(struct gwp_args *args)
 		perror("epoll_ctl");
 		goto exit;
 	}
-	printf("register %d to epoll\n", args->eventfd);
 
 	while (!args->stop) {
 		ready_nr = epoll_wait(gwp.epfd, evs, NR_EVENTS, -1);
@@ -1854,7 +1852,6 @@ static void *inotify_thread(void *args)
 		perror("epoll_ctl");
 		goto exit_err;
 	}
-	printf("register %d to epoll\n", a->eventfd);
 
 	while (!a->stop) {
 		ret = epoll_wait(epfd, &ev, 1, -1);
@@ -1865,7 +1862,6 @@ static void *inotify_thread(void *args)
 			goto exit_err;
 		}
 
-		printf("fd: %d\n", ev.data.fd);
 		if (ev.data.fd == a->eventfd)
 			break;
 
@@ -1949,7 +1945,6 @@ exit_err:
 */
 static void signal_handler(int c)
 {
-	int ret;
 	uint64_t val = 1;
 
 	switch (c) {
@@ -1970,9 +1965,7 @@ static void signal_handler(int c)
 	}
 
 	g_args->stop = true;
-	ret = write(g_args->eventfd, &val, sizeof(val));
-	perror("write");
-	printf("write %d bytes to %d with size %ld\n", ret, g_args->eventfd, sizeof(val));
+	write(g_args->eventfd, &val, sizeof(val));
 }
 
 int main(int argc, char *argv[])
