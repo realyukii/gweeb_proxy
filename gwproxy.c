@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <sys/inotify.h>
+#include <signal.h>
 #include "general.h"
 #include "linux.h"
 
@@ -190,9 +191,14 @@ struct gwp_args {
 	char *auth_file;
 	int auth_fd;
 	pthread_rwlock_t authlock;
+	volatile bool stop;
 };
 
 extern char *optarg;
+
+/* only accessed by signal handler */
+static struct gwp_args *g_args;
+
 static const struct rlimit file_limits = {
 	.rlim_cur = 100000,
 	.rlim_max = 100000
@@ -1711,7 +1717,7 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 * Start the TCP proxy server.
 * 
 * @param args Pointer to application configuration.
-* @return negative integer on failure.
+* @return zero on success, or a negative integer on failure.
 */
 static int start_server(struct gwp_args *args)
 {
@@ -1740,13 +1746,13 @@ static int start_server(struct gwp_args *args)
 	ret = bind(gwp.listen_sock, (struct sockaddr *)s, size_addr);
 	if (ret < 0) {
 		perror("bind");
-		goto err;
+		goto exit;
 	}
 
 	ret = listen(gwp.listen_sock, 10);
 	if (ret < 0) {
 		perror("listen");
-		goto err;
+		goto exit;
 	}
 
 	gwp.epfd = epoll_create(1);
@@ -1755,26 +1761,27 @@ static int start_server(struct gwp_args *args)
 	ret = epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, gwp.listen_sock, &ev);
 	if (ret < 0) {
 		perror("epoll_ctl");
-		goto err;
+		goto exit;
 	}
 
-	while (true) {
+	while (!args->stop) {
 		ready_nr = epoll_wait(gwp.epfd, evs, NR_EVENTS, -1);
 		if (ready_nr < 0) {
 			if (errno == EINTR)
 				continue;
 			perror("epoll_wait");
-			goto err;
+			goto exit;
 		}
 
 		process_ready_list(ready_nr, args, evs, &gwp);
 	}
 
-err:
+	ret = 0;
+exit:
 	close(gwp.listen_sock);
 	if (gwp.epfd != -1)
 		close(gwp.epfd);
-	return -EXIT_FAILURE;
+	return ret;
 }
 
 /*
@@ -1830,7 +1837,7 @@ static void *inotify_thread(void *args)
 		goto exit_err;
 	}
 
-	while (true) {
+	while (!a->stop) {
 		ret = epoll_wait(epfd, &ev, 1, -1);
 		if (ret < 0) {
 			if (errno == EINTR)
@@ -1919,6 +1926,34 @@ exit_err:
 	return -EXIT_FAILURE;
 }
 
+/*
+* Signal handler.
+* catch SIGINT and SIGTERM signal.
+*
+* @param c signal number.
+*/
+static void signal_handler(int c)
+{
+	switch (c) {
+	case SIGTERM:
+		fprintf(
+			stderr,
+			"SIGTERM signal received, "
+			"gracefully exiting the program...\n"
+		);
+		break;
+	case SIGINT:
+		fprintf(
+			stderr,
+			"SIGINT signal received, "
+			"gracefully exiting the program...\n"
+		);
+		break;
+	}
+
+	g_args->stop = true;
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
@@ -1926,6 +1961,13 @@ int main(int argc, char *argv[])
 	void *retval;
 	pthread_t inotify_t;
 	struct gwp_args args;
+	struct sigaction s = {
+		.sa_handler = signal_handler
+	};
+
+	g_args = &args;
+	sigaction(SIGTERM, &s, NULL);
+	sigaction(SIGINT, &s, NULL);
 
 	ret = handle_cmdline(argc, argv, &args);
 	if (ret < 0)
@@ -1959,7 +2001,10 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	start_server(&args);
+
 	for (i = 0; i < args.thread_nr; i++) {
+		pthread_kill(threads[i], SIGINT);
 		ret = pthread_join(threads[i], &retval);
 		if (ret) {
 			errno = ret;
