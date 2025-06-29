@@ -362,6 +362,7 @@ static struct pair_connection *init_pair(void)
 	if (!pc)
 		return NULL;
 	pc->timerfd = -1;
+	pc->is_connected = false;
 
 	client = &pc->client;
 	target = &pc->target;
