@@ -124,6 +124,7 @@ struct pair_connection {
 	uint16_t state;
 	/* the following is used on socks5 mode */
 	enum auth_type preferred_method;
+	/* username/pwd auth state */
 	bool is_authenticated;
 };
 
@@ -218,24 +219,16 @@ static const char usage[] =
 "-w\twait time for timeout, set to zero for no timeout (default: %d seconds)\n"
 "-h\tShow this help message and exit\n";
 
-void printBits(size_t const size, void const * const ptr)
-{
-	unsigned char *b = (unsigned char*) ptr;
-	unsigned char byte;
-	int i, j;
-	
-	for (i = size-1; i >= 0; i--) {
-		for (j = 7; j >= 0; j--) {
-			byte = (b[i] >> j) & 1;
-			printf("%u", byte);
-		}
-	}
-	puts("");
-}
-
 /*
 * Handle command-line arguments and initialize gwp_args.
-* 
+*
+* The function initialize the following configuration:
+* - wait time out in seconds
+* - server address to be bound
+* - target address to connect (in conventional tcp proxy mode)
+* - auth file (in socks5 proxy mode)
+* - control thread number
+*
 * @param argc total argument passed.
 * @param argv Pointer to an array of string.
 * @param args Pointer to application configuration to initialize.
@@ -243,7 +236,8 @@ void printBits(size_t const size, void const * const ptr)
 */
 static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 {
-	char c,  *bind_opt, *target_opt, *thread_opt, *wait_opt, *auth_file_opt;
+	char c,  *bind_opt, *target_opt, *thread_opt,
+	*wait_opt, *auth_file_opt;
 	int thread_nr, timeout;
 	int ret;
 
@@ -335,7 +329,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 /*
 * Set socket attribute
 *
-* @param sock Network socket file descriptor.
+* @param sock network socket file descriptor.
 */
 static void set_sockattr(int sock)
 {
@@ -428,8 +422,8 @@ static int set_target(struct sockaddr_storage *sockaddr)
 * @param fd file descriptor to be registered.
 * @param epfd epoll file descriptor.
 * @param epmask epoll events.
-* @param typemask used to identify the type of file descriptor.
 * @param ptr a pointer to be saved and returned once particular events is ready.
+* @param typemask used to identify the type of file descriptor.
 */
 static int register_events(int fd, int epfd, uint32_t epmask,
 				void *ptr, uint64_t typemask) {
@@ -450,7 +444,7 @@ static int register_events(int fd, int epfd, uint32_t epmask,
 }
 
 /*
-* Handle incoming client.
+* Handle or serve incoming client.
 *
 * @param gwp Pointer to the gwproxy struct (thread data).
 * @return zero on success, or a negative integer on failure.
@@ -474,7 +468,10 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 		}
 		pc->timerfd = tmfd;
 
-		ret = register_events(tmfd, gwp->epfd, EPOLLIN, pc, EV_BIT_TIMER);
+		ret = register_events(
+			tmfd, gwp->epfd,
+			EPOLLIN, pc, EV_BIT_TIMER
+		);
 		if (ret < 0) {
 			perror("epoll_ctl");
 			goto exit_err;
@@ -490,7 +487,10 @@ static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 	}
 	set_sockattr(client_fd);
 	pc->client.sockfd = client_fd;
-	ret = register_events(client_fd, gwp->epfd, pc->client.epmask, pc, EV_BIT_CLIENT);
+	ret = register_events(
+		client_fd, gwp->epfd,
+		pc->client.epmask, pc, EV_BIT_CLIENT
+	);
 	if (ret < 0) {
 		perror("epoll_ctl");
 		goto exit_err;
@@ -600,7 +600,10 @@ static int handle_data(struct single_connection *from,
 		from->sockfd, rlen
 	);
 	if (rlen > 0) {
-		ret = recv(from->sockfd, &from->buf[from->len], rlen, MSG_NOSIGNAL);
+		ret = recv(
+			from->sockfd, &from->buf[from->len],
+			rlen, MSG_NOSIGNAL
+		);
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR) {
@@ -646,7 +649,10 @@ try_send:
 	pr_debug(DEBUG_EPOLL_EVENTS, "send to socket %d.\n", to->sockfd);
 	/* length of filled buffer */
 	if (from->len > 0) {
-		ret = send(to->sockfd, &from->buf[from->off], from->len, MSG_NOSIGNAL);
+		ret = send(
+			to->sockfd, &from->buf[from->off],
+			from->len, MSG_NOSIGNAL
+		);
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
@@ -889,10 +895,11 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 
 /*
 * Handle exchange data.
+* The connection represent client and target, or vice versa.
 *
 * @param ev Pointer to epoll event.
-* @param a Pointer to the connection (can be either client or target).
-* @param b Pointer to the connection (can be either client or target).
+* @param a Pointer to the connection.
+* @param b Pointer to the connection.
 * @return zero on success, or a negative integer on failure.
 */
 static int exchange_data(struct epoll_event *ev,
@@ -1116,12 +1123,12 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 	uint8_t ipv4_sz, ipv6_sz;
 	socklen_t d_sz;
 
-	s 	= &reply_buf->bnd_addr;
 	ipv4_sz = sizeof(struct in_addr);
 	ipv6_sz = sizeof(struct in6_addr);
 	d_sz 	= sizeof(*d);
 	in6	= (struct sockaddr_in6 *)d;
 	in	= (struct sockaddr_in *)d;
+	s 	= &reply_buf->bnd_addr;
 
 	getsockname(sockfd, (struct sockaddr *)d, &d_sz);
 	switch (d->ss_family) {
@@ -1204,14 +1211,20 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 			in = (struct sockaddr_in *)d;
 			in->sin_family = AF_INET;
 			tmp = (struct sockaddr_in *)l->ai_addr;
-			memcpy(&in->sin_addr, &tmp->sin_addr, sizeof(in->sin_addr));
+			memcpy(
+				&in->sin_addr, &tmp->sin_addr,
+				sizeof(in->sin_addr)
+			);
 			in->sin_port = *(uint16_t *)(dname_ptr + domainname_sz);
 			break;
 		case AF_INET6:
 			in6 = (struct sockaddr_in6 *)d;
 			in6->sin6_family = AF_INET6;
 			tmp6 = (struct sockaddr_in6 *)l->ai_addr;
-			memcpy(&in6->sin6_addr, &tmp6->sin6_addr, sizeof(in6->sin6_addr));
+			memcpy(
+				&in6->sin6_addr, &tmp6->sin6_addr,
+				sizeof(in6->sin6_addr)
+			);
 			in6->sin6_port = *(uint16_t *)(dname_ptr + domainname_sz);
 			break;
 		}
@@ -1290,7 +1303,6 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp,
 	a->len -= ret;
 	if (a->len)
 		return -EAGAIN;
-	a->len = 0;
 
 	return 0;
 }
@@ -1578,6 +1590,7 @@ static bool is_sock_connected(int sockfd)
 * Process epoll event from tcp connection.
 *
 * currently, this function handle:
+* - timer timed out (EPOLLIN).
 * - connection established from EINPROGRESS (EPOLLOUT).
 * - socket that ready to read or write (EPOLLIN or EPOLLOUT).
 *   * communication on simple TCP proxy with pre-defined target.
@@ -1710,8 +1723,6 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 			if (process_tcp(ev, gwp, args) < 0)
 				return;
 	}
-
-	return;
 }
 
 /*
@@ -1894,7 +1905,8 @@ static void *inotify_thread(void *args)
 
 		pthread_rwlock_wrlock(&a->authlock);
 
-		ret = parse_auth_file(a->auth_fd, &a->userpwd_arr, &a->userpwd_buf);
+		ret = parse_auth_file(a->auth_fd,
+					&a->userpwd_arr, &a->userpwd_buf);
 		if (!ret) {
 			free(a->userpwd_arr.prev_arr);
 			free(a->prev_userpwd_buf);
@@ -1912,11 +1924,19 @@ static void *inotify_thread(void *args)
 	tid = gettid();
 exit_err:
 	if (ifd != -1) {
-		fprintf(stderr, "[thread %d] closing inotify file descriptor: %d\n", tid, ifd);
+		fprintf(
+			stderr,
+			"[thread %d] closing inotify file descriptor: %d\n",
+			tid, ifd
+		);
 		close(ifd);
 	}
 	if (epfd != -1) {
-		fprintf(stderr, "[thread %d] closing epoll file descriptor: %d\n", tid, epfd);
+		fprintf(
+			stderr,
+			"[thread %d] closing epoll file descriptor: %d\n",
+			tid, epfd
+		);
 		close(epfd);
 	}
 	return (void *)(intptr_t)ret;
@@ -2065,23 +2085,43 @@ int main(int argc, char *argv[])
 	ret = 0;
 exit_err:
 	if (args.auth_fd != -1) {
-		fprintf(stderr, "[thread %d] closing open file descriptor %d\n", pid, args.auth_fd);
+		fprintf(
+			stderr,
+			"[thread %d] closing open file descriptor %d\n",
+			pid, args.auth_fd
+		);
 		close(args.auth_fd);
 	}
 	if (args.eventfd != -1) {
-		fprintf(stderr, "[thread %d] closing eventfd file descriptor %d\n", pid, args.eventfd);
+		fprintf(
+			stderr,
+			"[thread %d] closing eventfd file descriptor %d\n",
+			pid, args.eventfd
+		);
 		close(args.eventfd);
 	}
 	if (threads) {
-		fprintf(stderr, "[thread %d] free threads: %p\n", pid, threads);
+		fprintf(
+			stderr,
+			"[thread %d] free threads: %p\n",
+			pid, threads
+		);
 		free(threads);
 	}
 	if (args.userpwd_arr.arr) {
-		fprintf(stderr, "[thread %d] free userpwd_arr: %p\n", pid, args.userpwd_arr.arr);
+		fprintf(
+			stderr,
+			"[thread %d] free userpwd_arr: %p\n",
+			pid, args.userpwd_arr.arr
+		);
 		free(args.userpwd_arr.arr);
 	}
 	if (args.userpwd_buf) {
-		fprintf(stderr, "[thread %d] free userpwd_buf: %p\n", pid, args.userpwd_buf);
+		fprintf(
+			stderr,
+			"[thread %d] free userpwd_buf: %p\n",
+			pid, args.userpwd_buf
+		);
 		free(args.userpwd_buf);
 	}
 

@@ -60,3 +60,13 @@
 * @return zero on success, or a negative integer on failure.
 */
 int init_addr(const char *addr, struct sockaddr_storage *addr_st);
+
+/*
+* Print a data in bits representation.
+*
+* credit: https://stackoverflow.com/a/3974138/22382954
+*
+* @param size of the data.
+* @param ptr to the data.
+*/
+void printBits(size_t const size, void const * const ptr);
