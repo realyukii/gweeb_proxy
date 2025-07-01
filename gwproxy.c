@@ -244,7 +244,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 	if (argc == 1) {
 		pr_menu;
 
-		return 0;
+		return -1;
 	}
 
 	auth_file_opt = wait_opt = thread_opt = bind_opt = target_opt = NULL;
@@ -270,7 +270,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 			break;
 		case 'h':
 			pr_menu;
-			return 0;
+			return -1;
 
 		default:
 			return -EINVAL;
@@ -1798,8 +1798,8 @@ static int start_server(struct gwp_args *args)
 	}
 
 	ret = 0;
-	tid = gettid();
 exit:
+	tid = gettid();
 	fprintf(
 		stderr,
 		"[thread %d] closing tcp file descriptor: %d\n",
@@ -1921,8 +1921,8 @@ static void *inotify_thread(void *args)
 	}
 
 	ret = 0;
-	tid = gettid();
 exit_err:
+	tid = gettid();
 	if (ifd != -1) {
 		fprintf(
 			stderr,
