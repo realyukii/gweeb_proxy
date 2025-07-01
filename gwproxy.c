@@ -25,6 +25,7 @@
 #define MAX_FILEPATH 1024
 #define MAX_USERPWD_PKT (1 + 1 + 255 + 1 + 255)
 #define DEFAULT_TIMEOUT 5
+#define DEFAULT_CLIENT 100
 #define DEFAULT_THREAD_NR 4
 #define DEFAULT_BUF_SZ	1024
 #define NR_EVENTS 512
@@ -42,7 +43,7 @@ do {							\
 		fprintf(stderr, fmt, ##__VA_ARGS__);	\
 	}						\
 } while (0)
-#define pr_menu printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT)
+#define pr_menu printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT, DEFAULT_CLIENT)
 
 enum typemask {
 	/* indicate a client file descriptor */
@@ -112,6 +113,8 @@ struct single_connection {
 };
 
 struct pair_connection {
+	/* id of current session in the connection pool */
+	unsigned int idx;
 	/* represent client connection */
 	struct single_connection client;
 	/* represent target connection */
@@ -128,11 +131,24 @@ struct pair_connection {
 	bool is_authenticated;
 };
 
+struct connection_pool {
+	/* number of active connection */
+	int nr_item;
+	/* max number of allocated connection */
+	int max_item;
+	/* array of pointer to established connection session */
+	struct pair_connection **arr;
+};
+
+/*
+* thread variables
+*/
 struct gwproxy {
 	/* TCP socket file descriptor */
 	int listen_sock;
 	/* epoll file descriptor */
 	int epfd;
+	struct connection_pool p;
 };
 
 struct socks5_greeting {
@@ -193,6 +209,7 @@ struct gwp_args {
 	char *auth_file;
 	int auth_fd;
 	int eventfd;
+	int nr_client;
 	pthread_rwlock_t authlock;
 	volatile bool stop;
 };
@@ -202,7 +219,7 @@ extern char *optarg;
 /* only accessed by signal handler */
 static struct gwp_args *g_args;
 static pthread_t *threads;
-static const char opts[] = "hw:b:t:T:f:s";
+static const char opts[] = "hw:b:t:T:f:sn:";
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "-s\tenable socks5 mode\n"
@@ -212,6 +229,8 @@ static const char usage[] =
 "-t\tIP address and port of the target server (ignored in socks5 mode)\n"
 "-T\tnumber of thread (default: %d)\n"
 "-w\twait time for timeout, set to zero for no timeout (default: %d seconds)\n"
+"-n\tnumber of client session to create pre-allocated pointer per-thread "
+"(default: %d client)\n"
 "-h\tShow this help message and exit\n";
 
 /*
@@ -231,9 +250,9 @@ static const char usage[] =
 */
 static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 {
-	char c,  *bind_opt, *target_opt, *thread_opt,
+	char c,  *bind_opt, *target_opt, *thread_opt, *nr_client_opt,
 	*wait_opt, *auth_file_opt;
-	int thread_nr, timeout;
+	int thread_nr, client_nr, timeout;
 	int ret;
 
 	if (argc == 1) {
@@ -242,7 +261,8 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 		return -1;
 	}
 
-	auth_file_opt = wait_opt = thread_opt = bind_opt = target_opt = NULL;
+	auth_file_opt = wait_opt = thread_opt = bind_opt = target_opt =
+	nr_client_opt = NULL;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 's':
@@ -263,6 +283,9 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 		case 'w':
 			wait_opt = optarg;
 			break;
+		case 'n':
+			nr_client_opt = optarg;
+			break;
 		case 'h':
 			pr_menu;
 			return -1;
@@ -271,9 +294,6 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 			return -EINVAL;
 		}
 	}
-
-	if (auth_file_opt)
-		args->auth_file = auth_file_opt;
 
 	if (!target_opt && !args->socks5_mode) {
 		fprintf(stderr, "-t option is required\n");
@@ -284,6 +304,18 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 		fprintf(stderr, "-b option is required\n");
 		return -EINVAL;
 	}
+
+	if (auth_file_opt)
+		args->auth_file = auth_file_opt;
+
+	if (nr_client_opt) {
+		client_nr = atoi(nr_client_opt);
+		if (client_nr <= 0)
+			client_nr = DEFAULT_CLIENT;
+	} else
+		client_nr = DEFAULT_CLIENT;
+
+	args->nr_client = client_nr;
 
 	if (thread_opt) {
 		thread_nr = atoi(thread_opt);
@@ -336,16 +368,37 @@ static void set_sockattr(int sock)
 	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val));
 }
 
+static int realloc_pool(struct connection_pool *cp)
+{
+	int expand_sz = cp->max_item * 2;
+	void *ptr = realloc(cp->arr, expand_sz * sizeof(cp->arr));
+	if (!ptr)
+		return -ENOMEM;
+
+	cp->arr = ptr;
+	cp->max_item = expand_sz;
+
+	return 0;
+}
+
 /*
 * Initialize a pair of connection: client:target.
 *
+* @param gwp Pointer to the gwproxy struct (thread data).
 * @return pointer to the malloc'd address
 */
-static struct pair_connection *init_pair(void)
+static struct pair_connection *init_pair(struct gwproxy *gwp)
 {
+	unsigned int idx;
 	struct pair_connection *pc;
 	struct single_connection *client;
 	struct single_connection *target;
+
+	gwp->p.nr_item++;
+	if (gwp->p.nr_item > gwp->p.max_item) {
+		if (realloc_pool(&gwp->p) < 0)
+			return NULL;
+	}
 
 	pc = malloc(sizeof(*pc));
 	if (!pc)
@@ -361,12 +414,14 @@ static struct pair_connection *init_pair(void)
 
 	client->buf = malloc(DEFAULT_BUF_SZ);
 	if (!client->buf) {
+		gwp->p.nr_item--;
 		free(pc);
 		return NULL;
 	}
 
 	target->buf = malloc(DEFAULT_BUF_SZ);
 	if (!target->buf) {
+		gwp->p.nr_item--;
 		free(client->buf);
 		free(pc);
 		return NULL;
@@ -378,6 +433,10 @@ static struct pair_connection *init_pair(void)
 
 	client->epmask = EPOLLIN | EPOLLOUT;
 	target->epmask = EPOLLIN | EPOLLOUT;
+
+	idx = gwp->p.nr_item - 1;
+	gwp->p.arr[idx] = pc;
+	pc->idx = idx;
 
 	return pc;
 }
@@ -447,7 +506,7 @@ static int register_events(int fd, int epfd, uint32_t epmask,
 static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
 {
 	int client_fd, ret;
-	struct pair_connection *pc = init_pair();
+	struct pair_connection *pc = init_pair(gwp);
 	if (!pc)
 		return;
 
@@ -1689,6 +1748,7 @@ exit_err:
 		close(b->sockfd);
 	free(pc->client.buf);
 	free(pc->target.buf);
+	gwp->p.arr[pc->idx] = NULL;
 	free(pc);
 	return -EXIT_FAILURE;
 }
@@ -1721,6 +1781,25 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 }
 
 /*
+* allocate pool of established connection.
+*
+* @param  p Pointer to the pool.
+* @param  client_nr number of client for pre-allocated memory.
+* @return zero on success, or a negative integer on failure.
+*/
+static int init_pool(struct connection_pool *p, int client_nr)
+{
+	p->arr = calloc(client_nr, sizeof(p->arr));
+	if (!p->arr)
+		return -ENOMEM;
+
+	p->nr_item = 0;
+	p->max_item = client_nr;
+
+	return 0;
+}
+
+/*
 * Start the TCP proxy server.
 * 
 * @param args Pointer to application configuration.
@@ -1728,7 +1807,7 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 */
 static int start_server(struct gwp_args *args)
 {
-	int ret, ready_nr, flg;
+	int i, ret, ready_nr, flg;
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
@@ -1780,6 +1859,10 @@ static int start_server(struct gwp_args *args)
 		goto exit;
 	}
 
+	ret = init_pool(&gwp.p, args->nr_client);
+	if (ret)
+		goto exit;
+
 	while (!args->stop) {
 		ready_nr = epoll_wait(gwp.epfd, evs, NR_EVENTS, -1);
 		if (ready_nr < 0) {
@@ -1806,6 +1889,51 @@ exit:
 		"[thread %d] closing epoll file descriptor: %d\n",
 		tid, gwp.epfd
 	);
+
+	for (i = 0; i < gwp.p.nr_item; i++) {
+		struct pair_connection *pc = gwp.p.arr[i];
+		if (pc) {
+			fprintf(
+				stderr,
+				"[thread %d] free client buffer: %p\n",
+				tid, pc->client.buf
+			);
+			free(pc->client.buf);
+			fprintf(
+				stderr,
+				"[thread %d] free target buffer: %p\n",
+				tid, pc->target.buf
+			);
+			free(pc->target.buf);
+			if (pc->client.sockfd != -1) {
+				fprintf(
+					stderr,
+					"[thread %d] close client connection on socket: "
+					"%d\n",
+					tid, pc->client.sockfd
+				);
+				close(pc->client.sockfd);
+			}
+			if (pc->target.sockfd != -1) {
+				fprintf(
+					stderr,
+					"[thread %d] close target connection on socket: "
+					"%d\n",
+					tid, pc->target.sockfd
+				);
+				close(pc->target.sockfd);
+			}
+			free(pc);
+		}
+	}
+
+	fprintf(
+		stderr,
+		"[thread %d] free the connection pool: %p\n",
+		tid, gwp.p.arr
+	);
+	free(gwp.p.arr);
+
 	if (gwp.epfd != -1)
 		close(gwp.epfd);
 	return ret;
