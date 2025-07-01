@@ -1834,7 +1834,7 @@ static int start_server(struct gwp_args *args)
 		goto exit;
 	}
 
-	ret = listen(gwp.listen_sock, 10);
+	ret = listen(gwp.listen_sock, SOMAXCONN);
 	if (ret < 0) {
 		perror("listen");
 		goto exit;
