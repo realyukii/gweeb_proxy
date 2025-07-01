@@ -133,9 +133,9 @@ struct pair_connection {
 
 struct connection_pool {
 	/* number of active connection */
-	int nr_item;
+	unsigned int nr_item;
 	/* max number of allocated connection */
-	int max_item;
+	unsigned int max_item;
 	/* array of pointer to established connection session */
 	struct pair_connection **arr;
 };
@@ -1740,6 +1740,8 @@ adjust_epoll:
 	return 0;
 exit_err:
 	pr_debug(VERBOSE, "free the system resources for this session\n");
+	if (pc->idx == (gwp->p.nr_item - 1))
+		gwp->p.nr_item--;
 	if (pc->timerfd != -1)
 		close(pc->timerfd);
 	if (a->sockfd != -1)
@@ -1807,7 +1809,8 @@ static int init_pool(struct connection_pool *p, int client_nr)
 */
 static int start_server(struct gwp_args *args)
 {
-	int i, ret, ready_nr, flg;
+	int ret, ready_nr, flg;
+	unsigned int i;
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
