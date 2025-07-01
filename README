@@ -13,3 +13,23 @@ see: https://t.me/GNUWeeb/1174855
 
 UPDATE: https://t.me/GNUWeeb/1176752
 the project is extended to support socks5 proxy, see the help message for usage.
+
+Key Features of The Program:
+- real-time hot reload auth config, watch and monitor content of authentication file with inotify.
+- SOCKS5 protocol support: CONNECT command, BIND and UDP ASSOCIATE is not yet supported.
+- non blocking and I/O multiplexing for handling concurrent connection with epoll.
+- maximum performance with parallel execution by utilizing multi-threading support with pthread API.
+- signal handler, to perform graceful exit
+- resolve FQDN on-the-fly with glibc getaddrinfo function (still have performance issue on batch call to getaddrinfo)
+- handle currently-identified edge/corner cases:
+	* short recv: fewer bytes partially received than requested
+	* short send: fewer bytes partially sent than requested
+	* pause incoming connection from accept when open file descriptor reach max limit (not supported yet)
+- controllable program, currently it allow the user to specify:
+	* connection time out interval
+	* proxy mode: socks5/simple tcp proxy
+	* pre-allocated buffer to store pointer of established session
+	* number of thread
+	* specifying local address and local port is required
+	* on socks5 mode: authentication method with username/password
+	* on simple mode: specifying remote address and remote port for target is required
