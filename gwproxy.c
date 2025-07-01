@@ -201,11 +201,6 @@ extern char *optarg;
 
 /* only accessed by signal handler */
 static struct gwp_args *g_args;
-
-static const struct rlimit file_limits = {
-	.rlim_cur = 100000,
-	.rlim_max = 100000
-};
 static pthread_t *threads;
 static const char opts[] = "hw:b:t:T:f:s";
 static const char usage[] =
@@ -2009,6 +2004,7 @@ int main(int argc, char *argv[])
 	size_t i;
 	void *retval;
 	pthread_t inotify_t;
+	struct rlimit file_limits;
 	struct gwp_args args = {
 		.auth_fd = -1,
 		.eventfd = -1
@@ -2034,6 +2030,8 @@ int main(int argc, char *argv[])
 		pthread_create(&inotify_t, NULL, inotify_thread, &args);
 	}
 
+	getrlimit(RLIMIT_NOFILE, &file_limits);
+	file_limits.rlim_cur = file_limits.rlim_max;
 	ret = setrlimit(RLIMIT_NOFILE, &file_limits);
 	if (ret < 0) {
 		perror("setrlimit");
