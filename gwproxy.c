@@ -1321,11 +1321,6 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp,
 	int ret;
 	size_t reply_len;
 
-	/*
-	* TODO:
-	* check if the connection is successfuly established
-	* or fail before sending a reply
-	*/
 	if (pc->target.sockfd == -1) {
 		ret = prepare_exchange(gwp, pc, d, args);
 		if (ret < 0)
