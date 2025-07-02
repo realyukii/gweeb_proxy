@@ -204,6 +204,7 @@ static int init_ctx(struct dctx *ctx)
 	ctx->epfd = -1;
 	ctx->evfd = -1;
 	ctx->serverfd = -1;
+	memset(&ctx->d, 0, sizeof(ctx->d));
 	ctx->cp.cap = DEFAULT_CAPACITY;
 	ctx->cp.nr_client = 0;
 	ctx->cp.clients = calloc(DEFAULT_CAPACITY, sizeof(ctx->cp.clients));
@@ -508,15 +509,15 @@ int main(int argc, char **argv)
 		.sa_handler = signal_handler
 	};
 
+	ret = init_ctx(&ctx);
+	if (ret < 0)
+		return -1;
+
 	ret = parse_cmdline_args(argc, argv, &ctx);
 	if (ret < 0) {
 		pr_err("failed to parse command-line arguments\n");
 		return -1;
 	}
-
-	ret = init_ctx(&ctx);
-	if (ret < 0)
-		return -1;
 
 	gctx = &ctx;
 	sigaction(SIGINT, &sa, NULL);
