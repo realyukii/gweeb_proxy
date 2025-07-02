@@ -126,7 +126,6 @@ static void __pr_log(unsigned lvl, const char *fmt, ...)
 #define pr_err(FMT, ...) pr_log(ERROR, FMT, ##__VA_ARGS__)
 
 enum communication_state {
-	RECV_PAYLOAD,
 	SEND_REPLY,
 	TRY_RESOLVE_ADDR
 };
@@ -277,7 +276,7 @@ static struct client *init_client(struct dctx *ctx)
 
 	c->clientfd = -1;
 	c->is_valid_req = true;
-	c->state = RECV_PAYLOAD;
+	c->state = SEND_REPLY;
 	c->epmask = EPOLLIN;
 	c->idx = idx;
 	c->blen = 0;
@@ -363,7 +362,7 @@ static void talk_to_client(struct dctx *ctx, struct epoll_event *ev)
 	* or EPOLLIN event is unregistered from epoll interest list
 	* thus we need to always recv if EPOLLIN triggered.
 	*/
-	if (c->state == RECV_PAYLOAD || (ev->events & EPOLLIN)) {
+	if (ev->events & EPOLLIN) {
 		rlen = MAX_CLIENT_BUFFER - c->blen;
 		ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
 		if (ret < 0) {
@@ -400,8 +399,6 @@ static void talk_to_client(struct dctx *ctx, struct epoll_event *ev)
 			pr_warn("short recv detected, waiting more data from client %s\n", c->addrstr);
 			return;
 		}
-
-		c->state = SEND_REPLY;
 	}
 
 	if (c->state == SEND_REPLY) {
