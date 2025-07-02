@@ -20,7 +20,7 @@ Key Features of The Program:
 - non blocking and I/O multiplexing for handling concurrent connection with epoll.
 - maximum performance with parallel execution by utilizing multi-threading support with pthread API.
 - signal handler, to perform graceful exit
-- resolve FQDN on-the-fly with glibc getaddrinfo function (still have performance issue on batch call to getaddrinfo)
+- resolve FQDN on-the-fly with glibc's getaddrinfo function (still have performance issue on batch call to getaddrinfo, on progress to fix it)
 - handle currently-identified edge/corner cases:
 	* short recv: fewer bytes partially received than requested
 	* short send: fewer bytes partially sent than requested
