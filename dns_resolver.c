@@ -313,20 +313,20 @@ exit_err:
 
 static int fish_events(struct dctx *ctx)
 {
-	int ret, i;
+	int nr_events, ret, i;
 	struct epoll_event evs[DEFAULT_NR_EVENTS];
 	struct epoll_event *ev;
 	uint64_t evbuf;
 
-	ret = epoll_wait(ctx->epfd, evs, DEFAULT_NR_EVENTS, -1);
-	if (ret < 0) {
+	nr_events = epoll_wait(ctx->epfd, evs, DEFAULT_NR_EVENTS, -1);
+	if (nr_events < 0) {
 		if (errno == EINTR)
 			return 0;
 		pr_err("an error occured while waiting in epoll_wait\n");
 		return -EXIT_FAILURE;
 	}
 
-	for (i = 0; i < ret; i++) {
+	for (i = 0; i < nr_events; i++) {
 		ev = &evs[i];
 		if (ev->data.fd == ctx->evfd) {
 			ret = read(ctx->evfd, &evbuf, sizeof(evbuf));
