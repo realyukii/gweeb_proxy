@@ -332,8 +332,7 @@ static void talk_to_client(struct dctx *ctx, struct client *c)
 			"packet from client %s\n",
 			c->addrstr
 		);
-		cleanup_client(ctx, c);
-		return;
+		goto terminate_session;
 	}
 
 	if (ret == 0) {
@@ -341,11 +340,14 @@ static void talk_to_client(struct dctx *ctx, struct client *c)
 			"client %s closing its connection\n",
 			c->addrstr
 		);
-		cleanup_client(ctx, c);
-		return;
+		goto terminate_session;
 	}
 
 	VT_HEXDUMP(pkt, ret);
+	return;
+terminate_session:
+	cleanup_client(ctx, c);
+	return;
 }
 
 static int fish_events(struct dctx *ctx)
