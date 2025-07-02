@@ -376,6 +376,7 @@ static int realloc_pool(struct connection_pool *cp)
 		return -ENOMEM;
 
 	cp->arr = ptr;
+	memset(&cp->arr[cp->max_item], 0, cp->max_item * sizeof(cp->arr));
 	cp->max_item = expand_sz;
 
 	return 0;
