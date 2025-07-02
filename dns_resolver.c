@@ -512,12 +512,12 @@ int main(int argc, char **argv)
 
 	ret = init_ctx(&ctx);
 	if (ret < 0)
-		return -1;
+		goto exit_err;
 
 	ret = parse_cmdline_args(argc, argv, &ctx);
 	if (ret < 0) {
 		pr_err("failed to parse command-line arguments\n");
-		return -1;
+		goto exit_free;
 	}
 
 	gctx = &ctx;
@@ -527,7 +527,7 @@ int main(int argc, char **argv)
 	ret = start_server(&ctx);
 	if (ret < 0) {
 		pr_err("failed to start TCP server\n");
-		return -1;
+		goto exit_free;
 	}
 
 	pr_info(
@@ -535,5 +535,10 @@ int main(int argc, char **argv)
 		"now the program exit gracefully, "
 		"transfer control back to the kernel.\n"
 	);
-	return 0;
+
+	ret = 0;
+exit_free:
+	free(ctx.cp.clients);
+exit_err:
+	return ret;
 }
