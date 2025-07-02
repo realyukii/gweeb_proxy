@@ -14,7 +14,8 @@
 *
 * to store the log to a file, just use your shell's built-in redirect feature.
 * redirect it to /dev/null to disable logging
-* or build the program with -DENABLE_LOG=false if you prefer smol binary.
+* or build the program with -DENABLE_LOG=false if you prefer smol binary:
+* make CFLAGS=-DENABLE_LOG=false build/dns_resolver
 *
 * all level of log (info, warning, error, debug) are enabled by default,
 * if you want to enable only one, just filter it with grep or something.
@@ -37,6 +38,8 @@
 #endif
 
 #define DEFAULT_NR_EVENTS 512
+#define DEFAULT_CAPACITY 512
+#define MAX_CLIENT_BUFFER 256
 
 #define INFO 1
 #define WARN 2
@@ -119,6 +122,25 @@ static void __pr_log(unsigned lvl, const char *fmt, ...)
 #define pr_warn(FMT, ...) pr_log(WARN, FMT, ##__VA_ARGS__)
 #define pr_err(FMT, ...) pr_log(ERROR, FMT, ##__VA_ARGS__)
 
+struct net_pkt {
+	uint8_t domainlen;
+	char buff[MAX_CLIENT_BUFFER - 1];
+};
+
+struct client {
+	int clientfd;
+	char addrstr[ADDRSTR_SZ];
+	unsigned idx;
+	unsigned blen;
+	char buff[MAX_CLIENT_BUFFER];
+};
+
+struct client_pool {
+	size_t nr_client;
+	size_t cap;
+	struct client **clients;
+};
+
 /*
 * application data.
 */
@@ -127,6 +149,8 @@ struct dctx {
 	struct sockaddr_storage d;
 	/* main TCP socket file descriptor */
 	int serverfd;
+	/* a container of client data */
+	struct client_pool cp;
 	/* epoll file descriptor */
 	int epfd;
 	/* eventfd file descriptor */
@@ -175,12 +199,116 @@ print_usage_n_exit:
 	return -1;
 }
 
-static void init_ctx(struct dctx *ctx)
+static int init_ctx(struct dctx *ctx)
 {
 	ctx->epfd = -1;
 	ctx->evfd = -1;
 	ctx->serverfd = -1;
-	ctx->tcpfd = -1;
+	ctx->cp.cap = DEFAULT_CAPACITY;
+	ctx->cp.nr_client = 0;
+	ctx->cp.clients = calloc(DEFAULT_CAPACITY, sizeof(ctx->cp.clients));
+	if (!ctx->cp.clients) {
+		pr_err("not enough memory, failed to allocate client pool\n");
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static int realloc_pool(struct client_pool *cp)
+{
+	unsigned next_cap = cp->cap * 2;
+	void *tmp;
+	tmp = realloc(cp->clients, next_cap * sizeof(cp->clients));
+	if (!tmp) {
+		pr_err("failed to resize the client pool\n");
+		return -ENOMEM;
+	}
+	cp->clients = tmp;
+	memset(&cp->clients[cp->cap], 0, cp->cap * sizeof(cp->clients));
+	cp->cap = next_cap;
+
+	return 0;
+}
+
+static struct client *init_client(struct dctx *ctx)
+{
+	struct client *c;
+	unsigned idx;
+	int ret;
+
+	idx = ctx->cp.nr_client;
+	if (++ctx->cp.nr_client > ctx->cp.cap) {
+		ret = realloc_pool(&ctx->cp);
+		if (ret < 0) {
+			pr_err(
+				"not enough memory, "
+				"failed to re-allocate client pool\n"
+			);
+			goto exit_err;
+		}
+	}
+
+	c = malloc(sizeof(*c));
+	if (!c) {
+		pr_err("not enough memory, failed to allocate client data\n");
+		goto exit_err;
+	}
+
+	c->clientfd = -1;
+	c->idx = idx;
+	c->blen = 0;
+	ctx->cp.clients[idx] = c;
+	return c;
+exit_err:
+	ctx->cp.nr_client--;
+	return NULL;
+}
+
+static int serve_incoming_client(struct dctx *ctx)
+{
+	struct client *c;
+	struct epoll_event ev;
+	struct sockaddr_storage addr;
+	socklen_t addrlen;
+	int ret;
+
+	c = init_client(ctx);
+	if (!c)
+		return -ENOMEM;
+
+	addrlen = sizeof(addr);
+	c->clientfd = accept4(
+		ctx->serverfd,
+		(struct sockaddr *)&addr, &addrlen,
+		SOCK_NONBLOCK
+	);
+	if (c->clientfd < 0) {
+		pr_err("failed to accept new client\n");
+		goto exit_err;
+	}
+
+	get_addrstr((struct sockaddr *)&addr, addrlen, c->addrstr);
+	pr_info(
+		"new client %s accepted with sockfd %d\n",
+		c->addrstr, c->clientfd
+	);
+
+	ev.events = EPOLLIN;
+	ev.data.ptr = c;
+	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, c->clientfd, &ev);
+	if (ret < 0) {
+		pr_err("failed to register events for new client\n");
+		goto exit_close;
+	}
+
+	return 0;
+exit_close:
+	close(c->clientfd);
+exit_err:
+	free(c);
+	ctx->cp.nr_client--;
+	return -EXIT_FAILURE;
 }
 
 static int fish_events(struct dctx *ctx)
@@ -208,16 +336,49 @@ static int fish_events(struct dctx *ctx)
 			}
 
 			/*
-			* system deliver SIGTERM or SIGINT, stop the event loop
+			* The system deliver SIGTERM or SIGINT,
+			* the program MUST stop the event loop.
 			*/
 			if (evbuf == 1)
 				return 0;
+
+			continue;
 		}
 
 		if (ev->data.fd == ctx->serverfd) {
-			/* accept incoming client. */
+			ret = serve_incoming_client(ctx);
+			if (ret < 0)
+				continue;
 		} else {
-			/* communicate with a client. */
+			struct client *c = ev->data.ptr;
+			struct net_pkt *pkt = (void *)c->buff;
+			int rlen = MAX_CLIENT_BUFFER - c->blen;
+			ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
+			if (ret < 0) {
+				if (ret == EAGAIN)
+					continue;
+				pr_err(
+					"an error occured while receiving "
+					"packet from client %s\n",
+					c->addrstr
+				);
+				close(c->clientfd);
+				ctx->cp.clients[c->idx] = NULL;
+				free(c);
+			}
+
+			if (ret == 0) {
+				pr_info(
+					"client %s closing its connection\n",
+					c->addrstr
+				);
+				close(c->clientfd);
+				ctx->cp.clients[c->idx] = NULL;
+				free(c);
+				continue;
+			}
+
+			VT_HEXDUMP(pkt, ret);
 		}
 	}
 
@@ -343,7 +504,10 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	init_ctx(&ctx);
+	ret = init_ctx(&ctx);
+	if (ret < 0)
+		return -1;
+
 	gctx = &ctx;
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
