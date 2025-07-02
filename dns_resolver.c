@@ -201,9 +201,6 @@ print_usage_n_exit:
 
 static int init_ctx(struct dctx *ctx)
 {
-	ctx->epfd = -1;
-	ctx->evfd = -1;
-	ctx->serverfd = -1;
 	memset(&ctx->d, 0, sizeof(ctx->d));
 	ctx->cp.cap = DEFAULT_CAPACITY;
 	ctx->stop = false;
