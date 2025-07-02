@@ -343,7 +343,9 @@ static void talk_to_client(struct dctx *ctx, struct client *c)
 		goto terminate_session;
 	}
 
-	VT_HEXDUMP(pkt, ret);
+	c->blen += ret;
+
+	VT_HEXDUMP(pkt, c->blen);
 	return;
 terminate_session:
 	cleanup_client(ctx, c);
