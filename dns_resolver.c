@@ -162,6 +162,14 @@ struct dctx {
 /* allow signal handler to access application data. */
 static struct dctx *gctx;
 
+static const char wait_msg[] =
+"wait a minute, "
+"I will try to resolve the domain and back to you later\n";
+
+static const char error_msg[] =
+"the payload doesn't conform with "
+"LDH rule, request aborted.";
+
 static void print_usage(void)
 {
 	printf("usage: ./dns_resolver [options]\n");
@@ -320,7 +328,8 @@ static void cleanup_client(struct dctx *ctx, struct client *c)
 static void talk_to_client(struct dctx *ctx, struct client *c)
 {
 	struct net_pkt *pkt = (void *)c->buff;
-	int ret, rlen = MAX_CLIENT_BUFFER - c->blen;
+	int i, ret, rlen = MAX_CLIENT_BUFFER - c->blen;
+	bool is_valid = true;
 
 	ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
 	if (ret < 0) {
@@ -345,6 +354,26 @@ static void talk_to_client(struct dctx *ctx, struct client *c)
 	c->blen += ret;
 
 	VT_HEXDUMP(pkt, c->blen);
+
+	/* the shortest domain name I can think of: x.me */
+	if (pkt->domainlen < 4)
+		goto terminate_session;
+
+	if ((c->blen - 1) < pkt->domainlen)
+		return;
+
+	for (i = 0; i < pkt->domainlen; i++) {
+		if (!is_ldh(pkt->buff[i])) {
+			is_valid = false;
+			break;
+		}
+	}
+
+	if (is_valid)
+		send(c->clientfd, wait_msg, sizeof(wait_msg), 0);
+	else
+		send(c->clientfd, error_msg, sizeof(error_msg), 0);
+
 	return;
 terminate_session:
 	cleanup_client(ctx, c);

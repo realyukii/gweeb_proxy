@@ -93,6 +93,15 @@ void get_addrstr(struct sockaddr *saddr, socklen_t slen, char *bufptr)
 	snprintf(bufptr, ADDRSTR_SZ, addrfmt, addrbuf, port_nr);
 }
 
+bool is_ldh(char c)
+{
+	return (c >= 'A' && c <= 'Z')
+		|| (c >= 'a' && c <= 'z')
+		|| (c >= '0' && c <= '9')
+		|| (c == '-')
+		|| (c == '.');
+}
+
 void printBits(size_t const size, void const * const ptr)
 {
 	unsigned char *b = (unsigned char*) ptr;

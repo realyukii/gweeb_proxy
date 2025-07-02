@@ -10,6 +10,7 @@
 /* C header */
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #define EINVAL 22
 #define ADDRSTR_SZ (1 + INET6_ADDRSTRLEN + 1 + 1 + 5 + 1)
@@ -80,3 +81,11 @@ void printBits(size_t const size, void const * const ptr);
 * @param bufptr
 */
 void get_addrstr(struct sockaddr *saddr, socklen_t slen, char *bufptr);
+
+/*
+* check if a character conform the ldh rule (letter-digit-hypen)
+* for domain name validation.
+*
+* @param c
+*/
+bool is_ldh(char c);
