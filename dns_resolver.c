@@ -424,6 +424,33 @@ static int fish_events(struct dctx *ctx)
 	return 0;
 }
 
+static void terminate_clients(struct dctx *ctx)
+{
+	struct client *c;
+	size_t i;
+
+	if (!ctx->cp.nr_client)
+		return;
+	
+	pr_info(
+		"there are %d client(s) still connected to the server, "
+		"let's free them\n",
+		ctx->cp.nr_client
+	);
+
+	for (i = 0; i < ctx->cp.cap; i++) {
+		c = ctx->cp.clients[i];
+		if (!c)
+			continue;
+
+		pr_info(
+			"free memory resource allocated for client %s\n",
+			c->addrstr
+		);
+		free(c);
+	}
+}
+
 static int start_event_loop(struct dctx *ctx)
 {
 	struct epoll_event ev;
@@ -458,10 +485,14 @@ static int start_event_loop(struct dctx *ctx)
 	while (!ctx->stop) {
 		ret = fish_events(ctx);
 		if (ret < 0)
-			goto exit_close_evfd;
+			goto exit_cleanup_client;
 	}
 
 	ret = 0;
+exit_cleanup_client:
+	terminate_clients(ctx);
+	pr_info("free client pool: %p\n", ctx->cp.clients);
+	free(ctx->cp.clients);
 exit_close_evfd:
 	pr_info("closing eventfd file descriptor: %d\n", ctx->evfd);
 	close(ctx->evfd);
@@ -539,12 +570,12 @@ int main(int argc, char **argv)
 
 	ret = init_ctx(&ctx);
 	if (ret < 0)
-		goto exit_err;
+		return -EXIT_FAILURE;
 
 	ret = parse_cmdline_args(argc, argv, &ctx);
 	if (ret < 0) {
 		pr_err("failed to parse command-line arguments\n");
-		goto exit_free;
+		return -EXIT_FAILURE;
 	}
 
 	gctx = &ctx;
@@ -554,7 +585,7 @@ int main(int argc, char **argv)
 	ret = start_server(&ctx);
 	if (ret < 0) {
 		pr_err("failed to start TCP server\n");
-		goto exit_free;
+		return -EXIT_FAILURE;
 	}
 
 	pr_info(
@@ -563,9 +594,5 @@ int main(int argc, char **argv)
 		"transfer control back to the kernel.\n"
 	);
 
-	ret = 0;
-exit_free:
-	free(ctx.cp.clients);
-exit_err:
-	return ret;
+	return 0;
 }
