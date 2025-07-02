@@ -12,6 +12,9 @@
 * |   1    |     4 to 255    |
 * +----+----------+----------+
 *
+* to be recognized as a valid domain name,
+* only letter-digit-hypen are allowed in the domain name string.
+*
 * to store the log to a file, just use your shell's built-in redirect feature.
 * redirect it to /dev/null to disable logging
 * or build the program with -DENABLE_LOG=false if you prefer smol binary:
@@ -122,6 +125,12 @@ static void __pr_log(unsigned lvl, const char *fmt, ...)
 #define pr_warn(FMT, ...) pr_log(WARN, FMT, ##__VA_ARGS__)
 #define pr_err(FMT, ...) pr_log(ERROR, FMT, ##__VA_ARGS__)
 
+enum communication_state {
+	RECV_PAYLOAD,
+	SEND_REPLY,
+	TRY_RESOLVE_ADDR
+};
+
 struct net_pkt {
 	uint8_t domainlen;
 	char buff[MAX_CLIENT_BUFFER - 1];
@@ -132,6 +141,10 @@ struct client {
 	char addrstr[ADDRSTR_SZ];
 	unsigned idx;
 	unsigned blen;
+	unsigned boff;
+	enum communication_state state;
+	uint32_t epmask;
+	bool is_valid_req;
 	char buff[MAX_CLIENT_BUFFER];
 };
 
@@ -263,8 +276,12 @@ static struct client *init_client(struct dctx *ctx)
 	}
 
 	c->clientfd = -1;
+	c->is_valid_req = true;
+	c->state = RECV_PAYLOAD;
+	c->epmask = EPOLLIN;
 	c->idx = idx;
 	c->blen = 0;
+	c->boff = 0;
 	ctx->cp.clients[idx] = c;
 	return c;
 exit_err:
@@ -301,7 +318,7 @@ static void serve_incoming_client(struct dctx *ctx)
 		c->addrstr, c->clientfd
 	);
 
-	ev.events = EPOLLIN;
+	ev.events = c->epmask;
 	ev.data.ptr = c;
 	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, c->clientfd, &ev);
 	if (ret < 0) {
@@ -326,59 +343,164 @@ static void cleanup_client(struct dctx *ctx, struct client *c)
 	free(c);
 }
 
-static void talk_to_client(struct dctx *ctx, struct client *c)
+static int send_wrapper(int sockfd, const void *buf, size_t len)
 {
+	int ret;
+	ret = send(sockfd, buf, len, MSG_NOSIGNAL);
+	return ret;
+}
+
+static void talk_to_client(struct dctx *ctx, struct epoll_event *ev)
+{
+	struct client *c = ev->data.ptr;
 	struct net_pkt *pkt = (void *)c->buff;
-	int i, ret, rlen = MAX_CLIENT_BUFFER - c->blen;
-	bool is_valid = true;
+	int i, ret, rlen;
 
-	ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
-	if (ret < 0) {
-		if (ret == EAGAIN)
-			return;
-		pr_err(
-			"an error occured while receiving "
-			"packet from client %s\n",
-			c->addrstr
-		);
-		goto terminate_session;
-	}
-
-	if (ret == 0) {
-		pr_info(
-			"client %s disconnected\n",
-			c->addrstr
-		);
-		goto terminate_session;
-	}
-
-	c->blen += ret;
-
-	VT_HEXDUMP(pkt, c->blen);
-
-	/* the shortest domain name I can think of: x.me */
-	if (pkt->domainlen < 4)
-		goto terminate_session;
-
-	if ((c->blen - 1) < pkt->domainlen)
-		return;
-
-	for (i = 0; i < pkt->domainlen; i++) {
-		if (!is_ldh(pkt->buff[i])) {
-			is_valid = false;
-			break;
+	/*
+	* if the client closing the connection,
+	* EPOLLIN event will always fired (waiting the program to read EoF)
+	* until either the socket file descriptor is closed
+	* or EPOLLIN event is unregistered from epoll interest list
+	* thus we need to always recv if EPOLLIN triggered.
+	*/
+	if (c->state == RECV_PAYLOAD || (ev->events & EPOLLIN)) {
+		rlen = MAX_CLIENT_BUFFER - c->blen;
+		ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
+		if (ret < 0) {
+			if (ret == EAGAIN)
+				return;
+			pr_err(
+				"an error occured while receiving "
+				"packet from client %s\n",
+				c->addrstr
+			);
+			goto terminate_session;
 		}
+
+		if (ret == 0) {
+			pr_info(
+				"client %s disconnected\n",
+				c->addrstr
+			);
+			goto terminate_session;
+		}
+
+		c->blen += ret;
+
+		VT_HEXDUMP(pkt, c->blen);
+
+		/*
+		* the shortest domain name I can think of: x.me
+		* which is four character.
+		*/
+		if (pkt->domainlen < 4)
+			goto terminate_session;
+
+		if ((c->blen - 1) < pkt->domainlen) {
+			pr_warn("short recv detected, waiting more data from client %s\n", c->addrstr);
+			return;
+		}
+
+		c->state = SEND_REPLY;
 	}
 
-	if (is_valid)
-		send(c->clientfd, wait_msg, sizeof(wait_msg), 0);
-	else
-		send(c->clientfd, error_msg, sizeof(error_msg), 0);
+	if (c->state == SEND_REPLY) {
+		size_t remaining;
+		for (i = 0; i < pkt->domainlen; i++) {
+			if (!is_ldh(pkt->buff[i])) {
+				c->is_valid_req = false;
+				break;
+			}
+		}
+
+		if (c->is_valid_req) {
+			if (!c->boff)
+				c->boff = sizeof(wait_msg);
+			remaining = sizeof(wait_msg) - c->boff;
+			ret = send_wrapper(c->clientfd, &wait_msg[remaining], c->boff);
+		} else {
+			if (!c->boff)
+				c->boff = sizeof(error_msg);
+			remaining = sizeof(error_msg) - c->boff;
+			ret = send_wrapper(c->clientfd, &error_msg[remaining], c->boff);
+		}
+
+		if (ret < 0) {
+			if (errno == EAGAIN)
+				return;
+			pr_err(
+				"an error occured while sending "
+				"packet to client %s\n",
+				c->addrstr
+			);
+			goto terminate_session;
+		}
+
+		c->boff -= ret;
+		if (c->boff) {
+			pr_warn(
+				"short send detected, retrying to send "
+				"remaining data to client %s\n",
+				c->addrstr
+			);
+			return;
+		}
+
+		c->state = TRY_RESOLVE_ADDR;
+	}
+
+	if (c->state == TRY_RESOLVE_ADDR) {
+	}
 
 	return;
 terminate_session:
 	cleanup_client(ctx, c);
 	return;
+}
+
+static void adjust_client_pollout(struct client *c, bool *changed)
+{
+	if (c->boff > 0) {
+		if (!(c->epmask & EPOLLOUT)) {
+			c->epmask |= EPOLLOUT;
+			*changed = true;
+		}
+	} else {
+		if (c->epmask & EPOLLOUT) {
+			c->epmask &= ~EPOLLOUT;
+			*changed = true;
+		}
+	}
+}
+
+static int adjust_client_events(struct dctx *ctx, struct client *c)
+{
+	int ret;
+	struct epoll_event ev;
+	bool is_client_changed = false;
+
+	/*
+	* There’s no need to rearm the client's POLLIN event.
+	* If the client’s receive buffer is full and it keeps sending data,
+	* the server will ignore the extra bytes
+	* and close the connection automatically.
+	*/
+	adjust_client_pollout(c, &is_client_changed);
+
+	if (is_client_changed) {
+		ev.data.ptr = c;
+		ev.events = c->epmask;
+		ret = epoll_ctl(ctx->epfd, EPOLL_CTL_MOD, c->clientfd, &ev);
+		if (ret < 0) {
+			pr_err(
+				"failed to modify epoll events on client %s\n",
+				c->addrstr
+			);
+			return -EXIT_FAILURE;
+		}
+	}
+
+	return 0;
 }
 
 static int fish_events(struct dctx *ctx)
@@ -417,8 +539,10 @@ static int fish_events(struct dctx *ctx)
 
 		if (ev->data.fd == ctx->serverfd)
 			serve_incoming_client(ctx);
-		else
-			talk_to_client(ctx, ev->data.ptr);
+		else {
+			talk_to_client(ctx, ev);
+			adjust_client_events(ctx, ev->data.ptr);
+		}
 	}
 
 	return 0;
@@ -546,7 +670,7 @@ static void signal_handler(int c)
 	const uint64_t n = 1;
 	if (gctx->evfd == -1)
 		return;
-	
+
 	switch (c) {
 	case SIGINT:
 		pr_info("interrupt signal received\n");
