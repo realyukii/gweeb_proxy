@@ -36,6 +36,8 @@
 #define ENABLE_LOG true
 #endif
 
+#define DEFAULT_NR_EVENTS 512
+
 #define INFO 1
 #define WARN 2
 #define ERROR 3
@@ -183,10 +185,11 @@ static void init_ctx(struct dctx *ctx)
 static int fish_events(struct dctx *ctx)
 {
 	int ret;
-	struct epoll_event ev;
+	struct epoll_event evs[DEFAULT_NR_EVENTS];
+	struct epoll_event *ev = &evs[0];
 	uint64_t evbuf;
 
-	ret = epoll_wait(ctx->epfd, &ev, 1, -1);
+	ret = epoll_wait(ctx->epfd, &evs, DEFAULT_NR_EVENTS, -1);
 	if (ret < 0) {
 		if (errno == EINTR)
 			return 0;
@@ -194,7 +197,7 @@ static int fish_events(struct dctx *ctx)
 		return -EXIT_FAILURE;
 	}
 
-	if (ev.data.fd == ctx->evfd) {
+	if (ev->data.fd == ctx->evfd) {
 		ret = read(ctx->evfd, &evbuf, sizeof(evbuf));
 		if (ret < 0) {
 			pr_err("failed to read buffer from evfd\n");
@@ -208,7 +211,7 @@ static int fish_events(struct dctx *ctx)
 			return 0;
 	}
 
-	if (ev.data.fd == ctx->tcpfd) {
+	if (ev->data.fd == ctx->tcpfd) {
 		/* accept incoming client. */
 	} else {
 		/* communicate with a client. */
