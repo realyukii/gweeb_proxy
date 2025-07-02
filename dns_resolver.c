@@ -318,6 +318,36 @@ static void cleanup_client(struct dctx *ctx, struct client *c)
 	free(c);
 }
 
+static int talk_to_client(struct dctx *ctx, struct client *c)
+{
+	struct net_pkt *pkt = (void *)c->buff;
+	int ret, rlen = MAX_CLIENT_BUFFER - c->blen;
+
+	ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
+	if (ret < 0) {
+		if (ret == EAGAIN)
+			return 0;
+		pr_err(
+			"an error occured while receiving "
+			"packet from client %s\n",
+			c->addrstr
+		);
+		cleanup_client(ctx, c);
+		return -EXIT_FAILURE;
+	}
+
+	if (ret == 0) {
+		pr_info(
+			"client %s closing its connection\n",
+			c->addrstr
+		);
+		cleanup_client(ctx, c);
+		return 0;
+	}
+
+	VT_HEXDUMP(pkt, ret);
+}
+
 static int fish_events(struct dctx *ctx)
 {
 	int nr_events, ret, i;
@@ -352,37 +382,10 @@ static int fish_events(struct dctx *ctx)
 			continue;
 		}
 
-		if (ev->data.fd == ctx->serverfd) {
-			ret = serve_incoming_client(ctx);
-			if (ret < 0)
-				continue;
-		} else {
-			struct client *c = ev->data.ptr;
-			struct net_pkt *pkt = (void *)c->buff;
-			int rlen = MAX_CLIENT_BUFFER - c->blen;
-			ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
-			if (ret < 0) {
-				if (ret == EAGAIN)
-					continue;
-				pr_err(
-					"an error occured while receiving "
-					"packet from client %s\n",
-					c->addrstr
-				);
-				cleanup_client(ctx, c);
-			}
-
-			if (ret == 0) {
-				pr_info(
-					"client %s closing its connection\n",
-					c->addrstr
-				);
-				cleanup_client(ctx, c);
-				continue;
-			}
-
-			VT_HEXDUMP(pkt, ret);
-		}
+		if (ev->data.fd == ctx->serverfd)
+			serve_incoming_client(ctx);
+		else
+			talk_to_client(ctx, ev->data.ptr);
 	}
 
 	return 0;
