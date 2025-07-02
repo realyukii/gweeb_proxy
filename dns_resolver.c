@@ -125,8 +125,8 @@ static void __pr_log(unsigned lvl, const char *fmt, ...)
 struct dctx {
 	/* local address and port for socket to be bound */
 	struct sockaddr_storage d;
-	/* TCP socket file descriptor */
-	int tcpfd;
+	/* main TCP socket file descriptor */
+	int serverfd;
 	/* epoll file descriptor */
 	int epfd;
 	/* eventfd file descriptor */
@@ -179,6 +179,7 @@ static void init_ctx(struct dctx *ctx)
 {
 	ctx->epfd = -1;
 	ctx->evfd = -1;
+	ctx->serverfd = -1;
 	ctx->tcpfd = -1;
 }
 
@@ -213,7 +214,7 @@ static int fish_events(struct dctx *ctx)
 				return 0;
 		}
 
-		if (ev->data.fd == ctx->tcpfd) {
+		if (ev->data.fd == ctx->serverfd) {
 			/* accept incoming client. */
 		} else {
 			/* communicate with a client. */
@@ -234,10 +235,10 @@ static int start_event_loop(struct dctx *ctx)
 	}
 
 	ev.events = EPOLLIN;
-	ev.data.fd = ctx->tcpfd;
-	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->tcpfd, &ev);
+	ev.data.fd = ctx->serverfd;
+	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->serverfd, &ev);
 	if (ret < 0) {
-		pr_err("failed to register events for tcpfd\n");
+		pr_err("failed to register events for serverfd\n");
 		goto exit_close_epfd;
 	}
 
@@ -276,21 +277,21 @@ static int start_server(struct dctx *ctx)
 	int ret = -1;
 	const int val = 1;
 
-	ctx->tcpfd = socket(ctx->d.ss_family, SOCK_STREAM, 0);
-	if (ctx->tcpfd < 0) {
+	ctx->serverfd = socket(ctx->d.ss_family, SOCK_STREAM, 0);
+	if (ctx->serverfd < 0) {
 		pr_err("failed to create TCP socket\n");
 		goto exit_failure;
 	}
 
-	setsockopt(ctx->tcpfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+	setsockopt(ctx->serverfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
-	ret = bind(ctx->tcpfd, (struct sockaddr *)&ctx->d, sizeof(ctx->d));
+	ret = bind(ctx->serverfd, (struct sockaddr *)&ctx->d, sizeof(ctx->d));
 	if (ret < 0) {
 		pr_err("failed to bind the socket\n");
 		goto exit_close;
 	}
 
-	ret = listen(ctx->tcpfd, SOMAXCONN);
+	ret = listen(ctx->serverfd, SOMAXCONN);
 	if (ret < 0) {
 		pr_err("failed to listen\n");
 		goto exit_close;
@@ -303,8 +304,8 @@ static int start_server(struct dctx *ctx)
 	}
 
 exit_close:
-	pr_info("closing main tcp file descriptor: %d\n", ctx->tcpfd);
-	close(ctx->tcpfd);
+	pr_info("closing main tcp file descriptor: %d\n", ctx->serverfd);
+	close(ctx->serverfd);
 exit_failure:
 	return ret;
 }
