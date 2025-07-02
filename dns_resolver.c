@@ -184,12 +184,12 @@ static void init_ctx(struct dctx *ctx)
 
 static int fish_events(struct dctx *ctx)
 {
-	int ret;
+	int ret, i;
 	struct epoll_event evs[DEFAULT_NR_EVENTS];
-	struct epoll_event *ev = &evs[0];
+	struct epoll_event *ev;
 	uint64_t evbuf;
 
-	ret = epoll_wait(ctx->epfd, &evs, DEFAULT_NR_EVENTS, -1);
+	ret = epoll_wait(ctx->epfd, evs, DEFAULT_NR_EVENTS, -1);
 	if (ret < 0) {
 		if (errno == EINTR)
 			return 0;
@@ -197,24 +197,27 @@ static int fish_events(struct dctx *ctx)
 		return -EXIT_FAILURE;
 	}
 
-	if (ev->data.fd == ctx->evfd) {
-		ret = read(ctx->evfd, &evbuf, sizeof(evbuf));
-		if (ret < 0) {
-			pr_err("failed to read buffer from evfd\n");
-			return -EXIT_FAILURE;
+	for (i = 0; i < ret; i++) {
+		ev = &evs[i];
+		if (ev->data.fd == ctx->evfd) {
+			ret = read(ctx->evfd, &evbuf, sizeof(evbuf));
+			if (ret < 0) {
+				pr_err("failed to read buffer from evfd\n");
+				return -EXIT_FAILURE;
+			}
+
+			/*
+			* system deliver SIGTERM or SIGINT, stop the event loop
+			*/
+			if (evbuf == 1)
+				return 0;
 		}
 
-		/*
-		* system deliver SIGTERM or SIGINT, stop the event loop
-		*/
-		if (evbuf == 1)
-			return 0;
-	}
-
-	if (ev->data.fd == ctx->tcpfd) {
-		/* accept incoming client. */
-	} else {
-		/* communicate with a client. */
+		if (ev->data.fd == ctx->tcpfd) {
+			/* accept incoming client. */
+		} else {
+			/* communicate with a client. */
+		}
 	}
 
 	return 0;
