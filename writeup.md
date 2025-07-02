@@ -42,6 +42,11 @@ printf "GET / HTTP/1.1\r\nHost: whatever.com\r\nConnection: close\r\n\r\n" >&3
 head -c333 <&3 | xxd
 ```
 
+close the socket file descriptor:
+```bash
+exec 3>&- 3<&-
+```
+
 tips, construct network packet with printf, xxd and sed (and my tool: ip converter):
 ```bash
 # username password packet
@@ -67,4 +72,44 @@ ss -tpn -o state established '( dport = 1080 )'
 for observing established connection from socks5 proxy server to target:
 ```bash
 ss -tpn -o state established '( sport != 1080 )' | grep gwproxy
+```
+
+set the socket file descriptor (opened from bash) with python:
+```bash
+python3 - <<'EOF'
+import fcntl, os
+flags = fcntl.fcntl(3, fcntl.F_GETFL)
+fcntl.fcntl(3, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+EOF
+```
+
+when the socket is non block, you can use `cat` instead of `head` without specifying its length:
+```bash
+cat <&3 | xxd
+```
+this is useful when you don't know the length, and want to print available data
+without waiting connection to be closed.
+
+
+read flags or attributes of the socket with python:
+```bash
+python3 - <<'EOF'
+import fcntl, os
+
+# 1) File‐status flags (e.g. O_NONBLOCK, O_APPEND, etc)
+flags = fcntl.fcntl(3, fcntl.F_GETFL)
+print("File‐status flags:", flags, hex(flags))
+
+# 2) Descriptor flags (e.g. FD_CLOEXEC)
+fd_flags = fcntl.fcntl(3, fcntl.F_GETFD)
+print("FD‐flags:", fd_flags, hex(fd_flags))
+
+# 3) Decode which O_* bits are present
+print("\nDecoded O_* flags:")
+for name in dir(os):
+    if name.startswith("O_"):
+        val = getattr(os, name)
+        if flags & val:
+            print(f"  {name}")
+EOF
 ```
