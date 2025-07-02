@@ -180,10 +180,46 @@ static void init_ctx(struct dctx *ctx)
 	ctx->tcpfd = -1;
 }
 
+static int fish_events(struct dctx *ctx)
+{
+	int ret;
+	struct epoll_event ev;
+	uint64_t evbuf;
+
+	ret = epoll_wait(ctx->epfd, &ev, 1, -1);
+	if (ret < 0) {
+		if (errno == EINTR)
+			return 0;
+		pr_err("an error occured while waiting in epoll_wait\n");
+		return -EXIT_FAILURE;
+	}
+
+	if (ev.data.fd == ctx->evfd) {
+		ret = read(ctx->evfd, &evbuf, sizeof(evbuf));
+		if (ret < 0) {
+			pr_err("failed to read buffer from evfd\n");
+			return -EXIT_FAILURE;
+		}
+
+		/*
+		* system deliver SIGTERM or SIGINT, stop the event loop
+		*/
+		if (evbuf == 1)
+			return 0;
+	}
+
+	if (ev.data.fd == ctx->tcpfd) {
+		/* accept incoming client. */
+	} else {
+		/* communicate with a client. */
+	}
+
+	return 0;
+}
+
 static int start_event_loop(struct dctx *ctx)
 {
 	struct epoll_event ev;
-	uint64_t evbuf;
 	int ret = -1;
 	ctx->epfd = epoll_create(1);
 	if (ctx->epfd < 0) {
@@ -213,33 +249,9 @@ static int start_event_loop(struct dctx *ctx)
 	}
 
 	while (!ctx->stop) {
-		ret = epoll_wait(ctx->epfd, &ev, 1, -1);
-		if (ret < 0) {
-			if (errno == EINTR)
-				continue;
-			pr_err("an error occured while waiting in epoll_wait\n");
+		ret = fish_events(ctx);
+		if (ret < 0)
 			goto exit_close_evfd;
-		}
-
-		if (ev.data.fd == ctx->evfd) {
-			ret = read(ctx->evfd, &evbuf, sizeof(evbuf));
-			if (ret < 0) {
-				pr_err("failed to read buffer from evfd\n");
-				goto exit_close_evfd;
-			}
-
-			/*
-			* system deliver SIGTERM or SIGINT, stop the event loop
-			*/
-			if (evbuf == 1)
-				continue;
-		}
-
-		if (ev.data.fd == ctx->tcpfd) {
-			/* accept incoming client. */
-		} else {
-			/* communicate with a client. */
-		}
 	}
 
 	ret = 0;
