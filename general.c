@@ -63,6 +63,36 @@ int init_addr(const char *addr, struct sockaddr_storage *addr_st)
 	return 0;
 }
 
+void get_addrstr(struct sockaddr *saddr, socklen_t slen, char *bufptr)
+{
+	struct sockaddr_in *in;
+	struct sockaddr_in6 *in6;
+	uint16_t port_nr;
+	char addrbuf[INET6_ADDRSTRLEN];
+	static const char *addr4fmt = "[%s]:%u";
+	static const char *addr6fmt = "[%s]:%u";
+	const char *addrfmt;
+
+	switch (saddr->sa_family) {
+	case AF_INET:
+		in = (struct sockaddr_in *)saddr;
+		inet_ntop(AF_INET, &in->sin_addr, addrbuf, slen);
+		port_nr = ntohs(in->sin_port);
+		addrfmt = addr4fmt;
+
+		break;
+	case AF_INET6:
+		in6 = (struct sockaddr_in6 *)saddr;
+		inet_ntop(AF_INET6, &in6->sin6_addr, addrbuf, slen);
+		port_nr = ntohs(in6->sin6_port);
+		addrfmt = addr6fmt;
+
+		break;
+	}
+
+	snprintf(bufptr, ADDRSTR_SZ, addrfmt, addrbuf, port_nr);
+}
+
 void printBits(size_t const size, void const * const ptr)
 {
 	unsigned char *b = (unsigned char*) ptr;

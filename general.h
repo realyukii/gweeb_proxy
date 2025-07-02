@@ -12,6 +12,7 @@
 #include <stdlib.h>
 
 #define EINVAL 22
+#define ADDRSTR_SZ (1 + INET6_ADDRSTRLEN + 1 + 1 + 5 + 1)
 
 /*
 * credit: https://gist.github.com/ammarfaizi2/e88a21171358b5092a3df412eeb80b2f
@@ -70,3 +71,12 @@ int init_addr(const char *addr, struct sockaddr_storage *addr_st);
 * @param ptr to the data.
 */
 void printBits(size_t const size, void const * const ptr);
+
+/*
+* Get printable network address.
+*
+* @param saddr
+* @param slen
+* @param bufptr
+*/
+void get_addrstr(struct sockaddr *saddr, socklen_t slen, char *bufptr);
