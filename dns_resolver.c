@@ -311,6 +311,13 @@ exit_err:
 	return -EXIT_FAILURE;
 }
 
+static void cleanup_client(struct dctx *ctx, struct client *c)
+{
+	close(c->clientfd);
+	ctx->cp.clients[c->idx] = NULL;
+	free(c);
+}
+
 static int fish_events(struct dctx *ctx)
 {
 	int nr_events, ret, i;
@@ -362,9 +369,7 @@ static int fish_events(struct dctx *ctx)
 					"packet from client %s\n",
 					c->addrstr
 				);
-				close(c->clientfd);
-				ctx->cp.clients[c->idx] = NULL;
-				free(c);
+				cleanup_client(ctx, c);
 			}
 
 			if (ret == 0) {
@@ -372,9 +377,7 @@ static int fish_events(struct dctx *ctx)
 					"client %s closing its connection\n",
 					c->addrstr
 				);
-				close(c->clientfd);
-				ctx->cp.clients[c->idx] = NULL;
-				free(c);
+				cleanup_client(ctx, c);
 				continue;
 			}
 
