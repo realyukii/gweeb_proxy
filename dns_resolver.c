@@ -206,6 +206,7 @@ static int init_ctx(struct dctx *ctx)
 	ctx->serverfd = -1;
 	memset(&ctx->d, 0, sizeof(ctx->d));
 	ctx->cp.cap = DEFAULT_CAPACITY;
+	ctx->stop = false;
 	ctx->cp.nr_client = 0;
 	ctx->cp.clients = calloc(DEFAULT_CAPACITY, sizeof(ctx->cp.clients));
 	if (!ctx->cp.clients) {
