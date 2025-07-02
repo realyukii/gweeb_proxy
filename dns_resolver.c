@@ -265,7 +265,7 @@ exit_err:
 	return NULL;
 }
 
-static int serve_incoming_client(struct dctx *ctx)
+static void serve_incoming_client(struct dctx *ctx)
 {
 	struct client *c;
 	struct epoll_event ev;
@@ -275,7 +275,7 @@ static int serve_incoming_client(struct dctx *ctx)
 
 	c = init_client(ctx);
 	if (!c)
-		return -ENOMEM;
+		return;
 
 	addrlen = sizeof(addr);
 	c->clientfd = accept4(
@@ -302,13 +302,13 @@ static int serve_incoming_client(struct dctx *ctx)
 		goto exit_close;
 	}
 
-	return 0;
+	return;
 exit_close:
 	close(c->clientfd);
 exit_err:
 	free(c);
 	ctx->cp.nr_client--;
-	return -EXIT_FAILURE;
+	return;
 }
 
 static void cleanup_client(struct dctx *ctx, struct client *c)
@@ -318,7 +318,7 @@ static void cleanup_client(struct dctx *ctx, struct client *c)
 	free(c);
 }
 
-static int talk_to_client(struct dctx *ctx, struct client *c)
+static void talk_to_client(struct dctx *ctx, struct client *c)
 {
 	struct net_pkt *pkt = (void *)c->buff;
 	int ret, rlen = MAX_CLIENT_BUFFER - c->blen;
@@ -326,14 +326,14 @@ static int talk_to_client(struct dctx *ctx, struct client *c)
 	ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
 	if (ret < 0) {
 		if (ret == EAGAIN)
-			return 0;
+			return;
 		pr_err(
 			"an error occured while receiving "
 			"packet from client %s\n",
 			c->addrstr
 		);
 		cleanup_client(ctx, c);
-		return -EXIT_FAILURE;
+		return;
 	}
 
 	if (ret == 0) {
@@ -342,7 +342,7 @@ static int talk_to_client(struct dctx *ctx, struct client *c)
 			c->addrstr
 		);
 		cleanup_client(ctx, c);
-		return 0;
+		return;
 	}
 
 	VT_HEXDUMP(pkt, ret);
