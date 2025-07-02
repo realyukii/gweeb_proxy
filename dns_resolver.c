@@ -322,6 +322,7 @@ static void cleanup_client(struct dctx *ctx, struct client *c)
 {
 	close(c->clientfd);
 	ctx->cp.clients[c->idx] = NULL;
+	ctx->cp.nr_client--;
 	free(c);
 }
 
@@ -345,7 +346,7 @@ static void talk_to_client(struct dctx *ctx, struct client *c)
 
 	if (ret == 0) {
 		pr_info(
-			"client %s closing its connection\n",
+			"client %s disconnected\n",
 			c->addrstr
 		);
 		goto terminate_session;
