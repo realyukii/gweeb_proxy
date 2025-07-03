@@ -32,8 +32,8 @@
 #include <signal.h>
 #include <errno.h>
 #include <pthread.h>
-#include "general.h"
 #include "linux.h"
+#include "general.h"
 
 #define DEFAULT_EVENTS_NR 512
 #define DEFAULT_THREAD_NR 2
@@ -82,6 +82,8 @@ struct dctx {
 	bool stop;
 	/* a pointer to the pool of thread data */
 	struct tctx *tc;
+	/* pthread handle */
+	pthread_t dns_thandle;
 };
 
 /*
@@ -619,13 +621,22 @@ exit_failure:
 	return ret;
 }
 
-static void *thread_cb(void *args)
+static void *serve_client_thread(void *args)
 {
 	struct tctx *ctx = args;
 	int ret;
 	ret = start_server(ctx);
 
 	return (void *)(uintptr_t)ret;
+}
+
+static void *dns_resolver_thread(void *args)
+{
+	struct dctx *ctx = args;
+	pr_info("starting dns resolver\n");
+	(void)ctx;
+
+	return NULL;
 }
 
 static void signal_handler(int c)
@@ -657,12 +668,13 @@ static int spawn_threads(struct dctx *ctx)
 	struct tctx *tc = malloc(ctx->thread_nr * sizeof(struct tctx));
 	ctx->tc = tc;
 
+	pthread_create(&ctx->dns_thandle, NULL, dns_resolver_thread, ctx);
 	for (i = 0; i < ctx->thread_nr; i++) {
 		/* reserve slot at index zero for main thread */
 		ctx->tc[i].dc = ctx;
 		if (i == 0)
 			continue;
-		pthread_create(&tc[i].handle, NULL, thread_cb, &tc[i]);
+		pthread_create(&tc[i].handle, NULL, serve_client_thread, &tc[i]);
 	}
 
 	return start_server(&tc[0]);
@@ -670,7 +682,9 @@ static int spawn_threads(struct dctx *ctx)
 
 int main(int argc, char **argv)
 {
-	int ret;
+	int ret, i;
+	intptr_t tret;
+
 	struct dctx ctx;
 	struct sigaction sa = {
 		.sa_handler = signal_handler
@@ -696,6 +710,16 @@ int main(int argc, char **argv)
 		pr_err("failed to start TCP server\n");
 		return -EXIT_FAILURE;
 	}
+
+	pthread_join(ctx.dns_thandle, (void **)&ret);
+	for (i = 0; i < ctx.thread_nr; i++) {
+		if (i == 0)
+			continue;
+		pthread_join(ctx.tc[i].handle, (void **)&tret);
+	}
+
+	pr_info("free memory of thread pool: %p\n", ctx.tc);
+	free(ctx.tc);
 
 	pr_info(
 		"all system resources were freed. "
