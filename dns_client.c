@@ -367,6 +367,8 @@ static int start_event_loop(struct prog_ctx *ctx)
 
 	while (true) {
 		ready_nr = epoll_wait(ctx->epfd, evs, EPOLL_EVENT_NR, -1);
+		if (ready_nr < 0)
+			goto exit_terminate_connection;
 		for (i = 0; i < ready_nr; i++) {
 			ev = &evs[i];
 			ret = make_req(ctx, ev);
