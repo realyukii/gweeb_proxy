@@ -266,7 +266,7 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 		pr_err("failed to send data packet to %s\n", ctx->addrstr);
 		return -EXIT_FAILURE;
 	}
-	c->sent = ret;
+	c->sent += ret;
 
 	return 0;
 }
