@@ -164,6 +164,7 @@ static int init_connection(struct prog_ctx *ctx)
 {
 	int serverfd, ret;
 	struct connection *c;
+	uint8_t val = 1;
 	struct epoll_event ev = {
 		.events = EPOLLIN | EPOLLOUT
 	};
@@ -194,6 +195,7 @@ static int init_connection(struct prog_ctx *ctx)
 			return -EXIT_FAILURE;
 		}
 		c->tcpfd = serverfd;
+		setsockopt(serverfd, SOL_SOCKET, SOCK_NONBLOCK, &val, sizeof(val));
 
 		ret = connect(serverfd, (struct sockaddr *)&ctx->s, sizeof(ctx->s));
 		if (ret < 0) {
