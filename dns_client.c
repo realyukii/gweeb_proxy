@@ -311,11 +311,13 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 	struct connection *c = ev->data.ptr;
 	int ret;
 
-	ret = send_payload(ctx, ev);
-	if (ret < 0) {
-		if (ret == -EAGAIN)
-			return 0;
-		goto exit_close;
+	if (ev->events & EPOLLOUT) {
+		ret = send_payload(ctx, ev);
+		if (ret < 0) {
+			if (ret == -EAGAIN)
+				return 0;
+			goto exit_close;
+		}
 	}
 	
 	ret = recv_response(c);
