@@ -187,7 +187,10 @@ static int init_connection(struct prog_ctx *ctx)
 	for (i = 0; i < ctx->concurrent_nr; i++) {
 		c = malloc(sizeof(*c));
 		if (!c) {
-			pr_err("not enough memory to allocate connection struct\n");
+			pr_err(
+				"not enough memory to allocate "
+				"connection struct\n"
+			);
 			return -EXIT_FAILURE;
 		}
 		/*
@@ -205,11 +208,22 @@ static int init_connection(struct prog_ctx *ctx)
 		}
 		c->tcpfd = serverfd;
 		c->sent = 0;
-		setsockopt(serverfd, SOL_SOCKET, SOCK_NONBLOCK, &val, sizeof(val));
+		setsockopt(
+			serverfd,
+			SOL_SOCKET, SOCK_NONBLOCK,
+			&val, sizeof(val)
+		);
 
-		ret = connect(serverfd, (struct sockaddr *)&ctx->s, sizeof(ctx->s));
+		ret = connect(
+			serverfd,
+			(struct sockaddr *)&ctx->s,
+			sizeof(ctx->s)
+		);
 		if (ret < 0) {
-			pr_err("failed to connect at %dth attempt\n", ctx->cp.connection_nr);
+			pr_err(
+				"failed to connect at %dth attempt\n",
+				ctx->cp.connection_nr
+			);
 			break;
 		}
 
@@ -218,7 +232,8 @@ static int init_connection(struct prog_ctx *ctx)
 		ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, serverfd, &ev);
 		if (ret < 0) {
 			pr_err(
-				"failed to register epoll event on %dth attempt\n",
+				"failed to register epoll event "
+				"on %d attempt\n",
 				ctx->cp.connection_nr
 			);
 			return -EXIT_FAILURE;
