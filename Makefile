@@ -3,7 +3,7 @@ BUILDDIR	:= build
 GWPROXYSRC	:= gwproxy.c linux.c general.c
 CONVERTERSRC	:= ip_converter.c general.c
 INOTIFYSRC	:= test_inotify.c linux.c
-DNSRESOLVSRC	:= dns_resolver.c general.c
+DNSRESOLVSRC	:= dns_resolver.c general.c linux.c
 
 OBJS1		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(GWPROXYSRC))
 OBJS2		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(CONVERTERSRC))

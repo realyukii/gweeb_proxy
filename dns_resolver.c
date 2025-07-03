@@ -27,103 +27,16 @@
 #define _GNU_SOURCE // somehow gettid and getopt require this constant.
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
-#include <unistd.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <signal.h>
-#include <stdarg.h>
-#include <time.h>
 #include <errno.h>
 #include "general.h"
-
-#ifndef ENABLE_LOG
-#define ENABLE_LOG true
-#endif
+#include "linux.h"
 
 #define DEFAULT_NR_EVENTS 512
 #define DEFAULT_CAPACITY 512
 #define MAX_CLIENT_BUFFER 256
-
-#define INFO 1
-#define WARN 2
-#define ERROR 3
-#define DEBUG 4
-
-#if ENABLE_LOG
-#define pr_log(LVL, FMT, ...) 				\
-do {							\
-	if (ENABLE_LOG)					\
-		__pr_log(LVL, FMT, ##__VA_ARGS__);	\
-} while (0);
-
-static void generate_current_time(char *buf)
-{
-	time_t rawtime;
-	struct tm timeinfo;
-
-	time(&rawtime);
-	localtime_r(&rawtime, &timeinfo);
-	asctime_r(&timeinfo, buf);
-	buf[26 - 2] = '\0';
-}
-
-static void __pr_log(unsigned lvl, const char *fmt, ...)
-{
-	/*
-	* asctime(3): atleast 26 bytes of buffer is provided
-	* 24 ascii character + newline + null terminated bytes.
-	*/
-	char human_readable_time[26] = {0};
-	const char *level;
-	pid_t tid;
-
-	static const char *info = "info";
-	static const char *warn = "warning";
-	static const char *err = "error";
-	static const char *dbg = "debug";
-
-	va_list args;
-	va_start(args, fmt);
-
-	switch (lvl) {
-	case INFO:
-		level = info;
-		break;
-	case WARN:
-		level = warn;
-		break;
-	case ERROR:
-		level = err;
-		break;
-	case DEBUG:
-		level = dbg;
-		break;
-	}
-
-	tid = gettid();
-	generate_current_time(human_readable_time);
-	/*
-	* the log format is consist of:
-	* - current timestamp in human-readable form
-	* - process identifier
-	* - log level
-	*/
-	fprintf(
-		stderr,
-		"[%s] [%d] %s: ",
-		human_readable_time, tid, level
-	);
-	vfprintf(stderr, fmt, args);
-	va_end(args);
-}
-#else 
-#define pr_log(LVL, FMT, ...)
-#endif
-
-#define pr_dbg(FMT, ...) pr_log(DEBUG, FMT, ##__VA_ARGS__)
-#define pr_info(FMT, ...) pr_log(INFO, FMT, ##__VA_ARGS__)
-#define pr_warn(FMT, ...) pr_log(WARN, FMT, ##__VA_ARGS__)
-#define pr_err(FMT, ...) pr_log(ERROR, FMT, ##__VA_ARGS__)
 
 enum communication_state {
 	SEND_REPLY,
