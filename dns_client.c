@@ -124,7 +124,7 @@ static int make_req(struct prog_ctx *ctx)
 	ret = connect(serverfd, (struct sockaddr *)&ctx->s, sizeof(ctx->s));
 	if (ret < 0) {
 		pr_err("failed to connect to %s\n", ctx->addrstr);
-		return -EXIT_FAILURE;
+		goto exit_close;
 	} else
 		pr_info("connected to %s\n", ctx->addrstr);
 
@@ -133,21 +133,26 @@ static int make_req(struct prog_ctx *ctx)
 	ret = send(serverfd, &p, 1 + p.dlen, 0);
 	if (ret < 0) {
 		pr_err("failed to send data packet to %s\n", ctx->addrstr);
-		return -EXIT_FAILURE;
+		goto exit_close;
 	}
 
 	ret = recv(serverfd, recvbuf, sizeof(recvbuf), 0);
 	if (ret < 0) {
 		pr_err("failed to receive server's response\n");
-		return -EXIT_FAILURE;
+		goto exit_close;
 	}
+
 	if (!ret) {
 		pr_info("server closed the connection\n");
-		return 0;
+		goto exit_close;
 	}
 
 	VT_HEXDUMP(recvbuf, ret);
-
+exit_close:
+	pr_info("closing connection to the server\n");
+	close(serverfd);
+	return ret;
+}
 	return 0;
 }
 
