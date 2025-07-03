@@ -21,7 +21,7 @@
 #define DEFAULT_BUFF_SZ 1024
 #define DEFAULT_CONN_NR 100
 #define DEFAULT_THREAD_NR 1
-#define pr_menu printf(usage, DEFAULT_CONN_NR, DEFAULT_THREAD_NR)
+#define pr_menu printf(usage, DEFAULT_CONN_NR)
 
 struct net_pkt {
 	uint8_t dlen;
@@ -370,8 +370,11 @@ static int start_event_loop(struct prog_ctx *ctx)
 
 	while (!ctx->stop) {
 		ready_nr = epoll_wait(ctx->epfd, evs, EPOLL_EVENT_NR, -1);
-		if (ready_nr < 0)
+		if (ready_nr < 0) {
+			if (errno == EINTR)
+				continue;
 			goto exit_terminate_connection;
+		}
 		for (i = 0; i < ready_nr; i++) {
 			ev = &evs[i];
 			ret = make_req(ctx, ev);
@@ -421,9 +424,8 @@ int main(int argc, char **argv)
 	};
 
 	ret = init_ctx(&ctx);
-	if (ret < 0) {
+	if (ret < 0)
 		return -EXIT_FAILURE;
-	}
 
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
@@ -441,7 +443,7 @@ int main(int argc, char **argv)
 		return -EXIT_FAILURE;
 	}
 
-	start_event_loop(&ctx);
+	ret = start_event_loop(&ctx);
 
-	return 0;
+	return ret;
 }
