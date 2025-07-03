@@ -34,9 +34,12 @@
 #include "general.h"
 #include "linux.h"
 
-#define DEFAULT_NR_EVENTS 512
+#define DEFAULT_EVENTS_NR 512
+#define DEFAULT_THREAD_NR 2
 #define DEFAULT_CAPACITY 512
 #define MAX_CLIENT_BUFFER 256
+
+#define pr_menu printf(usage, DEFAULT_THREAD_NR);
 
 enum communication_state {
 	SEND_REPLY,
@@ -95,11 +98,10 @@ static const char error_msg[] =
 "the payload doesn't conform with "
 "LDH rule, request aborted.";
 
-static void print_usage(void)
-{
-	printf("usage: ./dns_resolver [options]\n");
-	printf("-b <local address>:<local port> for socket to be bound\n");
-}
+static const char usage[] =
+"usage: ./dns_resolver [options]\n"
+"-b <local address>:<local port> for socket to be bound\n"
+"-t number of thread for serving incoming client (default %d)\n";
 
 static int parse_cmdline_args(int argc, char **argv, struct dctx *ctx)
 {
@@ -124,12 +126,12 @@ static int parse_cmdline_args(int argc, char **argv, struct dctx *ctx)
 		goto print_usage_n_exit;
 
 	if (init_addr(bind_arg, &ctx->d) < 0)
-		return -1;
+		return -EINVAL;
 
 	return 0;
 print_usage_n_exit:
-	print_usage();
-	return -1;
+	pr_menu;
+	return -EXIT_FAILURE;
 }
 
 static int init_ctx(struct dctx *ctx)
@@ -416,11 +418,11 @@ static int adjust_client_events(struct dctx *ctx, struct client *c)
 static int fish_events(struct dctx *ctx)
 {
 	int nr_events, ret, i;
-	struct epoll_event evs[DEFAULT_NR_EVENTS];
+	struct epoll_event evs[DEFAULT_EVENTS_NR];
 	struct epoll_event *ev;
 	uint64_t evbuf;
 
-	nr_events = epoll_wait(ctx->epfd, evs, DEFAULT_NR_EVENTS, -1);
+	nr_events = epoll_wait(ctx->epfd, evs, DEFAULT_EVENTS_NR, -1);
 	if (nr_events < 0) {
 		if (errno == EINTR)
 			return 0;
@@ -608,7 +610,8 @@ int main(int argc, char **argv)
 
 	ret = parse_cmdline_args(argc, argv, &ctx);
 	if (ret < 0) {
-		pr_err("failed to parse command-line arguments\n");
+		if (ret == -EINVAL)
+			pr_err("failed to parse command-line arguments\n");
 		return -EXIT_FAILURE;
 	}
 

@@ -311,6 +311,10 @@ static int recv_response(struct connection *c)
 	if (c->remaining)
 		return -EAGAIN;
 
+	/*
+	* The connection will be closed when the recv buffer
+	* is filled with sizeof(c->buf) bytes.
+	*/
 	return 0;
 }
 
