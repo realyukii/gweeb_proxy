@@ -111,13 +111,21 @@ static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 		return -EINVAL;
 	}
 
-	concurrent_nr = atoi(concurrent_opt);
+	if (concurrent_opt)
+		concurrent_nr = atoi(concurrent_opt);
+	else
+		concurrent_nr = DEFAULT_CONN_NR;
+
 	if (concurrent_nr <= 0) {
 		pr_err("concurrent number can't be zero or negative.\n");
 		return -EINVAL;
 	}
 
-	thread_nr = atoi(concurrent_opt);
+	if (thread_opt)
+		thread_nr = atoi(thread_opt);
+	else
+		thread_nr = DEFAULT_THREAD_NR;
+
 	if (thread_nr <= 0) {
 		pr_err("thread number can't be zero or negative.\n");
 		return -EINVAL;
