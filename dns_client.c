@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <errno.h>
 #include "linux.h"
 #include "general.h"
 
@@ -219,7 +220,7 @@ static int init_connection(struct prog_ctx *ctx)
 			(struct sockaddr *)&ctx->s,
 			sizeof(ctx->s)
 		);
-		if (ret < 0) {
+		if (ret < 0 && errno != EINPROGRESS) {
 			pr_err(
 				"failed to connect at %dth attempt\n",
 				ctx->cp.connection_nr
@@ -258,8 +259,10 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 	pkt_len = 1 + p.dlen;
 	slen = pkt_len - c->sent;
 	ptr = (void *)&p;
-	ret = send(c->tcpfd, &ptr[c->sent], slen, 0);
+	ret = send(c->tcpfd, &ptr[c->sent], slen, MSG_NOSIGNAL);
 	if (ret < 0) {
+		if (errno == EAGAIN)
+			return 0;
 		pr_err("failed to send data packet to %s\n", ctx->addrstr);
 		return -EXIT_FAILURE;
 	}
