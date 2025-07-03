@@ -245,7 +245,7 @@ static int init_connection(struct prog_ctx *ctx)
 	return 0;
 }
 
-static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
+static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 {
 	struct connection *c = ev->data.ptr;
 	int ret;
@@ -261,8 +261,20 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 	ret = send(c->tcpfd, &ptr[c->sent], slen, 0);
 	if (ret < 0) {
 		pr_err("failed to send data packet to %s\n", ctx->addrstr);
-		goto exit_close;
+		return -EXIT_FAILURE;
 	}
+
+	return 0;
+}
+
+static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
+{
+	struct connection *c = ev->data.ptr;
+	int ret;
+
+	ret = send_payload(ctx, ev);
+	if (ret < 0)
+		goto exit_close;
 
 	ret = recv(c->tcpfd, c->buf, sizeof(c->buf), 0);
 	if (ret < 0) {
