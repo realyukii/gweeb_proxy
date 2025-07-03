@@ -113,6 +113,7 @@ static int validate_dname(char *dname)
 static int make_req(struct prog_ctx *ctx)
 {
 	int ret, serverfd;
+	char recvbuf[255];
 	struct net_pkt p;
 	serverfd = socket(ctx->s.ss_family, SOCK_STREAM, 0);
 	if (serverfd < 0) {
@@ -130,6 +131,22 @@ static int make_req(struct prog_ctx *ctx)
 	memcpy(p.dname, ctx->dname, ctx->dnamelen);
 	p.dlen = ctx->dnamelen;
 	ret = send(serverfd, &p, 1 + p.dlen, 0);
+	if (ret < 0) {
+		pr_err("failed to send data packet to %s\n", ctx->addrstr);
+		return -EXIT_FAILURE;
+	}
+
+	ret = recv(serverfd, recvbuf, sizeof(recvbuf), 0);
+	if (ret < 0) {
+		pr_err("failed to receive server's response\n");
+		return -EXIT_FAILURE;
+	}
+	if (!ret) {
+		pr_info("server closed the connection\n");
+		return 0;
+	}
+
+	VT_HEXDUMP(recvbuf, ret);
 
 	return 0;
 }
