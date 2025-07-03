@@ -281,13 +281,21 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 
 static int recv_response(struct connection *c)
 {
-	int ret;
+	int ret, off;
 
-	ret = recv(c->tcpfd, c->buf, sizeof(c->buf), 0);
+	if (!c->sent)
+		c->sent = sizeof(c->buf);
+	off = sizeof(c->buf) - c->sent;
+	ret = recv(c->tcpfd, &c->buf[off], c->sent, 0);
 	if (ret < 0) {
+		if (errno == EAGAIN)
+			return -EAGAIN;
 		pr_err("failed to receive server's response\n");
 		return -EXIT_FAILURE;
 	}
+	c->sent -= ret;
+	if (c->sent)
+		return -EAGAIN;
 
 	if (!ret) {
 		pr_info("server closed the connection\n");
@@ -311,8 +319,11 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 	}
 	
 	ret = recv_response(c);
-	if (ret < 0)
+	if (ret < 0) {
+		if (ret == -EAGAIN)
+			return 0;
 		goto exit_close;
+	}
 
 exit_close:
 	pr_info(
