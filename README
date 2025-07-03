@@ -24,12 +24,19 @@ Key Features of The Program:
 - handle currently-identified edge/corner cases:
 	* short recv: fewer bytes partially received than requested
 	* short send: fewer bytes partially sent than requested
-	* pause incoming connection from accept when open file descriptor reach max limit (not supported yet)
 - controllable program, currently it allow the user to specify:
 	* connection time out interval
 	* proxy mode: socks5/simple tcp proxy
 	* pre-allocated buffer to store pointer of established session
-	* number of thread
+	* number of thread to spawn that communicating with client
 	* specifying local address and local port is required
 	* on socks5 mode: authentication method with username/password
 	* on simple mode: specifying remote address and remote port for target is required
+
+Features in my Wish list:
+- a switch on cmdline option that allow to pick epoll or io uring (zero copy?!)
+- controllable client and target (recv/send) buffer size, convenient for testing performance.
+- built-in DNS cache
+- connect race for when domain name is provided
+- corner cases
+	* pause incoming connection from accept when open file descriptor reach max limit

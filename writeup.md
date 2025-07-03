@@ -113,3 +113,16 @@ for name in dir(os):
             print(f"  {name}")
 EOF
 ```
+
+benchmark with iperf3 tool:
+start server:
+```shell
+iperf3 -s
+```
+
+set the proxy to simple tcp proxy that target to ::1 port 5201 (default port of iperf server)
+
+start client:
+```shell
+iperf3 -c ::1 -p 8085 -n 100g -P 5
+```
