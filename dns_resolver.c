@@ -303,11 +303,109 @@ static int send_wrapper(int sockfd, const void *buf, size_t len)
 	return ret;
 }
 
+static int read_payload(struct client *c)
+{
+	struct net_pkt *pkt = (void *)c->buff;
+	int ret, rlen;
+
+	rlen = MAX_CLIENT_BUFFER - c->blen;
+	ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
+	if (ret < 0) {
+		if (ret == EAGAIN)
+			return -EAGAIN;
+		pr_err(
+			"an error occured while receiving "
+			"packet from client %s\n",
+			c->addrstr
+		);
+		return -EXIT_FAILURE;
+	}
+
+	if (ret == 0) {
+		pr_info(
+			"client %s disconnected\n",
+			c->addrstr
+		);
+		return -EXIT_FAILURE;
+	}
+
+	c->blen += ret;
+
+	VT_HEXDUMP(pkt, c->blen);
+
+	/*
+	* the shortest domain name I can think of: x.me
+	* which is four character.
+	*/
+	if (pkt->domainlen < 4)
+		return -EXIT_FAILURE;
+
+	if ((c->blen - 1) < pkt->domainlen) {
+		pr_warn(
+			"short recv detected, "
+			"waiting more data from client %s\n",
+			c->addrstr
+		);
+		return -EAGAIN;
+	}
+
+	return 0;
+}
+
+static int send_hello(struct client *c)
+{
+	struct net_pkt *pkt = (void *)c->buff;
+	int i, ret;
+
+	size_t remaining;
+	for (i = 0; i < pkt->domainlen; i++) {
+		if (!is_ldh(pkt->buff[i])) {
+			c->is_valid_req = false;
+			break;
+		}
+	}
+
+	if (c->is_valid_req) {
+		if (!c->boff)
+			c->boff = sizeof(wait_msg);
+		remaining = sizeof(wait_msg) - c->boff;
+		ret = send_wrapper(c->clientfd, &wait_msg[remaining], c->boff);
+	} else {
+		if (!c->boff)
+			c->boff = sizeof(error_msg);
+		remaining = sizeof(error_msg) - c->boff;
+		ret = send_wrapper(c->clientfd, &error_msg[remaining], c->boff);
+	}
+
+	if (ret < 0) {
+		if (errno == EAGAIN)
+			return -EAGAIN;
+		pr_err(
+			"an error occured while sending "
+			"packet to client %s\n",
+			c->addrstr
+		);
+		return -EXIT_FAILURE;
+	}
+
+	c->boff -= ret;
+	if (c->boff) {
+		pr_warn(
+			"short send detected, retrying to send "
+			"remaining data to client %s\n",
+			c->addrstr
+		);
+		return -EAGAIN;
+	}
+
+	c->state = TRY_RESOLVE_ADDR;
+	return 0;
+}
+
 static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 {
+	int ret;
 	struct client *c = ev->data.ptr;
-	struct net_pkt *pkt = (void *)c->buff;
-	int i, ret, rlen;
 
 	/*
 	* if the client closing the connection,
@@ -317,87 +415,21 @@ static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 	* thus we need to always recv if EPOLLIN triggered.
 	*/
 	if (ev->events & EPOLLIN) {
-		rlen = MAX_CLIENT_BUFFER - c->blen;
-		ret = recv(c->clientfd, &c->buff[c->blen], rlen, 0);
+		ret = read_payload(c);
 		if (ret < 0) {
-			if (ret == EAGAIN)
+			if (ret == -EAGAIN)
 				return;
-			pr_err(
-				"an error occured while receiving "
-				"packet from client %s\n",
-				c->addrstr
-			);
 			goto terminate_session;
-		}
-
-		if (ret == 0) {
-			pr_info(
-				"client %s disconnected\n",
-				c->addrstr
-			);
-			goto terminate_session;
-		}
-
-		c->blen += ret;
-
-		VT_HEXDUMP(pkt, c->blen);
-
-		/*
-		* the shortest domain name I can think of: x.me
-		* which is four character.
-		*/
-		if (pkt->domainlen < 4)
-			goto terminate_session;
-
-		if ((c->blen - 1) < pkt->domainlen) {
-			pr_warn("short recv detected, waiting more data from client %s\n", c->addrstr);
-			return;
 		}
 	}
 
 	if (c->state == SEND_REPLY) {
-		size_t remaining;
-		for (i = 0; i < pkt->domainlen; i++) {
-			if (!is_ldh(pkt->buff[i])) {
-				c->is_valid_req = false;
-				break;
-			}
-		}
-
-		if (c->is_valid_req) {
-			if (!c->boff)
-				c->boff = sizeof(wait_msg);
-			remaining = sizeof(wait_msg) - c->boff;
-			ret = send_wrapper(c->clientfd, &wait_msg[remaining], c->boff);
-		} else {
-			if (!c->boff)
-				c->boff = sizeof(error_msg);
-			remaining = sizeof(error_msg) - c->boff;
-			ret = send_wrapper(c->clientfd, &error_msg[remaining], c->boff);
-		}
-
+		ret = send_hello(c);
 		if (ret < 0) {
-			if (errno == EAGAIN)
+			if (ret == -EAGAIN)
 				return;
-			pr_err(
-				"an error occured while sending "
-				"packet to client %s\n",
-				c->addrstr
-			);
 			goto terminate_session;
 		}
-
-		c->boff -= ret;
-		if (c->boff) {
-			pr_warn(
-				"short send detected, retrying to send "
-				"remaining data to client %s\n",
-				c->addrstr
-			);
-			return;
-		}
-
-		c->state = TRY_RESOLVE_ADDR;
 	}
 
 	if (c->state == TRY_RESOLVE_ADDR) {
