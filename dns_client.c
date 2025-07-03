@@ -4,14 +4,16 @@
 * to the DNS resolver.
 *
 * run without any arguments to see the usage.
+*
+* build without log: make CFLAGS=-DENABLE_LOG=false build/dns_client
 */
 
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/epoll.h>
-#include "general.h"
 #include "linux.h"
+#include "general.h"
 
 #define EPOLL_EVENT_NR 512
 #define DEFAULT_BUFF_SZ 1024
