@@ -319,11 +319,8 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 	}
 	
 	ret = recv_response(c);
-	if (ret < 0) {
-		if (ret == -EAGAIN)
-			return 0;
-		goto exit_close;
-	}
+	if (ret == -EAGAIN)
+		return 0;
 
 exit_close:
 	pr_info(
