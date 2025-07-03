@@ -271,6 +271,25 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 	return 0;
 }
 
+static int recv_response(struct connection *c)
+{
+	int ret;
+
+	ret = recv(c->tcpfd, c->buf, sizeof(c->buf), 0);
+	if (ret < 0) {
+		pr_err("failed to receive server's response\n");
+		return -EXIT_FAILURE;
+	}
+
+	if (!ret) {
+		pr_info("server closed the connection\n");
+		return -EXIT_FAILURE;
+	}
+
+	VT_HEXDUMP(c->buf, ret);
+	return 0;
+}
+
 static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 {
 	struct connection *c = ev->data.ptr;
@@ -279,19 +298,11 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 	ret = send_payload(ctx, ev);
 	if (ret < 0)
 		goto exit_close;
-
-	ret = recv(c->tcpfd, c->buf, sizeof(c->buf), 0);
-	if (ret < 0) {
-		pr_err("failed to receive server's response\n");
+	
+	ret = recv_response(c);
+	if (ret < 0)
 		goto exit_close;
-	}
 
-	if (!ret) {
-		pr_info("server closed the connection\n");
-		goto exit_close;
-	}
-
-	VT_HEXDUMP(c->buf, ret);
 exit_close:
 	pr_info(
 		"disconnected from %s on socket file descriptor %d\n",
