@@ -253,6 +253,7 @@ exit_close:
 	);
 	close(c->tcpfd);
 	ctx->cp.c[c->idx] = NULL;
+	ctx->cp.connection_nr--;
 	free(c);
 	return ret;
 }
@@ -282,6 +283,8 @@ static int start_event_loop(struct prog_ctx *ctx)
 			if (ret < 0)
 				return -EXIT_FAILURE;
 		}
+		if (!ctx->cp.connection_nr)
+			break;
 	}
 
 	ret = 0;
