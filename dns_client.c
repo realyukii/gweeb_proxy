@@ -305,12 +305,6 @@ static int recv_response(struct connection *c)
 	c->remaining -= ret;
 	if (c->remaining)
 		return -EAGAIN;
-	
-
-	if (!ret) {
-		pr_info("server closed the connection\n");
-		return -EXIT_FAILURE;
-	}
 
 	VT_HEXDUMP(c->buf, ret);
 	return 0;
