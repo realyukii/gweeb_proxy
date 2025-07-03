@@ -156,8 +156,6 @@ static void free_connection_pool(struct connection_pool *cp)
 			free(c);
 		}
 	}
-
-	free(cp->c);
 }
 
 static int init_connection(struct prog_ctx *ctx)
@@ -270,9 +268,16 @@ static int start_event_loop(struct prog_ctx *ctx)
 		return -EXIT_FAILURE;
 	}
 
+	ctx->cp.c = calloc(ctx->concurrent_nr, sizeof(ctx->cp.c));
+	if (!ctx->cp.c) {
+		pr_err("not enough memory to pre-allocate pool\n");
+		ret = -EXIT_FAILURE;
+		goto exit_close_epfd;
+	}
+
 	ret = init_connection(ctx);
 	if (ret < 0) {
-		goto exit_free_connection;
+		goto exit_terminate_connection;
 	}
 
 	while (true) {
@@ -281,26 +286,27 @@ static int start_event_loop(struct prog_ctx *ctx)
 			ev = &evs[i];
 			ret = make_req(ctx, ev);
 			if (ret < 0)
-				return -EXIT_FAILURE;
+				goto exit_terminate_connection;
 		}
 		if (!ctx->cp.connection_nr)
-			break;
+			goto exit_free_pool;
 	}
 
 	ret = 0;
-exit_free_connection:
+exit_terminate_connection:
 	free_connection_pool(&ctx->cp);
-
+exit_free_pool:
+	pr_info("free the connection pool\n");
+	free(ctx->cp.c);
+exit_close_epfd:
+	pr_info("close epoll file descriptor\n");
+	close(ctx->epfd);
 	return ret;
 }
 
 static int init_ctx(struct prog_ctx *ctx)
 {
-	ctx->cp.c = calloc(ctx->cp.connection_nr, sizeof(ctx->cp.c));
-	if (!ctx->cp.c) {
-		pr_err("not enough memory to pre-allocate pool\n");
-		return -EXIT_FAILURE;
-	}
+	ctx->cp.connection_nr = 0;
 
 	memset(&ctx->s, 0, sizeof(ctx->s));
 
