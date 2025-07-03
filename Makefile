@@ -20,6 +20,7 @@ TARGET5		:= $(BUILDDIR)/dns_client
 
 CC		:= gcc
 CFLAGS		:= -Wmaybe-uninitialized -DDEBUG_LVL=0 -Wall -Wextra -g3
+# LDFLAGS		:= -fsanitize=address
 
 all: $(TARGET1) $(TARGET2) $(TARGET3) $(TARGET4) $(TARGET5)
 
@@ -27,18 +28,13 @@ $(BUILDDIR):
 	mkdir -p $@
 
 $(BUILDDIR)/%.o: %.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) -c $< -o $@
 
 $(TARGET1): $(OBJS1)
-	$(CC) $^ -o $@
 $(TARGET2): $(OBJS2)
-	$(CC) $^ -o $@
 $(TARGET3): $(OBJS3)
-	$(CC) $^ -o $@
 $(TARGET4): $(OBJS4)
-	$(CC) $^ -o $@
 $(TARGET5): $(OBJS5)
-	$(CC) $^ -o $@
 
 test_conventional: $(TARGET1)
 	$< -t [::1]:8081 -b [::1]:8080 -T 1
