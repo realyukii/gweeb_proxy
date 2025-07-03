@@ -19,6 +19,7 @@
 struct prog_ctx {
 	char *dname;
 	char *addrstr;
+	uint8_t dnamelen;
 	struct sockaddr_storage s;
 };
 
@@ -34,6 +35,7 @@ static const char usage[] =
 static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 {
 	char c, *dname_opt, *concurrent_opt, *req_opt, *server_opt;
+	size_t dlen;
 	int ret;
 
 	if (argc == 1)
@@ -65,12 +67,23 @@ static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 		return -EXIT_FAILURE;
 
 	ctx->dname = dname_opt;
+	dlen = strlen(dname_opt);
+	if (dlen < 4) {
+		pr_err("domain name too short, minimum is 4 character\n");
+		return -EINVAL;
+	}
+	if (dlen > 255) {
+		pr_err("domain name too long, maximum is 255 character\n");
+		return -EINVAL;
+	}
+	ctx->dnamelen = dlen;
+
 	ctx->addrstr = server_opt;
 	memset(&ctx->s, 0, sizeof(ctx->s));
 	ret = init_addr(server_opt, &ctx->s);
 	if (ret < 0) {
 		pr_err(
-			"invalid address, accepted format <ip>:<port>\n"
+			"invalid address, accepted format <ip>:<port>, "
 			"wrap ip with bracket for IPv6 address\n"
 		);
 		return -EINVAL;
