@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <errno.h>
+#include <signal.h>
 #include "linux.h"
 #include "general.h"
 
@@ -40,6 +41,7 @@ struct connection_pool {
 };
 
 struct prog_ctx {
+	bool stop;
 	int epfd;
 	char *dname;
 	char *addrstr;
@@ -51,13 +53,14 @@ struct prog_ctx {
 };
 
 static char opts[] = "n:c:t:s:";
+static struct prog_ctx *gctx;
 
 static const char usage[] =
 "usage: ./dns_client [options]\n"
 "-n\tdomain name\n"
 "-s\tip:port for server address\n"
-"-c\tnumber of concurrent connection per-thread (default %d)\n"
-"-t\tnumber of thread (default %d)\n";
+"-c\tnumber of concurrent connection per-thread (default %d)\n";
+// "-t\tnumber of thread (default %d)\n"; NOT SUPPORTED yet.
 
 static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 {
@@ -365,7 +368,7 @@ static int start_event_loop(struct prog_ctx *ctx)
 		goto exit_terminate_connection;
 	}
 
-	while (true) {
+	while (!ctx->stop) {
 		ready_nr = epoll_wait(ctx->epfd, evs, EPOLL_EVENT_NR, -1);
 		if (ready_nr < 0)
 			goto exit_terminate_connection;
@@ -393,22 +396,37 @@ exit_close_epfd:
 
 static int init_ctx(struct prog_ctx *ctx)
 {
+	gctx = ctx;
 	ctx->cp.connection_nr = 0;
+	ctx->stop = false;
 
 	memset(&ctx->s, 0, sizeof(ctx->s));
 
 	return 0;
 }
 
+static void signal_handler(int c)
+{
+	pr_info("interrupt signal received, exiting program...\n");
+	gctx->stop = true;
+	(void)c;
+}
+
 int main(int argc, char **argv)
 {
 	int ret;
 	struct prog_ctx ctx;
+	struct sigaction sa = {
+		.sa_handler = signal_handler
+	};
 
 	ret = init_ctx(&ctx);
 	if (ret < 0) {
 		return -EXIT_FAILURE;
 	}
+
+	sigaction(SIGINT, &sa, NULL);
+	sigaction(SIGTERM, &sa, NULL);
 
 	ret = parse_cmdline_args(argc, argv, &ctx);
 	if (ret < 0) {
