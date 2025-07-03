@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <signal.h>
 #include <errno.h>
+#include <pthread.h>
 #include "general.h"
 #include "linux.h"
 
@@ -75,6 +76,20 @@ struct client_pool {
 struct dctx {
 	/* local address and port for socket to be bound */
 	struct sockaddr_storage d;
+	/* number of thread that serve TCP connection */
+	int thread_nr;
+	/* flag to stop the program */
+	bool stop;
+	/* a pointer to the pool of thread data */
+	struct tctx *tc;
+};
+
+/*
+* thread-specific data.
+*/
+struct tctx {
+	/* pthread handle */
+	pthread_t handle;
 	/* main TCP socket file descriptor */
 	int serverfd;
 	/* a container of client data */
@@ -83,8 +98,8 @@ struct dctx {
 	int epfd;
 	/* eventfd file descriptor */
 	int evfd;
-	/* flag to stop the program */
-	bool stop;
+	/* a pointer to the application data */
+	struct dctx *dc;
 };
 
 /* allow signal handler to access application data. */
@@ -105,16 +120,21 @@ static const char usage[] =
 
 static int parse_cmdline_args(int argc, char **argv, struct dctx *ctx)
 {
-	static const char opts[] = "b:";
-	char c, *bind_arg = NULL;
+	static const char opts[] = "b:t:";
+	int thread_nr;
+	char c, *bind_arg, *thread_opt;
 
 	if (argc == 1)
 		goto print_usage_n_exit;
-
+	
+	thread_opt = bind_arg = NULL;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 'b':
 			bind_arg = optarg;
+			break;
+		case 't':
+			thread_opt = optarg;
 			break;
 
 		default:
@@ -125,6 +145,17 @@ static int parse_cmdline_args(int argc, char **argv, struct dctx *ctx)
 	if (!bind_arg)
 		goto print_usage_n_exit;
 
+	if (thread_opt)
+		thread_nr = atoi(thread_opt);
+	else
+		thread_nr = DEFAULT_THREAD_NR;
+
+	if (thread_nr <= 0) {
+		pr_err("thread number can't be zero or negative.\n");
+		return -EINVAL;
+	}
+	ctx->thread_nr = thread_nr;
+
 	if (init_addr(bind_arg, &ctx->d) < 0)
 		return -EINVAL;
 
@@ -134,17 +165,23 @@ print_usage_n_exit:
 	return -EXIT_FAILURE;
 }
 
-static int init_ctx(struct dctx *ctx)
+static int init_thread_ctx(struct tctx *tc)
 {
-	memset(&ctx->d, 0, sizeof(ctx->d));
-	ctx->cp.cap = DEFAULT_CAPACITY;
-	ctx->stop = false;
-	ctx->cp.nr_client = 0;
-	ctx->cp.clients = calloc(DEFAULT_CAPACITY, sizeof(ctx->cp.clients));
-	if (!ctx->cp.clients) {
+	tc->cp.cap = DEFAULT_CAPACITY;
+	tc->cp.nr_client = 0;
+	tc->cp.clients = calloc(DEFAULT_CAPACITY, sizeof(tc->cp.clients));
+	if (!tc->cp.clients) {
 		pr_err("not enough memory, failed to allocate client pool\n");
 		return -ENOMEM;
 	}
+
+	return 0;
+}
+
+static int init_main_ctx(struct dctx *dc)
+{
+	memset(&dc->d, 0, sizeof(dc->d));
+	dc->stop = false;
 
 	return 0;
 }
@@ -165,7 +202,7 @@ static int realloc_pool(struct client_pool *cp)
 	return 0;
 }
 
-static struct client *init_client(struct dctx *ctx)
+static struct client *init_client(struct tctx *ctx)
 {
 	struct client *c;
 	unsigned idx;
@@ -203,7 +240,7 @@ exit_err:
 	return NULL;
 }
 
-static void serve_incoming_client(struct dctx *ctx)
+static void serve_incoming_client(struct tctx *ctx)
 {
 	struct client *c;
 	struct epoll_event ev;
@@ -249,7 +286,7 @@ exit_err:
 	return;
 }
 
-static void cleanup_client(struct dctx *ctx, struct client *c)
+static void cleanup_client(struct tctx *ctx, struct client *c)
 {
 	close(c->clientfd);
 	ctx->cp.clients[c->idx] = NULL;
@@ -264,7 +301,7 @@ static int send_wrapper(int sockfd, const void *buf, size_t len)
 	return ret;
 }
 
-static void talk_to_client(struct dctx *ctx, struct epoll_event *ev)
+static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 {
 	struct client *c = ev->data.ptr;
 	struct net_pkt *pkt = (void *)c->buff;
@@ -385,7 +422,7 @@ static void adjust_client_pollout(struct client *c, bool *changed)
 	}
 }
 
-static int adjust_client_events(struct dctx *ctx, struct client *c)
+static int adjust_client_events(struct tctx *ctx, struct client *c)
 {
 	int ret;
 	struct epoll_event ev;
@@ -415,7 +452,7 @@ static int adjust_client_events(struct dctx *ctx, struct client *c)
 	return 0;
 }
 
-static int fish_events(struct dctx *ctx)
+static int fish_events(struct tctx *ctx)
 {
 	int nr_events, ret, i;
 	struct epoll_event evs[DEFAULT_EVENTS_NR];
@@ -460,7 +497,7 @@ static int fish_events(struct dctx *ctx)
 	return 0;
 }
 
-static void terminate_clients(struct dctx *ctx)
+static void terminate_clients(struct tctx *ctx)
 {
 	struct client *c;
 	size_t i;
@@ -487,7 +524,7 @@ static void terminate_clients(struct dctx *ctx)
 	}
 }
 
-static int start_event_loop(struct dctx *ctx)
+static int start_event_loop(struct tctx *ctx)
 {
 	struct epoll_event ev;
 	int ret = -1;
@@ -518,7 +555,7 @@ static int start_event_loop(struct dctx *ctx)
 		goto exit_close_evfd;
 	}
 
-	while (!ctx->stop) {
+	while (!ctx->dc->stop) {
 		ret = fish_events(ctx);
 		if (ret < 0)
 			goto exit_cleanup_client;
@@ -539,20 +576,25 @@ exit_err:
 	return ret;
 }
 
-static int start_server(struct dctx *ctx)
+static int start_server(struct tctx *ctx)
 {
 	int ret = -1;
 	const int val = 1;
 
-	ctx->serverfd = socket(ctx->d.ss_family, SOCK_STREAM, 0);
+	ret = init_thread_ctx(ctx);
+	if (ret < 0)
+		goto exit_failure;
+
+	ctx->serverfd = socket(ctx->dc->d.ss_family, SOCK_STREAM, 0);
 	if (ctx->serverfd < 0) {
 		pr_err("failed to create TCP socket\n");
 		goto exit_failure;
 	}
 
 	setsockopt(ctx->serverfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+	setsockopt(ctx->serverfd, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
 
-	ret = bind(ctx->serverfd, (struct sockaddr *)&ctx->d, sizeof(ctx->d));
+	ret = bind(ctx->serverfd, (struct sockaddr *)&ctx->dc->d, sizeof(ctx->dc->d));
 	if (ret < 0) {
 		pr_err("failed to bind the socket\n");
 		goto exit_close;
@@ -577,11 +619,19 @@ exit_failure:
 	return ret;
 }
 
+static void *thread_cb(void *args)
+{
+	struct tctx *ctx = args;
+	int ret;
+	ret = start_server(ctx);
+
+	return (void *)(uintptr_t)ret;
+}
+
 static void signal_handler(int c)
 {
+	int i;
 	const uint64_t n = 1;
-	if (gctx->evfd == -1)
-		return;
 
 	switch (c) {
 	case SIGINT:
@@ -592,8 +642,30 @@ static void signal_handler(int c)
 		break;
 	}
 
-	gctx->stop = true;
-	write(gctx->evfd, &n, sizeof(n));
+	for (i = 0; i < gctx->thread_nr; i++) {
+		if (gctx->tc[i].evfd == -1)
+			return;
+
+		gctx->stop = true;
+		write(gctx->tc[i].evfd, &n, sizeof(n));
+	}
+}
+
+static int spawn_threads(struct dctx *ctx)
+{
+	int i;
+	struct tctx *tc = malloc(ctx->thread_nr * sizeof(struct tctx));
+	ctx->tc = tc;
+
+	for (i = 0; i < ctx->thread_nr; i++) {
+		/* reserve slot at index zero for main thread */
+		ctx->tc[i].dc = ctx;
+		if (i == 0)
+			continue;
+		pthread_create(&tc[i].handle, NULL, thread_cb, &tc[i]);
+	}
+
+	return start_server(&tc[0]);
 }
 
 int main(int argc, char **argv)
@@ -604,7 +676,7 @@ int main(int argc, char **argv)
 		.sa_handler = signal_handler
 	};
 
-	ret = init_ctx(&ctx);
+	ret = init_main_ctx(&ctx);
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
@@ -619,7 +691,7 @@ int main(int argc, char **argv)
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
 
-	ret = start_server(&ctx);
+	ret = spawn_threads(&ctx);
 	if (ret < 0) {
 		pr_err("failed to start TCP server\n");
 		return -EXIT_FAILURE;
