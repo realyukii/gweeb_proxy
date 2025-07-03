@@ -9,9 +9,12 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
+#include <sys/epoll.h>
 #include "general.h"
 #include "linux.h"
 
+#define EPOLL_EVENT_NR 512
+#define DEFAULT_BUFF_SZ 1024
 #define DEFAULT_CONN_NR 100
 #define DEFAULT_THREAD_NR 1
 #define pr_menu printf(usage, DEFAULT_CONN_NR, DEFAULT_THREAD_NR)
@@ -21,11 +24,26 @@ struct net_pkt {
 	char dname[255];
 };
 
+struct connection {
+	int tcpfd;
+	int idx;
+	char buf[DEFAULT_BUFF_SZ];
+};
+
+struct connection_pool {
+	int connection_nr;
+	struct connection **c;
+};
+
 struct prog_ctx {
+	int epfd;
 	char *dname;
 	char *addrstr;
 	uint8_t dnamelen;
+	size_t concurrent_nr;
+	size_t thread_nr;
 	struct sockaddr_storage s;
+	struct connection_pool cp;
 };
 
 static char opts[] = "n:c:t:s:";
@@ -41,7 +59,7 @@ static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 {
 	char c, *dname_opt, *concurrent_opt, *thread_opt, *server_opt;
 	size_t dlen;
-	int ret;
+	int ret, concurrent_nr, thread_nr;
 
 	if (argc == 1)
 		return -EXIT_FAILURE;
@@ -84,7 +102,6 @@ static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 	ctx->dnamelen = dlen;
 
 	ctx->addrstr = server_opt;
-	memset(&ctx->s, 0, sizeof(ctx->s));
 	ret = init_addr(server_opt, &ctx->s);
 	if (ret < 0) {
 		pr_err(
@@ -93,6 +110,21 @@ static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 		);
 		return -EINVAL;
 	}
+
+	concurrent_nr = atoi(concurrent_opt);
+	if (concurrent_nr <= 0) {
+		pr_err("concurrent number can't be zero or negative.\n");
+		return -EINVAL;
+	}
+
+	thread_nr = atoi(concurrent_opt);
+	if (thread_nr <= 0) {
+		pr_err("thread number can't be zero or negative.\n");
+		return -EINVAL;
+	}
+
+	ctx->thread_nr = thread_nr;
+	ctx->concurrent_nr = concurrent_nr;
 
 	return 0;	
 }
@@ -110,33 +142,97 @@ static int validate_dname(char *dname)
 	return 0;
 }
 
-static int make_req(struct prog_ctx *ctx)
+static void free_connection_pool(struct connection_pool *cp)
 {
-	int ret, serverfd;
-	char recvbuf[255];
-	struct net_pkt p;
-	serverfd = socket(ctx->s.ss_family, SOCK_STREAM, 0);
-	if (serverfd < 0) {
-		pr_err("failed to create client socket\n");
-		return -EXIT_FAILURE;
+	int i;
+	struct connection *c;
+
+	pr_info("free %d established connection\n", cp->connection_nr);
+	for (i = 0; i < cp->connection_nr; i++) {
+		c = cp->c[i];
+		if (c) {
+			if (c->tcpfd != -1)
+				close(c->tcpfd);
+			free(c);
+		}
 	}
 
-	ret = connect(serverfd, (struct sockaddr *)&ctx->s, sizeof(ctx->s));
-	if (ret < 0) {
-		pr_err("failed to connect to %s\n", ctx->addrstr);
-		goto exit_close;
-	} else
-		pr_info("connected to %s\n", ctx->addrstr);
+	free(cp->c);
+}
+
+static int init_connection(struct prog_ctx *ctx)
+{
+	int serverfd, ret;
+	struct connection *c;
+	struct epoll_event ev = {
+		.events = EPOLLIN | EPOLLOUT
+	};
+	size_t i;
+
+	pr_info(
+		"trying to establish %d concurrent connection to %s\n",
+		ctx->concurrent_nr, ctx->addrstr
+	);
+
+	for (i = 0; i < ctx->concurrent_nr; i++) {
+		c = malloc(sizeof(*c));
+		if (!c) {
+			pr_err("not enough memory to allocate connection struct\n");
+			return -EXIT_FAILURE;
+		}
+		/*
+		* the pool allocation is fixed.
+		* depends on number of concurrent request, no need to realloc.
+		*/
+		ctx->cp.c[i] = c;
+		ctx->cp.connection_nr++;
+
+		serverfd = socket(ctx->s.ss_family, SOCK_STREAM, 0);
+		if (serverfd < 0) {
+			pr_err("failed to create TCP socket\n");
+			c->tcpfd = -1;
+			return -EXIT_FAILURE;
+		}
+		c->tcpfd = serverfd;
+
+		ret = connect(serverfd, (struct sockaddr *)&ctx->s, sizeof(ctx->s));
+		if (ret < 0) {
+			pr_err("failed to connect at %dth attempt\n", ctx->cp.connection_nr);
+			break;
+		}
+
+		ev.data.ptr = c;
+		c->idx = i;
+		ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, serverfd, &ev);
+		if (ret < 0) {
+			pr_err(
+				"failed to register epoll event on %dth attempt\n",
+				ctx->cp.connection_nr
+			);
+			return -EXIT_FAILURE;
+		}
+	}
+
+	pr_info("%d connection successfully established\n", ctx->concurrent_nr);
+
+	return 0;
+}
+
+static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
+{
+	struct connection *c = ev->data.ptr;
+	int ret;
+	struct net_pkt p;
 
 	memcpy(p.dname, ctx->dname, ctx->dnamelen);
 	p.dlen = ctx->dnamelen;
-	ret = send(serverfd, &p, 1 + p.dlen, 0);
+	ret = send(c->tcpfd, &p, 1 + p.dlen, 0);
 	if (ret < 0) {
 		pr_err("failed to send data packet to %s\n", ctx->addrstr);
 		goto exit_close;
 	}
 
-	ret = recv(serverfd, recvbuf, sizeof(recvbuf), 0);
+	ret = recv(c->tcpfd, c->buf, sizeof(c->buf), 0);
 	if (ret < 0) {
 		pr_err("failed to receive server's response\n");
 		goto exit_close;
@@ -147,12 +243,62 @@ static int make_req(struct prog_ctx *ctx)
 		goto exit_close;
 	}
 
-	VT_HEXDUMP(recvbuf, ret);
+	VT_HEXDUMP(c->buf, ret);
 exit_close:
-	pr_info("closing connection to the server\n");
-	close(serverfd);
+	pr_info(
+		"disconnected from %s on socket file descriptor %d\n",
+		ctx->addrstr, c->tcpfd
+	);
+	close(c->tcpfd);
+	ctx->cp.c[c->idx] = NULL;
+	free(c);
 	return ret;
 }
+
+static int start_event_loop(struct prog_ctx *ctx)
+{
+	int i, ret, ready_nr;
+	struct epoll_event evs[EPOLL_EVENT_NR];
+	struct epoll_event *ev;
+
+	ctx->epfd = epoll_create(1);
+	if (!ctx->epfd) {
+		pr_err("failed to create epoll file descriptor\n");
+		return -EXIT_FAILURE;
+	}
+
+	ret = init_connection(ctx);
+	if (ret < 0) {
+		goto exit_free_connection;
+	}
+
+	while (true) {
+		ready_nr = epoll_wait(ctx->epfd, evs, EPOLL_EVENT_NR, -1);
+		for (i = 0; i < ready_nr; i++) {
+			ev = &evs[i];
+			ret = make_req(ctx, ev);
+			if (ret < 0)
+				return -EXIT_FAILURE;
+		}
+	}
+
+	ret = 0;
+exit_free_connection:
+	free_connection_pool(&ctx->cp);
+
+	return ret;
+}
+
+static int init_ctx(struct prog_ctx *ctx)
+{
+	ctx->cp.c = calloc(ctx->cp.connection_nr, sizeof(ctx->cp.c));
+	if (!ctx->cp.c) {
+		pr_err("not enough memory to pre-allocate pool\n");
+		return -EXIT_FAILURE;
+	}
+
+	memset(&ctx->s, 0, sizeof(ctx->s));
+
 	return 0;
 }
 
@@ -160,6 +306,11 @@ int main(int argc, char **argv)
 {
 	int ret;
 	struct prog_ctx ctx;
+
+	ret = init_ctx(&ctx);
+	if (ret < 0) {
+		return -EXIT_FAILURE;
+	}
 
 	ret = parse_cmdline_args(argc, argv, &ctx);
 	if (ret < 0) {
@@ -174,9 +325,7 @@ int main(int argc, char **argv)
 		return -EXIT_FAILURE;
 	}
 
-	ret = make_req(&ctx);
-	if (ret < 0)
-		return -EXIT_FAILURE;
+	start_event_loop(&ctx);
 
 	return 0;
 }
