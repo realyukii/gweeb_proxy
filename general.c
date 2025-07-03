@@ -37,6 +37,8 @@ int init_addr(const char *addr, struct sockaddr_storage *addr_st)
 	if (*tmp == '[') {
 		af = AF_INET6;
 		/* replace ']' with null-terminated byte */
+		if (*(separator - 1) != ']')
+			return -EINVAL;
 		*(separator - 1) = '\0';
 		ipstr = tmp + 1;
 	} else {
