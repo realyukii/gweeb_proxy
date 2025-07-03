@@ -16,6 +16,11 @@
 #define DEFAULT_REQ_NR 100
 #define pr_menu printf(usage, DEFAULT_CONN_NR, DEFAULT_REQ_NR)
 
+struct net_pkt {
+	uint8_t dlen;
+	char dname[255];
+};
+
 struct prog_ctx {
 	char *dname;
 	char *addrstr;
@@ -107,19 +112,24 @@ static int validate_dname(char *dname)
 
 static int make_req(struct prog_ctx *ctx)
 {
-	int ret, clientfd;
-	clientfd = socket(ctx->s.ss_family, SOCK_STREAM, 0);
-	if (clientfd < 0) {
+	int ret, serverfd;
+	struct net_pkt p;
+	serverfd = socket(ctx->s.ss_family, SOCK_STREAM, 0);
+	if (serverfd < 0) {
 		pr_err("failed to create client socket\n");
 		return -EXIT_FAILURE;
 	}
-	
-	ret = connect(clientfd, (struct sockaddr *)&ctx->s, sizeof(ctx->s));
+
+	ret = connect(serverfd, (struct sockaddr *)&ctx->s, sizeof(ctx->s));
 	if (ret < 0) {
-		pr_err("failed to connect to the server: %s\n", ctx->addrstr);
+		pr_err("failed to connect to %s\n", ctx->addrstr);
 		return -EXIT_FAILURE;
-	}
-	pr_info("connected to %s\n", ctx->addrstr);
+	} else
+		pr_info("connected to %s\n", ctx->addrstr);
+
+	memcpy(p.dname, ctx->dname, ctx->dnamelen);
+	p.dlen = ctx->dnamelen;
+	ret = send(serverfd, &p, 1 + p.dlen, 0);
 
 	return 0;
 }
