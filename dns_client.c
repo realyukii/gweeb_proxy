@@ -30,7 +30,7 @@ struct net_pkt {
 struct connection {
 	int tcpfd;
 	int idx;
-	size_t sent;
+	size_t remaining;
 	char buf[DEFAULT_BUFF_SZ];
 };
 
@@ -208,7 +208,7 @@ static int init_connection(struct prog_ctx *ctx)
 			return -EXIT_FAILURE;
 		}
 		c->tcpfd = serverfd;
-		c->sent = 0;
+		c->remaining = 0;
 		setsockopt(
 			serverfd,
 			SOL_SOCKET, SOCK_NONBLOCK,
@@ -258,10 +258,10 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 	p.dlen = ctx->dnamelen;
 	pkt_len = 1 + p.dlen;
 	ptr = (void *)&p;
-	if (!c->sent)
-		c->sent = pkt_len;
-	off = pkt_len - c->sent;
-	ret = send(c->tcpfd, &ptr[off], c->sent, MSG_NOSIGNAL);
+	if (!c->remaining)
+		c->remaining = pkt_len;
+	off = pkt_len - c->remaining;
+	ret = send(c->tcpfd, &ptr[off], c->remaining, MSG_NOSIGNAL);
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
@@ -269,8 +269,8 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 		return -EXIT_FAILURE;
 	}
 
-	c->sent -= ret;
-	if (c->sent)
+	c->remaining -= ret;
+	if (c->remaining)
 		return -EAGAIN;
 
 	ev->events = EPOLLIN;
@@ -283,18 +283,18 @@ static int recv_response(struct connection *c)
 {
 	int ret, off;
 
-	if (!c->sent)
-		c->sent = sizeof(c->buf);
-	off = sizeof(c->buf) - c->sent;
-	ret = recv(c->tcpfd, &c->buf[off], c->sent, 0);
+	if (!c->remaining)
+		c->remaining = sizeof(c->buf);
+	off = sizeof(c->buf) - c->remaining;
+	ret = recv(c->tcpfd, &c->buf[off], c->remaining, 0);
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
 		pr_err("failed to receive server's response\n");
 		return -EXIT_FAILURE;
 	}
-	c->sent -= ret;
-	if (c->sent)
+	c->remaining -= ret;
+	if (c->remaining)
 		return -EAGAIN;
 
 	if (!ret) {
