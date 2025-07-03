@@ -262,7 +262,7 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 	ret = send(c->tcpfd, &ptr[c->sent], slen, MSG_NOSIGNAL);
 	if (ret < 0) {
 		if (errno == EAGAIN)
-			return 0;
+			return -EAGAIN;
 		pr_err("failed to send data packet to %s\n", ctx->addrstr);
 		return -EXIT_FAILURE;
 	}
@@ -296,8 +296,11 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 	int ret;
 
 	ret = send_payload(ctx, ev);
-	if (ret < 0)
+	if (ret < 0) {
+		if (ret == -EAGAIN)
+			return 0;
 		goto exit_close;
+	}
 	
 	ret = recv_response(c);
 	if (ret < 0)
