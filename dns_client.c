@@ -273,6 +273,9 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 	if (c->sent)
 		return -EAGAIN;
 
+	ev->events = EPOLLIN;
+	epoll_ctl(ctx->epfd, EPOLL_CTL_MOD, c->tcpfd, ev);
+
 	return 0;
 }
 
