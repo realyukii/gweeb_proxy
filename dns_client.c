@@ -29,6 +29,7 @@ struct net_pkt {
 struct connection {
 	int tcpfd;
 	int idx;
+	size_t sent;
 	char buf[DEFAULT_BUFF_SZ];
 };
 
@@ -203,6 +204,7 @@ static int init_connection(struct prog_ctx *ctx)
 			return -EXIT_FAILURE;
 		}
 		c->tcpfd = serverfd;
+		c->sent = 0;
 		setsockopt(serverfd, SOL_SOCKET, SOCK_NONBLOCK, &val, sizeof(val));
 
 		ret = connect(serverfd, (struct sockaddr *)&ctx->s, sizeof(ctx->s));
@@ -233,10 +235,15 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 	struct connection *c = ev->data.ptr;
 	int ret;
 	struct net_pkt p;
+	char *ptr;
+	size_t slen, pkt_len;
 
 	memcpy(p.dname, ctx->dname, ctx->dnamelen);
 	p.dlen = ctx->dnamelen;
-	ret = send(c->tcpfd, &p, 1 + p.dlen, 0);
+	pkt_len = 1 + p.dlen;
+	slen = pkt_len - c->sent;
+	ptr = (void *)&p;
+	ret = send(c->tcpfd, &ptr[c->sent], slen, 0);
 	if (ret < 0) {
 		pr_err("failed to send data packet to %s\n", ctx->addrstr);
 		goto exit_close;
