@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#if ENABLE_LOG
 #define CHDOT(C) (((32 <= (C)) && ((C) <= 126)) ? (C) : '.')
 #define VT_HEXDUMP(PTR, SIZE)                               \
   do {                                                      \
@@ -51,7 +52,9 @@
     }                                                       \
     printf("=====================================\n");      \
   } while(0)
-
+#else
+#define VT_HEXDUMP(PTR, SIZE)
+#endif // ENABLE_LOG
 #endif
 
 /*
