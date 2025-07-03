@@ -302,11 +302,12 @@ static int recv_response(struct connection *c)
 		return 0;
 	}
 
+	VT_HEXDUMP(&c->buf[off], ret);
+
 	c->remaining -= ret;
 	if (c->remaining)
 		return -EAGAIN;
 
-	VT_HEXDUMP(c->buf, ret);
 	return 0;
 }
 
