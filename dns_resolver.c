@@ -70,6 +70,19 @@ struct client_pool {
 	struct client **clients;
 };
 
+struct dns_req {
+	char domainname[MAX_CLIENT_BUFFER - 1];
+	struct sockaddr_storage addr;
+	int evfd;
+	int sockfd;
+	struct dns_req *next;
+};
+
+struct dns_queue {
+	struct dns_req *head;
+	struct dns_req *tail;
+};
+
 /*
 * application data.
 */
@@ -82,8 +95,13 @@ struct dctx {
 	bool stop;
 	/* a pointer to the pool of thread data */
 	struct tctx *tc;
-	/* pthread handle */
+	struct dns_queue dqueue;
+	/* pthread handle for dns thread */
 	pthread_t dns_thandle;
+	/* pthread mutex lock for dns thread */
+	pthread_mutex_t dns_lock;
+	/* pthread cond for dns thread */
+	pthread_cond_t dns_cond;
 };
 
 /*
@@ -167,6 +185,53 @@ print_usage_n_exit:
 	return -EXIT_FAILURE;
 }
 
+static struct dns_req *init_dns_req(struct net_pkt *p)
+{
+	struct dns_req *r;
+	r = malloc(sizeof(*r));
+	if (!r)
+		return NULL;
+
+	strncpy(r->domainname, p->buff, p->domainlen);
+	r->next = NULL;
+
+	return r;
+}
+
+static void enqueue_dns(struct dns_queue *q, struct dns_req *r)
+{
+	if (!q->head) {
+		/* when queue empty, init the queue */
+		q->tail = q->head = r;
+	} else {
+		/*
+		* when queue is not empty, push new item.
+		* the head  == the tail
+		*/
+		q->tail->next = r;
+		/*
+		* grow the tail by shift it.
+		* the head  != the tail
+		*/
+		q->tail = r;
+	}
+}
+
+static void dequeue_dns(struct dns_queue *q)
+{
+	struct dns_req *r = q->head;
+	/* pop the earliest item from the queue */
+	if (!r)
+		return;
+
+	q->head = r->next;
+
+	if (!q->head)
+		q->tail = NULL;
+
+	free(r);
+}
+
 static int init_thread_ctx(struct tctx *tc)
 {
 	tc->cp.cap = DEFAULT_CAPACITY;
@@ -184,6 +249,9 @@ static int init_main_ctx(struct dctx *dc)
 {
 	memset(&dc->d, 0, sizeof(dc->d));
 	dc->stop = false;
+	dc->dqueue.head = NULL;
+	pthread_cond_init(&dc->dns_cond, NULL);
+	pthread_mutex_init(&dc->dns_lock, NULL);
 
 	return 0;
 }
@@ -402,6 +470,21 @@ static int send_hello(struct client *c)
 	return 0;
 }
 
+static int request_addr(struct client *c, struct tctx *ctx)
+{
+	struct net_pkt *pkt = (void *)c->buff;
+	struct dns_req *r = init_dns_req(pkt);
+	if (!r)
+		return -ENOMEM;
+
+	r->evfd = ctx->evfd;
+	r->sockfd = c->clientfd;
+	enqueue_dns(&ctx->dc->dqueue, r);
+	pthread_cond_signal(&ctx->dc->dns_cond);
+
+	return 0;
+}
+
 static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 {
 	int ret;
@@ -433,6 +516,7 @@ static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 	}
 
 	if (c->state == TRY_RESOLVE_ADDR) {
+		ret = request_addr(c, ctx);
 	}
 
 	return;
@@ -509,6 +593,8 @@ static int fish_events(struct tctx *ctx)
 				pr_err("failed to read buffer from evfd\n");
 				return -EXIT_FAILURE;
 			}
+			pr_info("evbuf: %d\n", evbuf);
+			dequeue_dns(&ctx->dc->dqueue);
 
 			/*
 			* The system deliver SIGTERM or SIGINT,
@@ -628,7 +714,10 @@ static int start_server(struct tctx *ctx)
 	setsockopt(ctx->serverfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 	setsockopt(ctx->serverfd, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
 
-	ret = bind(ctx->serverfd, (struct sockaddr *)&ctx->dc->d, sizeof(ctx->dc->d));
+	ret = bind(
+		ctx->serverfd,
+		(struct sockaddr *)&ctx->dc->d, sizeof(ctx->dc->d)
+	);
 	if (ret < 0) {
 		pr_err("failed to bind the socket\n");
 		goto exit_close;
@@ -665,8 +754,18 @@ static void *serve_client_thread(void *args)
 static void *dns_resolver_thread(void *args)
 {
 	struct dctx *ctx = args;
-	pr_info("starting dns resolver\n");
-	(void)ctx;
+	struct dns_req *q;
+	uint64_t r = 2;
+
+	while (!ctx->stop) {
+		pthread_cond_wait(&ctx->dns_cond, &ctx->dns_lock);
+		q = ctx->dqueue.head;
+		if (q) {
+			pr_info("resolving %s\n", q->domainname);
+			write(q->evfd, &r, sizeof(r));
+		}
+		pthread_mutex_unlock(&ctx->dns_lock);
+	}
 
 	return NULL;
 }
@@ -692,6 +791,7 @@ static void signal_handler(int c)
 		gctx->stop = true;
 		write(gctx->tc[i].evfd, &n, sizeof(n));
 	}
+	pthread_cond_signal(&gctx->dns_cond);
 }
 
 static int spawn_threads(struct dctx *ctx)
