@@ -293,9 +293,19 @@ static int recv_response(struct connection *c)
 		pr_err("failed to receive server's response\n");
 		return -EXIT_FAILURE;
 	}
+
+	if (!ret) {
+		pr_info(
+			"connection reset on socket %d by peer\n",
+			c->tcpfd
+		);
+		return 0;
+	}
+
 	c->remaining -= ret;
 	if (c->remaining)
 		return -EAGAIN;
+	
 
 	if (!ret) {
 		pr_info("server closed the connection\n");
@@ -319,7 +329,7 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 			goto exit_close;
 		}
 	}
-	
+
 	ret = recv_response(c);
 	if (ret == -EAGAIN)
 		return 0;
