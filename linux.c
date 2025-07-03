@@ -29,6 +29,7 @@ void __pr_log(unsigned lvl, const char *fmt, ...)
 	* 24 ascii character + newline + null terminated bytes.
 	*/
 	char human_readable_time[26] = {0};
+	char localbuf[4096];
 	const char *level;
 	pid_t tid;
 
@@ -55,6 +56,7 @@ void __pr_log(unsigned lvl, const char *fmt, ...)
 		break;
 	}
 
+	vsnprintf(localbuf, sizeof(localbuf), fmt, args);
 	tid = gettid();
 	generate_current_time(human_readable_time);
 	/*
@@ -65,10 +67,10 @@ void __pr_log(unsigned lvl, const char *fmt, ...)
 	*/
 	fprintf(
 		stderr,
-		"[%s] [%d] %s: ",
-		human_readable_time, tid, level
+		"[%s] [%d] %s: %s",
+		human_readable_time, tid, level, localbuf
 	);
-	vfprintf(stderr, fmt, args);
+
 	va_end(args);
 }
 #else 
