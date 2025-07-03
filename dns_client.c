@@ -13,8 +13,8 @@
 #include "linux.h"
 
 #define DEFAULT_CONN_NR 100
-#define DEFAULT_REQ_NR 100
-#define pr_menu printf(usage, DEFAULT_CONN_NR, DEFAULT_REQ_NR)
+#define DEFAULT_THREAD_NR 1
+#define pr_menu printf(usage, DEFAULT_CONN_NR, DEFAULT_THREAD_NR)
 
 struct net_pkt {
 	uint8_t dlen;
@@ -28,25 +28,25 @@ struct prog_ctx {
 	struct sockaddr_storage s;
 };
 
-static char opts[] = "n:c:r:s:";
+static char opts[] = "n:c:t:s:";
 
 static const char usage[] =
 "usage: ./dns_client [options]\n"
 "-n\tdomain name\n"
 "-s\tip:port for server address\n"
-"-c\tnumber of concurrent connection (default %d)\n"
-"-r\tnumber of request per-connection (default %d)\n";
+"-c\tnumber of concurrent connection per-thread (default %d)\n"
+"-t\tnumber of thread (default %d)\n";
 
 static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 {
-	char c, *dname_opt, *concurrent_opt, *req_opt, *server_opt;
+	char c, *dname_opt, *concurrent_opt, *thread_opt, *server_opt;
 	size_t dlen;
 	int ret;
 
 	if (argc == 1)
 		return -EXIT_FAILURE;
 
-	dname_opt = concurrent_opt = req_opt = NULL;
+	dname_opt = concurrent_opt = thread_opt = NULL;
 	server_opt = NULL;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
@@ -57,7 +57,7 @@ static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 			concurrent_opt = optarg;
 			break;
 		case 'r':
-			req_opt = optarg;
+			thread_opt = optarg;
 			break;
 		case 's':
 			server_opt = optarg;
