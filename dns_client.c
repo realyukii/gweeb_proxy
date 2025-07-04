@@ -14,6 +14,7 @@
 #include <sys/epoll.h>
 #include <errno.h>
 #include <signal.h>
+#include <pthread.h>
 #include "linux.h"
 #include "general.h"
 
@@ -21,7 +22,7 @@
 #define DEFAULT_BUFF_SZ 1024
 #define DEFAULT_CONN_NR 100
 #define DEFAULT_THREAD_NR 1
-#define pr_menu printf(usage, DEFAULT_CONN_NR)
+#define pr_menu printf(usage, DEFAULT_CONN_NR, DEFAULT_THREAD_NR)
 
 struct net_pkt {
 	uint8_t dlen;
@@ -42,14 +43,20 @@ struct connection_pool {
 
 struct prog_ctx {
 	bool stop;
-	int epfd;
-	char *dname;
+	char *dname; // TODO: add support for file of list domain name and distribute the domain name evenly to the worker
 	char *addrstr;
 	uint8_t dnamelen;
 	size_t concurrent_nr;
 	size_t thread_nr;
-	struct sockaddr_storage s;
+	struct sockaddr_storage server_addr;
+	struct thrd_ctx *tctx;
+};
+
+struct thrd_ctx {
+	int epfd;
+	pthread_t thandle;
 	struct connection_pool cp;
+	struct prog_ctx *pctx;
 };
 
 static char opts[] = "n:c:t:s:";
@@ -59,8 +66,8 @@ static const char usage[] =
 "usage: ./dns_client [options]\n"
 "-n\tdomain name\n"
 "-s\tip:port for server address\n"
-"-c\tnumber of concurrent connection per-thread (default %d)\n";
-// "-t\tnumber of thread (default %d)\n"; NOT SUPPORTED yet.
+"-c\tnumber of concurrent connection per-thread (default %d)\n"
+"-t\tnumber of thread (default %d)\n";
 
 static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 {
@@ -81,11 +88,11 @@ static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 		case 'c':
 			concurrent_opt = optarg;
 			break;
-		case 'r':
-			thread_opt = optarg;
-			break;
 		case 's':
 			server_opt = optarg;
+			break;
+		case 't':
+			thread_opt = optarg;
 			break;
 		}
 	}
@@ -109,7 +116,7 @@ static int parse_cmdline_args(int argc, char **argv, struct prog_ctx *ctx)
 	ctx->dnamelen = dlen;
 
 	ctx->addrstr = server_opt;
-	ret = init_addr(server_opt, &ctx->s);
+	ret = init_addr(server_opt, &ctx->server_addr);
 	if (ret < 0) {
 		pr_err(
 			"invalid address, accepted format <ip>:<port>, "
@@ -173,7 +180,7 @@ static void free_connection_pool(struct connection_pool *cp)
 	}
 }
 
-static int init_connection(struct prog_ctx *ctx)
+static int init_connection(struct thrd_ctx *ctx)
 {
 	int serverfd, ret;
 	struct connection *c;
@@ -185,10 +192,10 @@ static int init_connection(struct prog_ctx *ctx)
 
 	pr_info(
 		"trying to establish %d concurrent connection to %s\n",
-		ctx->concurrent_nr, ctx->addrstr
+		ctx->pctx->concurrent_nr, ctx->pctx->addrstr
 	);
 
-	for (i = 0; i < ctx->concurrent_nr; i++) {
+	for (i = 0; i < ctx->pctx->concurrent_nr; i++) {
 		c = malloc(sizeof(*c));
 		if (!c) {
 			pr_err(
@@ -204,7 +211,7 @@ static int init_connection(struct prog_ctx *ctx)
 		ctx->cp.c[i] = c;
 		ctx->cp.connection_nr++;
 
-		serverfd = socket(ctx->s.ss_family, SOCK_STREAM, 0);
+		serverfd = socket(ctx->pctx->server_addr.ss_family, SOCK_STREAM, 0);
 		if (serverfd < 0) {
 			pr_err("failed to create TCP socket\n");
 			c->tcpfd = -1;
@@ -220,8 +227,8 @@ static int init_connection(struct prog_ctx *ctx)
 
 		ret = connect(
 			serverfd,
-			(struct sockaddr *)&ctx->s,
-			sizeof(ctx->s)
+			(struct sockaddr *)&ctx->pctx->server_addr,
+			sizeof(ctx->pctx->server_addr)
 		);
 		if (ret < 0 && errno != EINPROGRESS) {
 			pr_err(
@@ -244,12 +251,12 @@ static int init_connection(struct prog_ctx *ctx)
 		}
 	}
 
-	pr_info("%d connection successfully established\n", ctx->concurrent_nr);
+	pr_info("%d connection successfully established\n", ctx->pctx->concurrent_nr);
 
 	return 0;
 }
 
-static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
+static int send_payload(struct thrd_ctx *ctx, struct epoll_event *ev)
 {
 	struct connection *c = ev->data.ptr;
 	int ret;
@@ -257,8 +264,8 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 	char *ptr;
 	size_t off, pkt_len;
 
-	memcpy(p.dname, ctx->dname, ctx->dnamelen);
-	p.dlen = ctx->dnamelen;
+	memcpy(p.dname, ctx->pctx->dname, ctx->pctx->dnamelen);
+	p.dlen = ctx->pctx->dnamelen;
 	pkt_len = 1 + p.dlen;
 	ptr = (void *)&p;
 	if (!c->remaining)
@@ -268,7 +275,7 @@ static int send_payload(struct prog_ctx *ctx, struct epoll_event *ev)
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
-		pr_err("failed to send data packet to %s\n", ctx->addrstr);
+		pr_err("failed to send data packet to %s\n", ctx->pctx->addrstr);
 		return -EXIT_FAILURE;
 	}
 
@@ -318,7 +325,7 @@ static int recv_response(struct connection *c)
 	return 0;
 }
 
-static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
+static int make_req(struct thrd_ctx *ctx, struct epoll_event *ev)
 {
 	struct connection *c = ev->data.ptr;
 	int ret;
@@ -339,7 +346,7 @@ static int make_req(struct prog_ctx *ctx, struct epoll_event *ev)
 exit_close:
 	pr_info(
 		"disconnected from %s on socket file descriptor %d\n",
-		ctx->addrstr, c->tcpfd
+		ctx->pctx->addrstr, c->tcpfd
 	);
 	close(c->tcpfd);
 	ctx->cp.c[c->idx] = NULL;
@@ -348,7 +355,7 @@ exit_close:
 	return ret;
 }
 
-static int start_event_loop(struct prog_ctx *ctx)
+static int start_event_loop(struct thrd_ctx *ctx)
 {
 	int i, ret, ready_nr;
 	struct epoll_event evs[EPOLL_EVENT_NR];
@@ -360,7 +367,7 @@ static int start_event_loop(struct prog_ctx *ctx)
 		return -EXIT_FAILURE;
 	}
 
-	ctx->cp.c = calloc(ctx->concurrent_nr, sizeof(ctx->cp.c));
+	ctx->cp.c = calloc(ctx->pctx->concurrent_nr, sizeof(ctx->cp.c));
 	if (!ctx->cp.c) {
 		pr_err("not enough memory to pre-allocate pool\n");
 		ret = -EXIT_FAILURE;
@@ -372,7 +379,7 @@ static int start_event_loop(struct prog_ctx *ctx)
 		goto exit_terminate_connection;
 	}
 
-	while (!ctx->stop) {
+	while (!ctx->pctx->stop) {
 		ready_nr = epoll_wait(ctx->epfd, evs, EPOLL_EVENT_NR, -1);
 		if (ready_nr < 0) {
 			if (errno == EINTR)
@@ -401,15 +408,18 @@ exit_close_epfd:
 	return ret;
 }
 
-static int init_ctx(struct prog_ctx *ctx)
+static void init_tctx(struct thrd_ctx *tctx, struct prog_ctx *pctx)
+{
+	tctx->cp.connection_nr = 0;
+	tctx->pctx = pctx;
+}
+
+static void init_pctx(struct prog_ctx *ctx)
 {
 	gctx = ctx;
-	ctx->cp.connection_nr = 0;
 	ctx->stop = false;
 
-	memset(&ctx->s, 0, sizeof(ctx->s));
-
-	return 0;
+	memset(&ctx->server_addr, 0, sizeof(ctx->server_addr));
 }
 
 static void signal_handler(int c)
@@ -419,17 +429,44 @@ static void signal_handler(int c)
 	(void)c;
 }
 
+static void *worker(void *args)
+{
+	intptr_t ret;
+	struct thrd_ctx *ctx = args;
+
+	ret = start_event_loop(ctx);
+	return (void *)ret;
+}
+
+static int spawn_threads(struct prog_ctx *ctx)
+{
+	size_t i;
+
+	struct thrd_ctx *tc = malloc(sizeof(*tc) * ctx->thread_nr);
+	if (!tc)
+		return -ENOMEM;
+	ctx->tctx = tc;
+
+	for (i = 0; i < ctx->thread_nr; i++) {
+		init_tctx(&tc[i], ctx);
+		if (i == 0)
+			continue;
+		pthread_create(&tc[i].thandle, NULL, worker, &tc[i]);
+	}
+
+	return start_event_loop(&tc[0]);
+}
+
 int main(int argc, char **argv)
 {
+	intptr_t retval;
 	int ret;
 	struct prog_ctx ctx;
 	struct sigaction sa = {
 		.sa_handler = signal_handler
 	};
 
-	ret = init_ctx(&ctx);
-	if (ret < 0)
-		return -EXIT_FAILURE;
+	init_pctx(&ctx);
 
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
@@ -446,8 +483,16 @@ int main(int argc, char **argv)
 		pr_err("invalid domain name\n");
 		return -EXIT_FAILURE;
 	}
-
-	ret = start_event_loop(&ctx);
+	
+	ret = spawn_threads(&ctx);
+	
+	for (size_t i = 0; i < ctx.thread_nr; i++) {
+		if (i == 0)
+			continue;
+		pthread_join(ctx.tctx[i].thandle, (void **)&retval);
+	}
+	pr_info("free memory of thread pool: %p\n", ctx.tctx);
+	free(ctx.tctx);
 
 	return ret;
 }
