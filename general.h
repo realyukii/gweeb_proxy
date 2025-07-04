@@ -27,31 +27,70 @@
 
 #if ENABLE_LOG
 #define CHDOT(C) (((32 <= (C)) && ((C) <= 126)) ? (C) : '.')
-#define VT_HEXDUMP(PTR, SIZE)                               \
-  do {                                                      \
-    size_t i, j, k = 0, l, size = (SIZE);                   \
-    unsigned char *ptr = (unsigned char *)(PTR);            \
-    printf("============ VT_HEXDUMP ============\n");       \
-    printf("File\t\t: %s:%d\n", __FILE__, __LINE__);        \
-    printf("Function\t: %s()\n", __FUNCTION__);             \
-    printf("Address\t\t: 0x%016lx\n", (uintptr_t)ptr);      \
-    printf("Dump size\t: %ld bytes\n", (size));             \
-    printf("\n");                                           \
-    for (i = 0; i < ((size/16) + 1); i++) {                 \
-      printf("0x%016lx|  ", (uintptr_t)(ptr + i * 16));     \
-      l = k;                                                \
-      for (j = 0; (j < 16) && (k < size); j++, k++) {       \
-        printf("%02x ", ptr[k]);                            \
-      }                                                     \
-      while (j++ < 16) printf("   ");                       \
-      printf(" |");                                         \
-      for (j = 0; (j < 16) && (l < size); j++, l++) {       \
-        printf("%c", CHDOT(ptr[l]));                        \
-      }                                                     \
-      printf("|\n");                                        \
-    }                                                       \
-    printf("=====================================\n");      \
-  } while(0)
+#define VT_HEXDUMP(PTR, SIZE)								\
+do { 											\
+	static const char fmt[] = 							\
+	"============ VT_HEXDUMP ============\n" 					\
+	"File\t\t: %s:%d\n"								\
+	"Function\t: %s()\n"								\
+	"Address\t\t: 0x%016lx\n"							\
+	"Dump size\t: %ld bytes\n"							\
+	"\n"										\
+	"%s"										\
+	"=====================================\n";					\
+	size_t sz_perlines, tot_sz, last_sz, fixed_sz,					\
+	r, i, j, k = 0, l, off = 0, size = (SIZE);					\
+	unsigned char *ptr = (unsigned char *)(PTR);					\
+	char *tmp;									\
+	/* process 16 byte per-line, calculate the line number */			\
+	sz_perlines = size / 16;							\
+	/* remainder of multiple 16, if any */						\
+	r = size % 16;									\
+	/* size of last line */								\
+	last_sz = 									\
+	21 /* address prefix */								\
+	+ (3 * 16) /* hex-ascii digit padded with space */				\
+	+ 2 /* " |" */									\
+	+ r										\
+	+ 2; /* "|\n" */								\
+	/* fixed when r = 16 */								\
+	fixed_sz = 89;									\
+	tot_sz = (sz_perlines * fixed_sz) + last_sz;					\
+	tmp = malloc(tot_sz + 1);							\
+	if (!tmp)									\
+		goto out;								\
+	for (i = 0; i < ((size/16) + 1); i++) {						\
+		snprintf(&tmp[off], 21 + 1, "0x%016lx|  ", (uintptr_t)(ptr + i * 16));	\
+		off += 21;								\
+		l = k;									\
+		for (j = 0; (j < 16) && (k < size); j++, k++) {				\
+			snprintf(&tmp[off], 3 + 1, "%02x ", ptr[k]);			\
+			off += 3;							\
+		}									\
+		while (j++ < 16) {							\
+			snprintf(&tmp[off], 3 + 1, "   ");				\
+			off += 3;							\
+		}									\
+		snprintf(&tmp[off], 2 + 1, " |");					\
+		off += 2;								\
+		for (j = 0; (j < 16) && (l < size); j++, l++) {				\
+			snprintf(&tmp[off], 1 + 1, "%c", CHDOT(ptr[l]));		\
+			off += 1;							\
+		}									\
+		snprintf(&tmp[off], 2 + 1, "|\n");					\
+		off += 2;								\
+	}										\
+	fprintf(									\
+		stderr, fmt,								\
+		__FILE__, __LINE__,							\
+		__FUNCTION__,								\
+		(uintptr_t)ptr,								\
+		(size),									\
+		tmp									\
+	);										\
+	free(tmp);									\
+out:											\
+} while (0);
 #else
 #define VT_HEXDUMP(PTR, SIZE)
 #endif // ENABLE_LOG
