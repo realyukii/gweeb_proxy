@@ -33,6 +33,7 @@ struct connection {
 	int tcpfd;
 	int idx;
 	size_t remaining;
+	size_t off;
 	char buf[DEFAULT_BUFF_SZ];
 };
 
@@ -219,6 +220,7 @@ static int init_connection(struct thrd_ctx *ctx)
 		}
 		c->tcpfd = serverfd;
 		c->remaining = 0;
+		c->off = 0;
 		setsockopt(
 			serverfd,
 			SOL_SOCKET, SOCK_NONBLOCK,
@@ -312,7 +314,9 @@ static int recv_response(struct connection *c)
 		return 0;
 	}
 
-	VT_HEXDUMP(&c->buf[off], ret);
+	c->off += off;
+	pr_dbg("socket %d receive buffer:\n", c->tcpfd);
+	VT_HEXDUMP(&c->buf[c->off], ret);
 
 	c->remaining -= ret;
 	if (c->remaining)
