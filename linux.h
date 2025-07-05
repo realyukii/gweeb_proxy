@@ -42,7 +42,7 @@ do {							\
 #define pr_log(LVL, FMT, ...) {}
 #endif
 
-#define pr_dbg(FMT, ...) pr_log(DEBUG, FMT, ##__VA_ARGS__)
+#define pr_dbg(FMT, ...) pr_log(DEBUG, "[%s:%d] " FMT, __FILE__, __LINE__, ##__VA_ARGS__)
 #define pr_info(FMT, ...) pr_log(INFO, FMT, ##__VA_ARGS__)
 #define pr_warn(FMT, ...) pr_log(WARN, FMT, ##__VA_ARGS__)
 #define pr_err(FMT, ...) pr_log(ERROR, FMT, ##__VA_ARGS__)
