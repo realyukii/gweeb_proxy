@@ -12,6 +12,14 @@
 * |   1    |     4 to 255    |
 * +----+----------+----------+
 *
+* the server then will reply with allowed or denied message
+*
+* if not allowed, the server wil close the connection after sending denied message.
+*
+* if allowed, and domain name is successfuly resolved,
+* the server will reply with human-readable address (either IPv4 or IPv6).
+* and close the connection.
+*
 * to be recognized as a valid domain name,
 * only letter-digit-hypen are allowed in the domain name string.
 *
@@ -32,6 +40,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <pthread.h>
+#include <netdb.h>
 #include "linux.h"
 #include "general.h"
 
@@ -72,7 +81,7 @@ struct client_pool {
 
 struct dns_req {
 	char domainname[MAX_CLIENT_BUFFER - 1];
-	struct sockaddr_storage addr;
+	char addrstr[INET6_ADDRSTRLEN];
 	int evfd;
 	int sockfd;
 	struct dns_req *next;
@@ -133,6 +142,8 @@ static const char error_msg[] =
 "the payload doesn't conform with "
 "LDH rule, request aborted.";
 
+static const char fail_msg[] = "the server can't resolve requested domain";
+
 static const char usage[] =
 "usage: ./dns_resolver [options]\n"
 "-b <local address>:<local port> for socket to be bound\n"
@@ -189,10 +200,12 @@ static struct dns_req *init_dns_req(struct net_pkt *p)
 {
 	struct dns_req *r;
 	r = malloc(sizeof(*r));
+	pr_dbg("new queue item initialized: %p\n", r);
 	if (!r)
 		return NULL;
 
 	strncpy(r->domainname, p->buff, p->domainlen);
+	r->domainname[p->domainlen] = '\0';
 	r->next = NULL;
 
 	return r;
@@ -200,6 +213,7 @@ static struct dns_req *init_dns_req(struct net_pkt *p)
 
 static void enqueue_dns(struct dns_queue *q, struct dns_req *r)
 {
+	pr_dbg("enqueue item %p\n", r);
 	if (!q->head) {
 		/* when queue empty, init the queue */
 		q->tail = q->head = r;
@@ -219,10 +233,12 @@ static void enqueue_dns(struct dns_queue *q, struct dns_req *r)
 
 static void dequeue_dns(struct dns_queue *q)
 {
-	struct dns_req *r = q->head;
 	/* pop the earliest item from the queue */
+	struct dns_req *r = q->head;
 	if (!r)
 		return;
+
+	pr_dbg("dequeue item %p\n", r);
 
 	q->head = r->next;
 
@@ -479,8 +495,14 @@ static int request_addr(struct client *c, struct tctx *ctx)
 
 	r->evfd = ctx->evfd;
 	r->sockfd = c->clientfd;
+	pr_dbg("attempting to lock dns_lock\n");
+	pthread_mutex_lock(&ctx->dc->dns_lock);
+	pr_dbg("acquired dns_lock\n");
 	enqueue_dns(&ctx->dc->dqueue, r);
+	pr_dbg("sending request to the dns resolver thread\n");
 	pthread_cond_signal(&ctx->dc->dns_cond);
+	pr_dbg("releasing dns_lock\n");
+	pthread_mutex_unlock(&ctx->dc->dns_lock);
 
 	return 0;
 }
@@ -593,8 +615,6 @@ static int fish_events(struct tctx *ctx)
 				pr_err("failed to read buffer from evfd\n");
 				return -EXIT_FAILURE;
 			}
-			pr_info("evbuf: %d\n", evbuf);
-			dequeue_dns(&ctx->dc->dqueue);
 
 			/*
 			* The system deliver SIGTERM or SIGINT,
@@ -603,6 +623,30 @@ static int fish_events(struct tctx *ctx)
 			if (evbuf == 1)
 				return 0;
 
+
+			pr_dbg("attempting to lock dns_lock\n");
+			pthread_mutex_lock(&ctx->dc->dns_lock);
+			pr_dbg("acquired dns_lock\n");
+			if (evbuf == 2) {
+				pr_dbg("resolved address: %s\n", ctx->dc->dqueue.head->addrstr);
+				send(
+					ctx->dc->dqueue.head->sockfd,
+					"success", 8,
+					MSG_NOSIGNAL
+				);
+			}
+
+			if (evbuf == 3) {
+				send(
+					ctx->dc->dqueue.head->sockfd,
+					fail_msg, sizeof(fail_msg),
+					MSG_NOSIGNAL
+				);
+			}
+
+			dequeue_dns(&ctx->dc->dqueue);
+			pr_dbg("releasing dns_lock\n");
+			pthread_mutex_unlock(&ctx->dc->dns_lock);
 			continue;
 		}
 
@@ -751,21 +795,66 @@ static void *serve_client_thread(void *args)
 	return (void *)(uintptr_t)ret;
 }
 
+int resolve_dns(struct dns_req *req)
+{
+	struct addrinfo *l;
+	int ret;
+	
+	ret = getaddrinfo(req->domainname, NULL, NULL, &l);
+	if (ret != 0) {
+		pr_err(
+			"failed to resolve domain name: %s\n",
+			gai_strerror(ret)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	get_addrstr(l->ai_addr, l->ai_addrlen, req->addrstr);
+	VT_HEXDUMP(req, sizeof(*req));
+	freeaddrinfo(l);
+
+	return 0;
+}
+
 static void *dns_resolver_thread(void *args)
 {
 	struct dctx *ctx = args;
 	struct dns_req *q;
-	uint64_t r = 2;
+	uint64_t r;
+	int ret;
 
+	pr_dbg("attempting to lock dns_lock\n");
+	pthread_mutex_lock(&ctx->dns_lock);
+	pr_dbg("acquired dns_lock\n");
 	while (!ctx->stop) {
+		pr_dbg("releasing dns_lock and start waiting\n");
 		pthread_cond_wait(&ctx->dns_cond, &ctx->dns_lock);
+		pr_dbg("acquired dns_lock\n");
 		q = ctx->dqueue.head;
+		/* if you leave the comment as is,
+		* the dns resolver thread will process same request twice
+		* because the consumer haven't consume or read it yet.
+		* but if you uncomment the following comment,
+		* the dns resolver thread may lost some signal dispatched from
+		* pthread_cond_signal, this is a dilemma we need to change the
+		* design of current implementation.
+		*/
+		// pr_dbg("first entry of the queue is acquired, releasing the lock\n");
+		// pthread_mutex_unlock(&ctx->dns_lock);
 		if (q) {
 			pr_info("resolving %s\n", q->domainname);
+			ret = resolve_dns(q);
+			if (ret == -EXIT_FAILURE)
+				r = 3;
+			else
+				r = 2;
 			write(q->evfd, &r, sizeof(r));
 		}
-		pthread_mutex_unlock(&ctx->dns_lock);
+		// pr_dbg("attempting to re-lock dns_lock\n");
+		// pthread_mutex_lock(&ctx->dns_lock);
 	}
+	pr_dbg("releasing dns_lock\n");
+	pthread_mutex_unlock(&ctx->dns_lock);
 
 	return NULL;
 }
@@ -800,7 +889,9 @@ static int spawn_threads(struct dctx *ctx)
 	struct tctx *tc = malloc(ctx->thread_nr * sizeof(struct tctx));
 	ctx->tc = tc;
 
+	pr_info("starting dns resolver thread\n");
 	pthread_create(&ctx->dns_thandle, NULL, dns_resolver_thread, ctx);
+	pr_info("starting %d thread(s) to serve TCP request\n", ctx->thread_nr);
 	for (i = 0; i < ctx->thread_nr; i++) {
 		/* reserve slot at index zero for main thread */
 		ctx->tc[i].dc = ctx;
