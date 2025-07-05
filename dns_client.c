@@ -291,12 +291,13 @@ static int send_payload(struct thrd_ctx *ctx, struct epoll_event *ev)
 
 static int recv_response(struct connection *c)
 {
-	int ret, off;
+	int ret;
+	char *bufptr;
 
 	if (!c->remaining)
 		c->remaining = sizeof(c->buf);
-	off = sizeof(c->buf) - c->remaining;
-	ret = recv(c->tcpfd, &c->buf[off], c->remaining, 0);
+	bufptr = &c->buf[sizeof(c->buf) - c->remaining];
+	ret = recv(c->tcpfd, bufptr, c->remaining, 0);
 	if (ret < 0) {
 		if (errno == EAGAIN)
 			return -EAGAIN;
@@ -312,7 +313,7 @@ static int recv_response(struct connection *c)
 		return 0;
 	}
 
-	VT_HEXDUMP(&c->buf[sizeof(c->buf) - c->remaining], ret);
+	VT_HEXDUMP(bufptr, ret);
 
 	c->remaining -= ret;
 	if (c->remaining)
