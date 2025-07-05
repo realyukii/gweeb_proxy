@@ -39,7 +39,7 @@ do {							\
 		__pr_log(LVL, FMT, ##__VA_ARGS__);	\
 } while (0);
 #else 
-#define pr_log(LVL, FMT, ...)
+#define pr_log(LVL, FMT, ...) {}
 #endif
 
 #define pr_dbg(FMT, ...) pr_log(DEBUG, FMT, ##__VA_ARGS__)

@@ -92,7 +92,7 @@ do { 											\
 out:											\
 } while (0);
 #else
-#define VT_HEXDUMP(PTR, SIZE)
+#define VT_HEXDUMP(PTR, SIZE) {}
 #endif // ENABLE_LOG
 #endif
 
