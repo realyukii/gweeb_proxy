@@ -1220,14 +1220,12 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 static int parse_request(struct single_connection *a, struct sockaddr_storage *d)
 {
 	struct socks5_connect_request *c;
-	struct sockaddr_in *in, *tmp;
-	struct sockaddr_in6 *in6, *tmp6;
+	struct sockaddr_in *in;
+	struct sockaddr_in6 *in6;
 	struct socks5_addr *s;
-	struct addrinfo *l;
 	uint8_t ipv4_sz, ipv6_sz, domainlen_sz, domainname_sz;
 	size_t expected_len, fixed_len;
 	char dname[MAX_DOMAIN_LEN], *dname_ptr;
-	int ret;
 
 	c = (void *)a->buf;
 	s = &c->dst_addr;
@@ -1257,33 +1255,10 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 		dname_ptr = s->addr.domain.domain;
 		memcpy(dname, dname_ptr, domainname_sz);
 		dname[domainname_sz] = '\0';
-		ret = getaddrinfo(dname, NULL, NULL, &l);
-		if (ret != 0)
-			return -EINVAL;
-
-		switch (l->ai_family) {
-		case AF_INET:
-			in = (struct sockaddr_in *)d;
-			in->sin_family = AF_INET;
-			tmp = (struct sockaddr_in *)l->ai_addr;
-			memcpy(
-				&in->sin_addr, &tmp->sin_addr,
-				sizeof(in->sin_addr)
-			);
-			in->sin_port = *(uint16_t *)(dname_ptr + domainname_sz);
-			break;
-		case AF_INET6:
-			in6 = (struct sockaddr_in6 *)d;
-			in6->sin6_family = AF_INET6;
-			tmp6 = (struct sockaddr_in6 *)l->ai_addr;
-			memcpy(
-				&in6->sin6_addr, &tmp6->sin6_addr,
-				sizeof(in6->sin6_addr)
-			);
-			in6->sin6_port = *(uint16_t *)(dname_ptr + domainname_sz);
-			break;
-		}
-		freeaddrinfo(l);
+		/*
+		* TODO: buat request ke thread dns resolver
+		* untuk resolve domain dname.
+		*/
 		break;
 	case IPv6:
 		expected_len = fixed_len + ipv6_sz;
@@ -2065,6 +2040,55 @@ exit_err:
 }
 
 /*
+* Serve resolve request from another thread.
+*/
+static void *dns_resolver_thread(void *args)
+{
+	char dname[MAX_DOMAIN_LEN], *dname_ptr;
+	uint8_t domainname_sz;
+	struct addrinfo *l;
+	struct sockaddr_in *in, *tmp;
+	struct sockaddr_in6 *in6, *tmp6;
+	struct sockaddr_storage *d;
+	int ret;
+	ret = getaddrinfo(dname, NULL, NULL, &l);
+	if (ret != 0) {
+		fprintf(
+			stderr,
+			"failed to resolve domain name: %s\n",
+			gai_strerror(ret)
+		);
+		return NULL;
+	}
+
+	switch (l->ai_family) {
+	case AF_INET:
+		in = (struct sockaddr_in *)d;
+		in->sin_family = AF_INET;
+		tmp = (struct sockaddr_in *)l->ai_addr;
+		memcpy(
+			&in->sin_addr, &tmp->sin_addr,
+			sizeof(in->sin_addr)
+		);
+		in->sin_port = *(uint16_t *)(dname_ptr + domainname_sz);
+		break;
+	case AF_INET6:
+		in6 = (struct sockaddr_in6 *)d;
+		in6->sin6_family = AF_INET6;
+		tmp6 = (struct sockaddr_in6 *)l->ai_addr;
+		memcpy(
+			&in6->sin6_addr, &tmp6->sin6_addr,
+			sizeof(in6->sin6_addr)
+		);
+		in6->sin6_port = *(uint16_t *)(dname_ptr + domainname_sz);
+		break;
+	}
+	freeaddrinfo(l);
+	(void)args;
+	return NULL;
+}
+
+/*
 * Load specified auth file.
 *
 * @param args Pointer to application configuration.
@@ -2130,7 +2154,7 @@ int main(int argc, char *argv[])
 	pid_t pid;
 	size_t i;
 	void *retval;
-	pthread_t inotify_t;
+	pthread_t inotify_t, dnsresolv_t;
 	struct rlimit file_limits;
 	struct gwp_args args = {
 		.auth_fd = -1,
@@ -2175,6 +2199,7 @@ int main(int argc, char *argv[])
 		goto exit_err;
 	}
 
+	pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
 	for (i = 0; i < args.thread_nr; i++) {
 		ret = pthread_create(&threads[i], NULL, thread_cb, &args);
 		if (ret) {
@@ -2188,6 +2213,7 @@ int main(int argc, char *argv[])
 	start_server(&args);
 
 	pthread_join(inotify_t, &retval);
+	pthread_join(dnsresolv_t, &retval);
 
 	for (i = 0; i < args.thread_nr; i++) {
 		pthread_kill(threads[i], SIGINT);
