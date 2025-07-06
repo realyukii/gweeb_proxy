@@ -376,7 +376,7 @@ static int start_event_loop(struct thrd_ctx *ctx)
 	struct epoll_event *ev;
 
 	ctx->epfd = epoll_create(1);
-	if (!ctx->epfd) {
+	if (ctx->epfd < 0) {
 		pr_err("failed to create epoll file descriptor\n");
 		return -EXIT_FAILURE;
 	}
@@ -446,6 +446,7 @@ static int init_pctx(struct prog_ctx *ctx)
 	}
 
 	memset(&ctx->server_addr, 0, sizeof(ctx->server_addr));
+	return 0;
 }
 
 static void signal_handler(int c)
