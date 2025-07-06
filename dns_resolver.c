@@ -44,6 +44,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <netdb.h>
+#include <stdatomic.h>
+#include <assert.h>
 #include "linux.h"
 #include "general.h"
 
@@ -76,6 +78,7 @@ struct net_pkt {
 };
 
 struct client {
+	atomic_int refcnt;
 	int clientfd;
 	char addrstr[ADDRSTR_SZ];
 	unsigned idx;
@@ -211,6 +214,19 @@ print_usage_n_exit:
 	return -EXIT_FAILURE;
 }
 
+static bool put_c(struct client *c)
+{
+	int x = atomic_fetch_sub(&c->refcnt, 1);
+	assert(x > 0);
+	if (x == 1) {
+		assert(c->refcnt == 0);
+		free(c);
+		return true;
+	}
+
+	return false;
+}
+
 static struct dns_req *init_dns_req(struct tctx *ctx, struct net_pkt *p)
 {
 	struct dns_req *r;
@@ -288,9 +304,6 @@ static void dequeue_dns(struct dns_queue *q)
 
 	if (!q->head)
 		q->tail = NULL;
-	// let the producer free the request
-	// pr_dbg("free dns req: %p\n", r);
-	// free(r);
 }
 
 static int init_thread_ctx(struct tctx *tc)
@@ -325,7 +338,11 @@ static int realloc_pool(struct client_pool *cp)
 	if (!tmp) {
 		pr_err("failed to resize the client pool\n");
 		return -ENOMEM;
-	}
+	} else
+		pr_info(
+			"successfully resize the client pool, new address: %p\n",
+			tmp
+		);
 	cp->clients = tmp;
 	memset(&cp->clients[cp->cap], 0, cp->cap * sizeof(cp->clients));
 	cp->cap = next_cap;
@@ -364,6 +381,7 @@ static struct client *init_client(struct tctx *ctx)
 	c->idx = idx;
 	c->blen = 0;
 	c->boff = 0;
+	atomic_init(&c->refcnt, 1);
 	ctx->cp.clients[idx] = c;
 	return c;
 exit_err:
@@ -425,8 +443,8 @@ static void cleanup_client(struct tctx *ctx, struct client *c)
 	close(c->clientfd);
 	ctx->cp.clients[c->idx] = NULL;
 	ctx->cp.nr_client--;
-	pr_dbg("free client data at %p\n", c);
-	free(c);
+	if (put_c(c))
+		pr_dbg("pointer to client data at %p was freed\n", c);
 }
 
 static int send_wrapper(int sockfd, const void *buf, size_t len)
@@ -543,6 +561,7 @@ static int request_addr(struct client *c, struct tctx *ctx)
 		return -ENOMEM;
 
 	r->c = c;
+	atomic_fetch_add(&c->refcnt, 1);
 	pr_dbg("attempting to lock dns_lock\n");
 	pthread_mutex_lock(&ctx->dc->dns_lock);
 	pr_dbg("acquired dns_lock\n");
@@ -655,7 +674,7 @@ static int fish_events(struct tctx *ctx)
 	for (i = 0; i < nr_events; i++) {
 		ev = &evs[i];
 		struct client *c;
-		struct dns_req *r;
+		struct dns_req *dr;
 		void *data;
 		uint64_t ev_bit = GET_EVBIT(ev->data.u64);
 		ev->data.u64 = CLEAR_EVBIT(ev->data.u64);
@@ -675,23 +694,23 @@ static int fish_events(struct tctx *ctx)
 			adjust_client_events(ctx, c);
 			break;
 		case EV_DNS_RESOLVED:
-			r = data;
-			c = r->c;
 			int ret;
-			ret = read(r->evfd, &evbuf, sizeof(evbuf));
+			dr = data;
+			c = dr->c;
+			ret = read(dr->evfd, &evbuf, sizeof(evbuf));
 			if (ret < 0) {
 				pr_err("failed to read buffer from evfd\n");
 				return -EXIT_FAILURE;
 			}
-			int len = strlen(r->addrstr);
+			int len = strlen(dr->addrstr);
 			if (len)
-				send(c->clientfd, r->addrstr, len, MSG_NOSIGNAL);
+				send_wrapper(c->clientfd, dr->addrstr, len);
 			else
-				send(c->clientfd, fail_msg, sizeof(fail_msg), MSG_NOSIGNAL);
+				send_wrapper(c->clientfd, fail_msg, sizeof(fail_msg));
 
-			close(r->evfd);
-			pr_dbg("free dns req: %p\n", r);
-			free(r);
+			close(dr->evfd);
+			pr_dbg("free dns req: %p\n", dr);
+			free(dr);
 			break;
 		case EV_STOP_PROG:
 			/*
@@ -728,8 +747,7 @@ static void terminate_clients(struct tctx *ctx)
 			"free memory resource allocated for client %s\n",
 			c->addrstr
 		);
-		pr_dbg("free client data at %p\n", c);
-		free(c);
+		cleanup_client(ctx, c);
 	}
 }
 
@@ -886,7 +904,14 @@ static void *dns_resolver_thread(void *args)
 		pthread_mutex_lock(&ctx->dns_lock);
 		pr_dbg("acquired dns_lock\n");
 		dequeue_dns(&ctx->dqueue);
-		write(q->evfd, &r, sizeof(r));
+
+		if (put_c(q->c)) {
+			pr_dbg("pointer to client data at %p was freed\n", q->c);
+			close(q->evfd);
+			pr_dbg("free dns req: %p\n", q);
+			free(q);
+		} else
+			write(q->evfd, &r, sizeof(r));
 	}
 	pr_dbg("releasing dns_lock\n");
 	pthread_mutex_unlock(&ctx->dns_lock);
