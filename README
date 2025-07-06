@@ -40,3 +40,24 @@ Features in my Wish list:
 - connect race for when domain name is provided
 - corner cases
 	* pause incoming connection from accept when open file descriptor reach max limit
+- use assert to make sure the logic is rock solid, and we can evaluate the logic if turns out the assert fail and program aborted.
+
+Cool technical stuff used in the codebase:
+1. utilization of the fact that most of pointer address is 48-bit sized.
+by knowing this common sense, we can smuggle a flag in the pointer stored in 64-bit sized variable with bitmask technique using bitwise operator.
+
+2. Signaling mechanism to communicate between threads.
+with pthread_cond_t and eventfd, you can communicate between threads!
+use mutex for locking mechanism, thus didn't have to fear about race condition.
+
+3. C11 features
+since the codebase use atomic data type, it require the compiler to follow C11 standard to be able to compile.
+
+4. use refcount!
+you don't have to worry about use-after-free with this mechanism! it started being supported in commit x
+
+5. queue data structure
+the codebase use queue to create producer/consumer pattern for submitting new dns query request, the consumer is the domain resolver thread
+and the producer is the client that want to produce new dns query request.
+
+with this data structure, you can spawn as many domain resolver thread as you want and use single queue, that shared across threads and represent the pending, unprocessed dns query requests.

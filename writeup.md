@@ -126,3 +126,13 @@ start client:
 ```shell
 iperf3 -c ::1 -p 8085 -n 100g -P 5
 ```
+
+test race condition and deadlock with valgrind:
+```shell
+valgrind --tool=helgrind ./build/dns_resolver -b [::]:6969 -t 1
+```
+
+test memory error and memory leak with valgrind:
+```shell
+valgrind --leak-check=full --show-leak-kinds=all --leak-resolution=high --log-file=leaks.log ./build/dns_resolver -b [::]:6969 -t 1
+```
