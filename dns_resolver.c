@@ -248,6 +248,7 @@ static struct dns_req *init_dns_req(struct tctx *ctx, struct net_pkt *p)
 exit_close:
 	close(r->evfd);
 exit_free:
+	pr_dbg("free dns req: %p\n", r);
 	free(r);
 exit_err:
 	return NULL;
@@ -280,13 +281,14 @@ static void dequeue_dns(struct dns_queue *q)
 	if (!r)
 		return;
 
-	pr_dbg("dequeue item %p\n", r);
+	pr_info("dequeue item %p\n", r);
 
 	q->head = r->next;
 
 	if (!q->head)
 		q->tail = NULL;
 	// let the producer free the request
+	// pr_dbg("free dns req: %p\n", r);
 	// free(r);
 }
 
@@ -411,6 +413,7 @@ static void serve_incoming_client(struct tctx *ctx)
 exit_close:
 	close(c->clientfd);
 exit_err:
+	pr_dbg("free client data at %p\n", c);
 	free(c);
 	ctx->cp.nr_client--;
 	return;
@@ -421,6 +424,7 @@ static void cleanup_client(struct tctx *ctx, struct client *c)
 	close(c->clientfd);
 	ctx->cp.clients[c->idx] = NULL;
 	ctx->cp.nr_client--;
+	pr_dbg("free client data at %p\n", c);
 	free(c);
 }
 
@@ -685,6 +689,7 @@ static int fish_events(struct tctx *ctx)
 				send(c->clientfd, fail_msg, sizeof(fail_msg), MSG_NOSIGNAL);
 
 			close(r->evfd);
+			pr_dbg("free dns req: %p\n", r);
 			free(r);
 			break;
 		case EV_STOP_PROG:
@@ -722,6 +727,7 @@ static void terminate_clients(struct tctx *ctx)
 			"free memory resource allocated for client %s\n",
 			c->addrstr
 		);
+		pr_dbg("free client data at %p\n", c);
 		free(c);
 	}
 }
@@ -874,14 +880,11 @@ static void *dns_resolver_thread(void *args)
 
 		pr_dbg("doing blocking operation, releasing dns_lock\n");
 		pthread_mutex_unlock(&ctx->dns_lock);
-		// pr_info("resolving %s\n", q->domainname);
 		resolve_dns(q);
 		pr_dbg("attempting to lock dns_lock\n");
 		pthread_mutex_lock(&ctx->dns_lock);
 		pr_dbg("acquired dns_lock\n");
-		pr_info("dequeue dns query request\n");
 		dequeue_dns(&ctx->dqueue);
-		pr_info("head ptr: %p\n", ctx->dqueue.head);
 		write(q->evfd, &r, sizeof(r));
 	}
 	pr_dbg("releasing dns_lock\n");
