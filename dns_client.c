@@ -169,7 +169,7 @@ static void free_connection_pool(struct connection_pool *cp)
 	int i;
 	struct connection *c;
 
-	pr_info("free %d established connection\n", cp->connection_nr);
+	pr_info("free %d allocated connection\n", cp->connection_nr);
 	for (i = 0; i < cp->connection_nr; i++) {
 		c = cp->c[i];
 		if (c) {
@@ -178,6 +178,30 @@ static void free_connection_pool(struct connection_pool *cp)
 			free(c);
 		}
 	}
+}
+
+static struct connection *allocate_connection(struct thrd_ctx *ctx, int serverfd)
+{
+	struct connection *c;
+	c = malloc(sizeof(*c));
+	if (!c) {
+		pr_err(
+			"not enough memory to allocate "
+			"connection struct\n"
+		);
+		return NULL;
+	}
+	/*
+	* the pool allocation is fixed.
+	* depends on number of concurrent request, no need to realloc.
+	*/
+	c->tcpfd = serverfd;
+	c->remaining = 0;
+	c->idx = ctx->cp.connection_nr;
+	ctx->cp.c[ctx->cp.connection_nr] = c;
+	ctx->cp.connection_nr++;
+
+	return c;
 }
 
 static int init_connection(struct thrd_ctx *ctx)
@@ -196,29 +220,12 @@ static int init_connection(struct thrd_ctx *ctx)
 	);
 
 	for (i = 0; i < ctx->pctx->concurrent_nr; i++) {
-		c = malloc(sizeof(*c));
-		if (!c) {
-			pr_err(
-				"not enough memory to allocate "
-				"connection struct\n"
-			);
-			return -EXIT_FAILURE;
-		}
-		/*
-		* the pool allocation is fixed.
-		* depends on number of concurrent request, no need to realloc.
-		*/
-		ctx->cp.c[i] = c;
-		ctx->cp.connection_nr++;
-
 		serverfd = socket(ctx->pctx->server_addr.ss_family, SOCK_STREAM, 0);
 		if (serverfd < 0) {
 			pr_err("failed to create TCP socket\n");
 			c->tcpfd = -1;
 			return -EXIT_FAILURE;
 		}
-		c->tcpfd = serverfd;
-		c->remaining = 0;
 		setsockopt(
 			serverfd,
 			SOL_SOCKET, SOCK_NONBLOCK,
@@ -232,14 +239,16 @@ static int init_connection(struct thrd_ctx *ctx)
 		);
 		if (ret < 0 && errno != EINPROGRESS) {
 			pr_err(
-				"failed to connect at %dth attempt\n",
-				ctx->cp.connection_nr
+				"failed to connect at %d attempt, reason: %s\n",
+				ctx->cp.connection_nr + 1, strerror(errno)
 			);
 			break;
 		}
+		c = allocate_connection(ctx, serverfd);
+		if (!c)
+			return -ENOMEM;
 
 		ev.data.ptr = c;
-		c->idx = i;
 		ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, serverfd, &ev);
 		if (ret < 0) {
 			pr_err(
@@ -251,7 +260,9 @@ static int init_connection(struct thrd_ctx *ctx)
 		}
 	}
 
-	pr_info("%d connection successfully established\n", ctx->pctx->concurrent_nr);
+	if (!ctx->cp.connection_nr)
+		return -EXIT_FAILURE;
+	pr_info("%d connection successfully established\n", ctx->cp.connection_nr);
 
 	return 0;
 }
