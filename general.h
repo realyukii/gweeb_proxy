@@ -119,10 +119,9 @@ void printBits(size_t const size, void const * const ptr);
 * Get printable network address.
 *
 * @param saddr
-* @param slen
 * @param bufptr
 */
-void get_addrstr(struct sockaddr *saddr, socklen_t slen, char *bufptr);
+void get_addrstr(struct sockaddr *saddr, char *bufptr);
 
 /*
 * check if a character conform the ldh rule (letter-digit-hypen)

@@ -242,6 +242,7 @@ static struct dns_req *init_dns_req(struct tctx *ctx, struct net_pkt *p)
 
 	strncpy(r->domainname, p->buff, p->domainlen);
 	r->domainname[p->domainlen] = '\0';
+	memset(r->addrstr, 0, sizeof(r->addrstr));
 	r->next = NULL;
 
 	return r;
@@ -393,7 +394,7 @@ static void serve_incoming_client(struct tctx *ctx)
 		goto exit_err;
 	}
 
-	get_addrstr((struct sockaddr *)&addr, addrlen, c->addrstr);
+	get_addrstr((struct sockaddr *)&addr, c->addrstr);
 	pr_info(
 		"new client %s accepted with sockfd %d\n",
 		c->addrstr, c->clientfd
@@ -851,10 +852,10 @@ void resolve_dns(struct dns_req *req)
 			"failed to resolve domain name: %s\n",
 			gai_strerror(ret)
 		);
-		req->addrstr[0] = '\0';
+		return;
 	}
 
-	get_addrstr(l->ai_addr, l->ai_addrlen, req->addrstr);
+	get_addrstr(l->ai_addr, req->addrstr);
 	freeaddrinfo(l);
 }
 

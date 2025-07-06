@@ -65,7 +65,7 @@ int init_addr(const char *addr, struct sockaddr_storage *addr_st)
 	return 0;
 }
 
-void get_addrstr(struct sockaddr *saddr, socklen_t slen, char *bufptr)
+void get_addrstr(struct sockaddr *saddr, char *bufptr)
 {
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
@@ -78,14 +78,14 @@ void get_addrstr(struct sockaddr *saddr, socklen_t slen, char *bufptr)
 	switch (saddr->sa_family) {
 	case AF_INET:
 		in = (struct sockaddr_in *)saddr;
-		inet_ntop(AF_INET, &in->sin_addr, addrbuf, slen);
+		inet_ntop(AF_INET, &in->sin_addr, addrbuf, sizeof(addrbuf));
 		port_nr = ntohs(in->sin_port);
 		addrfmt = addr4fmt;
 
 		break;
 	case AF_INET6:
 		in6 = (struct sockaddr_in6 *)saddr;
-		inet_ntop(AF_INET6, &in6->sin6_addr, addrbuf, slen);
+		inet_ntop(AF_INET6, &in6->sin6_addr, addrbuf, sizeof(addrbuf));
 		port_nr = ntohs(in6->sin6_port);
 		addrfmt = addr6fmt;
 
