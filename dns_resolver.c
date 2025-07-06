@@ -12,13 +12,16 @@
 * |   1    |     4 to 255    |
 * +----+----------+----------+
 *
-* the server then will reply with allowed or denied message
+* the server then will reply with either allowed or denied message.
 *
 * if not allowed, the server wil close the connection after sending denied message.
 *
 * if allowed, and domain name is successfuly resolved,
 * the server will reply with human-readable address (either IPv4 or IPv6).
 * and close the connection.
+*
+* and if it fail to resolve the requested domain name,
+* it will simply send the error message.
 *
 * to be recognized as a valid domain name,
 * only letter-digit-hypen are allowed in the domain name string.
@@ -49,7 +52,18 @@
 #define DEFAULT_CAPACITY 512
 #define MAX_CLIENT_BUFFER 256
 
+#define ALL_EVBIT (EV_ACCEPT | EV_CLIENT | EV_DNS_RESOLVED | EV_STOP_PROG)
+#define GET_EVBIT(X) (X & ALL_EVBIT)
+#define CLEAR_EVBIT(X) (X & ~ALL_EVBIT)
+
 #define pr_menu printf(usage, DEFAULT_THREAD_NR);
+
+enum {
+	EV_ACCEPT	= (0x1ULL << 48ULL),
+	EV_CLIENT	= (0x2ULL << 48ULL),
+	EV_DNS_RESOLVED	= (0x3ULL << 48ULL),
+	EV_STOP_PROG	= (0x4ULL << 48ULL)
+};
 
 enum communication_state {
 	SEND_REPLY,
@@ -71,6 +85,7 @@ struct client {
 	uint32_t epmask;
 	bool is_valid_req;
 	char buff[MAX_CLIENT_BUFFER];
+	struct dns_req *req;
 };
 
 struct client_pool {
@@ -81,9 +96,9 @@ struct client_pool {
 
 struct dns_req {
 	char domainname[MAX_CLIENT_BUFFER - 1];
-	char addrstr[INET6_ADDRSTRLEN];
+	char addrstr[ADDRSTR_SZ];
 	int evfd;
-	int sockfd;
+	struct client *c;
 	struct dns_req *next;
 };
 
@@ -196,19 +211,46 @@ print_usage_n_exit:
 	return -EXIT_FAILURE;
 }
 
-static struct dns_req *init_dns_req(struct net_pkt *p)
+static struct dns_req *init_dns_req(struct tctx *ctx, struct net_pkt *p)
 {
 	struct dns_req *r;
+	struct epoll_event ev;
+	int ret;
+
 	r = malloc(sizeof(*r));
+	if (!r) {
+		pr_err("not enough memory\n");
+		goto exit_err;
+	}
 	pr_dbg("new queue item initialized: %p\n", r);
-	if (!r)
-		return NULL;
+
+	r->evfd = eventfd(0, EFD_NONBLOCK);
+	if (r->evfd < 0) {
+		pr_err("can't create eventfd\n");
+		goto exit_free;
+	}
+
+	ev.events = EPOLLIN;
+	ev.data.u64 = 0;
+	ev.data.ptr = r;
+	ev.data.u64 |= EV_DNS_RESOLVED;
+	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, r->evfd, &ev);
+	if (ret < 0) {
+		pr_err("failed to register eventfd's events for new client\n");
+		goto exit_close;
+	}
 
 	strncpy(r->domainname, p->buff, p->domainlen);
 	r->domainname[p->domainlen] = '\0';
 	r->next = NULL;
 
 	return r;
+exit_close:
+	close(r->evfd);
+exit_free:
+	free(r);
+exit_err:
+	return NULL;
 }
 
 static void enqueue_dns(struct dns_queue *q, struct dns_req *r)
@@ -244,8 +286,8 @@ static void dequeue_dns(struct dns_queue *q)
 
 	if (!q->head)
 		q->tail = NULL;
-
-	free(r);
+	// let the producer free the request
+	// free(r);
 }
 
 static int init_thread_ctx(struct tctx *tc)
@@ -356,10 +398,12 @@ static void serve_incoming_client(struct tctx *ctx)
 	);
 
 	ev.events = c->epmask;
+	ev.data.u64 = 0;
 	ev.data.ptr = c;
+	ev.data.u64 |= EV_CLIENT;
 	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, c->clientfd, &ev);
 	if (ret < 0) {
-		pr_err("failed to register events for new client\n");
+		pr_err("failed to register tcp sockfd's events for new client\n");
 		goto exit_close;
 	}
 
@@ -489,12 +533,11 @@ static int send_hello(struct client *c)
 static int request_addr(struct client *c, struct tctx *ctx)
 {
 	struct net_pkt *pkt = (void *)c->buff;
-	struct dns_req *r = init_dns_req(pkt);
+	struct dns_req *r = init_dns_req(ctx, pkt);
 	if (!r)
 		return -ENOMEM;
 
-	r->evfd = ctx->evfd;
-	r->sockfd = c->clientfd;
+	r->c = c;
 	pr_dbg("attempting to lock dns_lock\n");
 	pthread_mutex_lock(&ctx->dc->dns_lock);
 	pr_dbg("acquired dns_lock\n");
@@ -507,7 +550,7 @@ static int request_addr(struct client *c, struct tctx *ctx)
 	return 0;
 }
 
-static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
+static int talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 {
 	int ret;
 	struct client *c = ev->data.ptr;
@@ -523,8 +566,8 @@ static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 		ret = read_payload(c);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
-				return;
-			goto terminate_session;
+				return 0;
+			return -EXIT_FAILURE;
 		}
 	}
 
@@ -532,8 +575,8 @@ static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 		ret = send_hello(c);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
-				return;
-			goto terminate_session;
+				return 0;
+			return -EXIT_FAILURE;
 		}
 	}
 
@@ -541,10 +584,7 @@ static void talk_to_client(struct tctx *ctx, struct epoll_event *ev)
 		ret = request_addr(c, ctx);
 	}
 
-	return;
-terminate_session:
-	cleanup_client(ctx, c);
-	return;
+	return 0;
 }
 
 static void adjust_client_pollout(struct client *c, bool *changed)
@@ -594,7 +634,7 @@ static int adjust_client_events(struct tctx *ctx, struct client *c)
 
 static int fish_events(struct tctx *ctx)
 {
-	int nr_events, ret, i;
+	int nr_events, i, ret;
 	struct epoll_event evs[DEFAULT_EVENTS_NR];
 	struct epoll_event *ev;
 	uint64_t evbuf;
@@ -609,52 +649,50 @@ static int fish_events(struct tctx *ctx)
 
 	for (i = 0; i < nr_events; i++) {
 		ev = &evs[i];
-		if (ev->data.fd == ctx->evfd) {
-			ret = read(ctx->evfd, &evbuf, sizeof(evbuf));
+		struct client *c;
+		struct dns_req *r;
+		void *data;
+		uint64_t ev_bit = GET_EVBIT(ev->data.u64);
+		ev->data.u64 = CLEAR_EVBIT(ev->data.u64);
+		data = ev->data.ptr;
+
+		switch (ev_bit) {
+		case EV_ACCEPT:
+			serve_incoming_client(ctx);
+			break;
+		case EV_CLIENT:
+			c = data;
+			ret = talk_to_client(ctx, ev);
+			if (ret < 0) {
+				cleanup_client(ctx, c);
+				break;
+			}
+			adjust_client_events(ctx, c);
+			break;
+		case EV_DNS_RESOLVED:
+			r = data;
+			c = r->c;
+			int ret;
+			ret = read(r->evfd, &evbuf, sizeof(evbuf));
 			if (ret < 0) {
 				pr_err("failed to read buffer from evfd\n");
 				return -EXIT_FAILURE;
 			}
+			int len = strlen(r->addrstr);
+			if (len)
+				send(c->clientfd, r->addrstr, len, MSG_NOSIGNAL);
+			else
+				send(c->clientfd, fail_msg, sizeof(fail_msg), MSG_NOSIGNAL);
 
+			close(r->evfd);
+			free(r);
+			break;
+		case EV_STOP_PROG:
 			/*
 			* The system deliver SIGTERM or SIGINT,
 			* the program MUST stop the event loop.
 			*/
-			if (evbuf == 1)
-				return 0;
-
-
-			pr_dbg("attempting to lock dns_lock\n");
-			pthread_mutex_lock(&ctx->dc->dns_lock);
-			pr_dbg("acquired dns_lock\n");
-			if (evbuf == 2) {
-				pr_dbg("resolved address: %s\n", ctx->dc->dqueue.head->addrstr);
-				send(
-					ctx->dc->dqueue.head->sockfd,
-					"success", 8,
-					MSG_NOSIGNAL
-				);
-			}
-
-			if (evbuf == 3) {
-				send(
-					ctx->dc->dqueue.head->sockfd,
-					fail_msg, sizeof(fail_msg),
-					MSG_NOSIGNAL
-				);
-			}
-
-			dequeue_dns(&ctx->dc->dqueue);
-			pr_dbg("releasing dns_lock\n");
-			pthread_mutex_unlock(&ctx->dc->dns_lock);
-			continue;
-		}
-
-		if (ev->data.fd == ctx->serverfd)
-			serve_incoming_client(ctx);
-		else {
-			talk_to_client(ctx, ev);
-			adjust_client_events(ctx, ev->data.ptr);
+			return 0;
 		}
 	}
 
@@ -699,13 +737,14 @@ static int start_event_loop(struct tctx *ctx)
 	}
 
 	ev.events = EPOLLIN;
-	ev.data.fd = ctx->serverfd;
+	ev.data.u64 = EV_ACCEPT;
 	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->serverfd, &ev);
 	if (ret < 0) {
 		pr_err("failed to register events for serverfd\n");
 		goto exit_close_epfd;
 	}
 
+	ev.data.u64 = EV_STOP_PROG;
 	ctx->evfd = eventfd(0, EFD_NONBLOCK);
 	if (ctx->evfd < 0) {
 		pr_err("failed to create eventfd\n");
@@ -795,63 +834,55 @@ static void *serve_client_thread(void *args)
 	return (void *)(uintptr_t)ret;
 }
 
-int resolve_dns(struct dns_req *req)
+void resolve_dns(struct dns_req *req)
 {
 	struct addrinfo *l;
 	int ret;
-	
+
 	ret = getaddrinfo(req->domainname, NULL, NULL, &l);
 	if (ret != 0) {
 		pr_err(
 			"failed to resolve domain name: %s\n",
 			gai_strerror(ret)
 		);
-		return -EXIT_FAILURE;
+		req->addrstr[0] = '\0';
 	}
 
 	get_addrstr(l->ai_addr, l->ai_addrlen, req->addrstr);
-	VT_HEXDUMP(req, sizeof(*req));
 	freeaddrinfo(l);
-
-	return 0;
 }
 
 static void *dns_resolver_thread(void *args)
 {
 	struct dctx *ctx = args;
 	struct dns_req *q;
-	uint64_t r;
-	int ret;
+	uint64_t r = 1;
 
 	pr_dbg("attempting to lock dns_lock\n");
 	pthread_mutex_lock(&ctx->dns_lock);
 	pr_dbg("acquired dns_lock\n");
 	while (!ctx->stop) {
-		pr_dbg("releasing dns_lock and start waiting\n");
-		pthread_cond_wait(&ctx->dns_cond, &ctx->dns_lock);
-		pr_dbg("acquired dns_lock\n");
 		q = ctx->dqueue.head;
-		/* if you leave the comment as is,
-		* the dns resolver thread will process same request twice
-		* because the consumer haven't consume or read it yet.
-		* but if you uncomment the following comment,
-		* the dns resolver thread may lost some signal dispatched from
-		* pthread_cond_signal, this is a dilemma we need to change the
-		* design of current implementation.
-		*/
-		// pr_dbg("first entry of the queue is acquired, releasing the lock\n");
-		// pthread_mutex_unlock(&ctx->dns_lock);
-		if (q) {
-			pr_info("resolving %s\n", q->domainname);
-			ret = resolve_dns(q);
-			if (ret == -EXIT_FAILURE)
-				r = 3;
-			else
-				r = 2;
-			write(q->evfd, &r, sizeof(r));
+		if (!q) {
+			pr_dbg("releasing dns_lock and start waiting\n");
+			pthread_cond_wait(&ctx->dns_cond, &ctx->dns_lock);
+			pr_dbg("acquired dns_lock\n");
+			q = ctx->dqueue.head;
+			if (!q)
+				continue;
 		}
-		// pr_dbg("attempting to re-lock dns_lock\n");
-		// pthread_mutex_lock(&ctx->dns_lock);
+
+		pr_dbg("doing blocking operation, releasing dns_lock\n");
+		pthread_mutex_unlock(&ctx->dns_lock);
+		// pr_info("resolving %s\n", q->domainname);
+		resolve_dns(q);
+		pr_dbg("attempting to lock dns_lock\n");
+		pthread_mutex_lock(&ctx->dns_lock);
+		pr_dbg("acquired dns_lock\n");
+		pr_info("dequeue dns query request\n");
+		dequeue_dns(&ctx->dqueue);
+		pr_info("head ptr: %p\n", ctx->dqueue.head);
+		write(q->evfd, &r, sizeof(r));
 	}
 	pr_dbg("releasing dns_lock\n");
 	pthread_mutex_unlock(&ctx->dns_lock);
