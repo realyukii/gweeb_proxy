@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <pthread.h>
+#include <sys/eventfd.h>
 #include "linux.h"
 #include "general.h"
 
@@ -42,6 +43,7 @@ struct connection_pool {
 };
 
 struct prog_ctx {
+	int stopfd;
 	bool stop;
 	char *dname; // TODO: add support for file of list domain name and distribute the domain name evenly to the worker
 	char *addrstr;
@@ -391,6 +393,11 @@ static int start_event_loop(struct thrd_ctx *ctx)
 		goto exit_terminate_connection;
 	}
 
+	/* borrow the variable for a second XD */
+	ev = &evs[0];
+	ev->events = EPOLLIN;
+	ev->data.fd = ctx->pctx->stopfd;
+	epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->pctx->stopfd, ev);
 	while (!ctx->pctx->stop) {
 		ready_nr = epoll_wait(ctx->epfd, evs, EPOLL_EVENT_NR, -1);
 		if (ready_nr < 0) {
@@ -400,6 +407,8 @@ static int start_event_loop(struct thrd_ctx *ctx)
 		}
 		for (i = 0; i < ready_nr; i++) {
 			ev = &evs[i];
+			if (ev->data.fd == ctx->pctx->stopfd)
+				break;
 			ret = make_req(ctx, ev);
 			if (ret < 0)
 				goto exit_terminate_connection;
@@ -426,18 +435,26 @@ static void init_tctx(struct thrd_ctx *tctx, struct prog_ctx *pctx)
 	tctx->pctx = pctx;
 }
 
-static void init_pctx(struct prog_ctx *ctx)
+static int init_pctx(struct prog_ctx *ctx)
 {
 	gctx = ctx;
 	ctx->stop = false;
+	ctx->stopfd = eventfd(0, EFD_NONBLOCK);
+	if (ctx->stopfd < 0) {
+		pr_err("failed to create event file descriptor\n");
+		return -EXIT_FAILURE;
+	}
 
 	memset(&ctx->server_addr, 0, sizeof(ctx->server_addr));
 }
 
 static void signal_handler(int c)
 {
+	intptr_t ret = 1;
+
 	pr_info("interrupt signal received, exiting program...\n");
 	gctx->stop = true;
+	write(gctx->stopfd, &ret, sizeof(ret));
 	(void)c;
 }
 
@@ -478,7 +495,9 @@ int main(int argc, char **argv)
 		.sa_handler = signal_handler
 	};
 
-	init_pctx(&ctx);
+	ret = init_pctx(&ctx); 
+	if (ret < 0)
+		return -EXIT_FAILURE;
 
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
