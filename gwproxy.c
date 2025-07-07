@@ -156,7 +156,7 @@ struct auth_creds {
 	int authfd;
 	int ifd;
 	int epfd;
-	pthread_rwlock_t authlock;
+	pthread_rwlock_t creds_lock;
 	struct userpwd_list userpwd_l;
 	char *userpwd_buf;
 	char *prev_userpwd_buf;
@@ -976,9 +976,12 @@ static int accept_greeting(struct pair_conn *pc, struct gwp_ctx *pctx)
 		return -EAGAIN;
 
 	if (pctx->cargs.auth_file) {
-		pthread_rwlock_rdlock(&pctx->creds.authlock);
+		pr_dbg("attempting to lock creds_lock\n");
+		pthread_rwlock_rdlock(&pctx->creds.creds_lock);
+		pr_dbg("acquired creds_lock\n");
 		have_entry = pctx->creds.userpwd_l.nr_entry;
-		pthread_rwlock_unlock(&pctx->creds.authlock);
+		pr_dbg("releasing creds_lock\n");
+		pthread_rwlock_unlock(&pctx->creds.creds_lock);
 	}
 
 	for (i = 0; i < g->nauth; i++) {
@@ -1348,7 +1351,9 @@ static int req_userpwd(struct pair_conn *pc, struct auth_creds *creds)
 	password = (void *)(plen + 1);
 
 	pc->is_authenticated = 0x1;
-	pthread_rwlock_rdlock(&creds->authlock);
+	pr_dbg("attempting to lock creds_lock\n");
+	pthread_rwlock_rdlock(&creds->creds_lock);
+	pr_dbg("acquired creds_lock\n");
 	for (i = 0; i < creds->userpwd_l.nr_entry; i++) {
 		p = &creds->userpwd_l.arr[i];
 
@@ -1366,7 +1371,8 @@ static int req_userpwd(struct pair_conn *pc, struct auth_creds *creds)
 		pc->is_authenticated = 0x0;
 		break;
 	}
-	pthread_rwlock_unlock(&creds->authlock);
+	pr_dbg("releasing creds_lock\n");
+	pthread_rwlock_unlock(&creds->creds_lock);
 
 	pc->state |= STATE_SEND;
 
@@ -1757,7 +1763,7 @@ static int init_watcher_file(struct gwp_ctx *a)
 	ac->ifd = ifd;
 	ac->authfd = afd;
 
-	pthread_rwlock_init(&a->creds.authlock, NULL);
+	pthread_rwlock_init(&a->creds.creds_lock, NULL);
 
 	return 0;
 exit_close_epfd:
@@ -1896,7 +1902,9 @@ static void *watcher_thread(void *args)
 			ac->prev_userpwd_buf = ac->userpwd_buf;
 		}
 
-		pthread_rwlock_wrlock(&a->creds.authlock);
+		pr_dbg("attempting to lock creds_lock\n");
+		pthread_rwlock_wrlock(&a->creds.creds_lock);
+		pr_dbg("acquired creds_lock\n");
 
 		ret = parse_auth_file(a->creds.authfd,
 					&ac->userpwd_l, &ac->userpwd_buf);
@@ -1905,7 +1913,8 @@ static void *watcher_thread(void *args)
 			free(ac->prev_userpwd_buf);
 		}
 
-		pthread_rwlock_unlock(&a->creds.authlock);
+		pr_dbg("releasing creds_lock\n");
+		pthread_rwlock_unlock(&a->creds.creds_lock);
 
 		for (int i = 0; i < ac->userpwd_l.nr_entry; i++) {
 			pr = &ac->userpwd_l.arr[i];
