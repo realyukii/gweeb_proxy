@@ -41,10 +41,10 @@ test_conventional: $(TARGET1)
 test_socks5: $(TARGET1)
 	$< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
 test_dns_serv: $(TARGET4)
-	$< -b [::]:6969
+	$< -b [::]:6969 -t 1
 stress_test: $(TARGET5)
 	$< -n google.com -s [::1]:6969
 
 .PHONY: clean
 clean:
-	rm -rf $(BUILDDIR)/*.o $(TARGET1) $(TARGET2) $(TARGET3)
+	rm -rf $(BUILDDIR)/*.o $(TARGET1) $(TARGET2) $(TARGET3) $(TARGET4) $(TARGET5)
