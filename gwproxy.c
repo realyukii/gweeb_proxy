@@ -153,6 +153,8 @@ struct commandline_args {
 
 struct auth_creds {
 	int authfd;
+	int ifd;
+	int epfd;
 	pthread_rwlock_t authlock;
 	struct userpwd_list userpwd_l;
 	char *userpwd_buf;
@@ -262,6 +264,9 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *a)
 
 		return -1;
 	}
+
+	a->socks5_mode = false;
+	memset(&a->src_addr_st, 0, sizeof(a->src_addr_st));
 
 	auth_file_opt = wait_opt = server_thread_opt = bind_opt = target_opt =
 	client_nr_opt = NULL;
@@ -1679,6 +1684,89 @@ static int init_pool(struct connection_pool *p, int client_nr)
 	return 0;
 }
 
+static int init_watcher_file(struct gwp_ctx *a)
+{
+	int ret, ifd, epfd, afd;
+	struct auth_creds *ac;
+	struct epoll_event ev;
+
+	afd = open(a->cargs.auth_file, O_RDONLY);
+	if (afd < 0) {
+		pr_err("failed to load %s file\n", a->cargs.auth_file);
+		return -EXIT_FAILURE;
+	}
+
+	ret = parse_auth_file(afd, &a->creds.userpwd_l, &a->creds.userpwd_buf);
+	if (ret < 0) {
+		pr_err("failed to parse %s file\n", a->cargs.auth_file);
+		goto exit_close_filefd;
+	}
+
+	ifd = inotify_init1(IN_NONBLOCK);
+	if (ifd < 0) {
+		pr_err(
+			"failed to create inotify file descriptor: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_filefd;
+	}
+
+	ret = inotify_add_watch(ifd, a->cargs.auth_file, IN_CLOSE_WRITE);
+	if (ret < 0) {
+		pr_err(
+			"failed to add file to inotify watch: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_ifd;
+	}
+
+	epfd = epoll_create(1);
+	if (epfd < 0) {
+		pr_err(
+			"failed to create epoll file descriptor: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_ifd;
+	}
+
+	ev.events = EPOLLIN;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
+	if (ret < 0) {
+		pr_err(
+			"failed to add inotifyfd to epoll: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_epfd;
+	}
+
+	ev.events = EPOLLIN;
+	ev.data.fd = a->stopfd;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, a->stopfd, &ev);
+	if (ret < 0) {
+		pr_err(
+			"failed to add eventfd to epoll: %s",
+			strerror(errno)
+		);
+		goto exit_close_epfd;
+	}
+
+	ac = &a->creds;
+	ac->epfd = epfd;
+	ac->ifd = ifd;
+	ac->authfd = afd;
+
+	pthread_rwlock_init(&a->creds.authlock, NULL);
+
+	return 0;
+exit_close_epfd:
+	close(epfd);
+exit_close_ifd:
+	close(ifd);
+exit_close_filefd:
+	close(afd);
+	return -EXIT_FAILURE;
+}
+
 /*
 * Start the TCP proxy server.
 * 
@@ -1811,67 +1899,42 @@ static void *server_thread(void *pctx)
 }
 
 /*
-* Inotify thread.
+* File watcher thread.
 *
 * @param args Pointer to application data.
-* @return negative integer on failure.
+* @return zero on success, or a negative integer on failure.
 */
-static void *inotify_thread(void *args)
+static void *watcher_thread(void *args)
 {
-	int ret, ifd, epfd;
-	size_t counter = 0;
+	int ret;
 	struct gwp_ctx *a;
 	struct auth_creds *ac;
 	struct userpwd_pair *pr;
-	struct epoll_event ev = {0};
 	struct inotify_event iev;
+	struct epoll_event ev;
 
-	ret = ifd = epfd = -1;
+	size_t counter = 0;
 
 	a = args;
-
-	ifd = inotify_init1(IN_NONBLOCK);
-	if (ifd < 0) {
-		perror("inotify_init");
-		goto exit_err;
-	}
-
-	inotify_add_watch(ifd, a->cargs.auth_file, IN_CLOSE_WRITE);
-
-	epfd = epoll_create(1);
-	if (epfd < 0) {
-		perror("epoll_create");
-		goto exit_err;
-	}
-
-	ev.events = EPOLLIN;
-	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
-	if (ret < 0) {
-		perror("epoll_ctl");
-		goto exit_err;
-	}
-
-	ev.events = EPOLLIN;
-	ev.data.fd = a->stopfd;
-	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, a->stopfd, &ev);
-	if (ret < 0) {
-		perror("epoll_ctl");
-		goto exit_err;
-	}
+	ac = &a->creds;
 
 	while (!a->stop) {
-		ret = epoll_wait(epfd, &ev, 1, -1);
+		ret = epoll_wait(ac->epfd, &ev, 1, -1);
 		if (ret < 0) {
-			if (errno == EINTR)
+			ret = errno;
+			if (ret == EINTR)
 				continue;
-			perror("epoll_wait");
+			pr_err(
+				"failed to wait on epoll: %s\n",
+				strerror(ret)
+			);
 			goto exit_err;
 		}
 
 		if (ev.data.fd == a->stopfd)
 			break;
 
-		read(ifd, &iev, sizeof(iev));
+		read(ac->ifd, &iev, sizeof(iev));
 		printf("\e[1;1H\e[2J");
 		printf(
 			"File changed %ld times since program started, "
@@ -1904,21 +1967,16 @@ static void *inotify_thread(void *args)
 
 	ret = 0;
 exit_err:
-	if (ifd != -1) {
-		pr_info("closing inotify file descriptor: %d\n", ifd);
-		close(ifd);
-	}
-
-	if (epfd != -1) {
-		pr_info("closing epoll file descriptor: %d\n", epfd);
-		close(epfd);
-	}
+	pr_info("closing inotify file descriptor: %d\n", ac->ifd);
+	close(ac->ifd);
+	pr_info("closing epoll file descriptor: %d\n", ac->epfd);
+	close(ac->epfd);
 
 	return (void *)(intptr_t)ret;
 }
 
 /*
-* Serve resolve request from another thread.
+* Dedicated thread to resolve dns query request from another thread.
 */
 __attribute__((__unused__))
 // static void *dns_resolver_thread(void *args)
@@ -1967,34 +2025,6 @@ __attribute__((__unused__))
 // }
 
 /*
-* Load specified auth file.
-*
-* @param pctx Pointer to application data.
-* @return zero on success, or a negative integer on failure.
-*/
-static int init_auth_file(struct gwp_ctx *pctx)
-{
-	int ret, afd;
-
-	afd = open(pctx->cargs.auth_file, O_RDONLY);
-	if (afd < 0) {
-		perror("open");
-		goto exit_err;
-	}
-
-	pctx->creds.authfd = afd;
-	ret = parse_auth_file(afd, &pctx->creds.userpwd_l, &pctx->creds.userpwd_buf);
-	if (ret < 0)
-		goto exit_err;
-
-	pthread_rwlock_init(&pctx->creds.authlock, NULL);
-	return 0;
-exit_err:
-	pr_err("failed to load %s file\n", pctx->cargs.auth_file);
-	return -EXIT_FAILURE;
-}
-
-/*
 * Signal handler.
 * catch SIGINT and SIGTERM signal.
 *
@@ -2023,52 +2053,70 @@ static void signal_handler(int c)
 	write(g_args->stopfd, &val, sizeof(val));
 }
 
+static int init_pctx(struct gwp_ctx *ctx)
+{
+	ctx->cargs.auth_file = NULL;
+	ctx->stop = false;
+	ctx->stopfd = eventfd(0, EFD_NONBLOCK);
+	if (ctx->stopfd < 0) {
+		pr_err(
+			"failed to create event file descriptor: %s\n",
+			strerror(errno)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
 	size_t i;
 	void *retval;
-	pthread_t inotify_t, __attribute__((__unused__)) dnsresolv_t;
-	struct rlimit file_limits;
+	pthread_t watcher_t, __attribute__((__unused__)) dnsresolv_t;
 	struct auth_creds *ac;
-	struct gwp_ctx ctx = {
-		.creds.authfd = -1,
-		.stopfd = -1
-	};
+	struct gwp_ctx ctx;
 	struct sigaction s = {
 		.sa_handler = signal_handler
 	};
 
+	ret = handle_cmdline(argc, argv, &ctx.cargs);
+	if (ret < 0)
+		return -EXIT_FAILURE;
+
+	ret = init_pctx(&ctx);
+	if (ret < 0)
+		return -EXIT_FAILURE;
+
 	g_args = &ctx;
-	ctx.stopfd = eventfd(0, EFD_NONBLOCK);
 
 	sigaction(SIGTERM, &s, NULL);
 	sigaction(SIGINT, &s, NULL);
 
-	ret = handle_cmdline(argc, argv, &ctx.cargs);
-	if (ret < 0)
-		return ret;
-
 	if (ctx.cargs.auth_file) {
-		ret = init_auth_file(&ctx);
+		ret = init_watcher_file(&ctx);
 		if (ret < 0)
-			goto exit_err;
-		pthread_create(&inotify_t, NULL, inotify_thread, &ctx);
+			goto exit_close_stopfd;
+		pthread_create(&watcher_t, NULL, watcher_thread, &ctx);
 	}
 
 	getrlimit(RLIMIT_NOFILE, &file_limits);
 	file_limits.rlim_cur = file_limits.rlim_max;
 	ret = setrlimit(RLIMIT_NOFILE, &file_limits);
 	if (ret < 0) {
-		perror("setrlimit");
-		goto exit_err;
+		pr_err(
+			"failed to set file descriptor limit: %s\n",
+			strerror(errno)
+		);
+		goto exit_cleanup_auth_creds;
 	}
 
 	threads = calloc(ctx.cargs.server_thread_nr, sizeof(pthread_t));
 	if (!threads) {
 		pr_err("out of memory, can't allocate memory for threads\n");
 		ret = -EXIT_FAILURE;
-		goto exit_err;
+		goto exit_cleanup_auth_creds;
 	}
 
 	// pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
@@ -2076,15 +2124,19 @@ int main(int argc, char *argv[])
 		ret = pthread_create(&threads[i], NULL, server_thread, &ctx);
 		if (ret) {
 			errno = ret;
-			perror("pthread_create");
+			pr_err(
+				"failed to spawn thread: %s",
+				strerror(errno)
+			);
 			ret = -EXIT_FAILURE;
-			goto exit_err;
+			goto exit_free_pool;
 		}
 	}
 
 	start_server(&ctx);
 
-	pthread_join(inotify_t, &retval);
+	if (ctx.cargs.auth_file)
+		pthread_join(inotify_t, &retval);
 	// pthread_join(dnsresolv_t, &retval);
 
 	for (i = 0; i < ctx.cargs.server_thread_nr; i++) {
@@ -2092,42 +2144,40 @@ int main(int argc, char *argv[])
 		ret = pthread_join(threads[i], &retval);
 		if (ret) {
 			errno = ret;
-			perror("pthread_join");
+			pr_err("failed to join the thread: %s\n", strerror(ret));
 			ret = -EXIT_FAILURE;
-			goto exit_err;
+			goto exit_free_pool;
 		}
 
 		if ((intptr_t)retval < 0) {
 			pr_err("fatal: failed to start server\n");
 			ret = (intptr_t)retval;
-			goto exit_err;
+			goto exit_free_pool;
 		}
 	}
 
 	ret = 0;
-exit_err:
-	if (ctx.creds.authfd != -1) {
-		pr_info("closing open file descriptor %d\n", ctx.creds.authfd);
-		close(ctx.creds.authfd);
-	}
-	if (ctx.stopfd != -1) {
-		pr_info("closing stopfd file descriptor %d\n", ctx.stopfd);
-		close(ctx.stopfd);
-	}
-	if (threads) {
-		pr_info("free threads: %p\n", threads);
-		free(threads);
+exit_free_pool:
+	pr_info("free the threads pool: %p\n", threads);
+	free(threads);
+exit_cleanup_auth_creds:
+	if (ctx.cargs.auth_file) {
+		ac = &ctx.creds;
+		pr_info("closing open file descriptor %d\n", ac->authfd);
+		close(ac->authfd);
+		if (ac->userpwd_l.arr) {
+			pr_info("free array of userpwd: %p\n", ac->userpwd_l.arr);
+			free(ac->userpwd_l.arr);
+		}
+		if (ac->userpwd_buf) {
+			pr_info("free userpwd_buf: %p\n", ac->userpwd_buf);
+			free(ac->userpwd_buf);
+		}
 	}
 
-	ac = &ctx.creds;
-	if (ac->userpwd_l.arr) {
-		pr_info("free array of userpwd: %p\n", ac->userpwd_l.arr);
-		free(ac->userpwd_l.arr);
-	}
-	if (ac->userpwd_buf) {
-		pr_info("free userpwd_buf: %p\n", ac->userpwd_buf);
-		free(ac->userpwd_buf);
-	}
+exit_close_stopfd:
+	pr_info("closing stopfd file descriptor %d\n", ctx.stopfd);
+	close(ctx.stopfd);
 
 	pr_info(
 		"all system resources were freed, "
