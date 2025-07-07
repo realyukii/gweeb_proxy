@@ -96,6 +96,7 @@ struct gwp_conn {
 	size_t off;
 	/* epoll mask used to store epoll event*/
 	uint32_t epmask;
+	char addrstr[ADDRSTR_SZ];
 };
 
 struct pair_conn {
@@ -457,23 +458,28 @@ static struct pair_conn *init_pair(struct gwp_tctx *gwp)
 * @param sockaddr Pointer to the sockaddr_storage structure.
 * @return socket file descriptor on success or a negative integer on failure.
 */
-static int set_target(struct sockaddr_storage *sockaddr)
+static int set_target(struct gwp_conn *tc, struct sockaddr_storage *sockaddr)
 {
 	int ret, tsock;
 	socklen_t size_addr;
 
 	tsock = socket(sockaddr->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (tsock < 0) {
-		perror("socket");
+		pr_err("failed to create target socket: %s\n", strerror(errno));
 		return -EXIT_FAILURE;
 	}
 
 	set_sockattr(tsock);
 	size_addr = sockaddr->ss_family == AF_INET ? 
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+	get_addrstr((struct sockaddr *)sockaddr, tc->addrstr);
+	pr_info("attempting to connect to %s\n", tc->addrstr);
 	ret = connect(tsock, (struct sockaddr *)sockaddr, size_addr);
 	if (ret < 0 && errno != EINPROGRESS) {
-		perror("connect");
+		pr_err(
+			"failed to connect to address %s: %s\n",
+			tc->addrstr, strerror(errno)
+		);
 		return -EXIT_FAILURE;
 	}
 
@@ -500,7 +506,10 @@ static int register_events(int fd, int epfd, uint32_t epmask,
 	ev.data.u64 |= evmask;
 	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
 	if (ret < 0) {
-		perror("epoll_ctl");
+		pr_err(
+			"failed to register event to epoll: %s\n",
+			strerror(errno)
+		);
 		return -EXIT_FAILURE;
 	}
 
@@ -516,6 +525,8 @@ static int register_events(int fd, int epfd, uint32_t epmask,
 static void handle_incoming_client(struct gwp_tctx *tctx)
 {
 	int client_fd, ret;
+	struct sockaddr_in6 addr;
+	socklen_t addrlen;
 	struct pair_conn *pc = init_pair(tctx);
 	if (!pc)
 		return;
@@ -527,7 +538,10 @@ static void handle_incoming_client(struct gwp_tctx *tctx)
 		flg = TFD_NONBLOCK;
 		tmfd = timerfd_create(CLOCK_MONOTONIC, flg);
 		if (tmfd < 0) {
-			perror("timerfd_create");
+			pr_err(
+				"failed to create timer file descriptor: %s\n",
+				strerror(errno)
+			);
 			goto exit_err;
 		}
 		pc->timerfd = tmfd;
@@ -536,29 +550,34 @@ static void handle_incoming_client(struct gwp_tctx *tctx)
 			tmfd, tctx->epfd,
 			EPOLLIN, pc, EV_BIT_TIMER
 		);
-		if (ret < 0) {
-			perror("epoll_ctl");
+		if (ret < 0)
 			goto exit_err;
-		}
 	}
 
-	client_fd = accept4(tctx->listen_sock, NULL, NULL, SOCK_NONBLOCK);
+	addrlen = sizeof(addr);
+	client_fd = accept4(tctx->listen_sock, &addr, &addrlen, SOCK_NONBLOCK);
 	if (client_fd < 0) {
 		ret = errno;
-		perror("accept");
 		if (ret != EINTR)
 			goto exit_err;
+		pr_err(
+			"failed to accept incoming client: %s\n",
+			strerror(ret)
+		);
 	}
+	get_addrstr((struct sockaddr *)&addr, pc->client.addrstr);
+	pr_info(
+		"new client %s accepted on socket %d\n",
+		pc->client.addrstr, client_fd
+	);
 	set_sockattr(client_fd);
 	pc->client.sockfd = client_fd;
 	ret = register_events(
 		client_fd, tctx->epfd,
 		pc->client.epmask, pc, EV_BIT_CLIENT
 	);
-	if (ret < 0) {
-		perror("epoll_ctl");
+	if (ret < 0)
 		goto exit_err;
-	}
 
 	if (tctx->pctx->cargs.socks5_mode)
 		pc->state = STATE_GREETING;
@@ -606,7 +625,10 @@ static int extract_data(struct epoll_event *ev, struct pair_conn **pc,
 		*/
 		*from = &(*pc)->client;
 		*to = &(*pc)->target;
-		pr_info("timed out, terminating the session for TODO: print client addr\n");
+		pr_info(
+			"timed out, terminating the session for %s\n",
+			(*from)->addrstr
+		);
 		return -ETIMEDOUT;
 	case EV_BIT_CLIENT:
 		pr_info("receiving data from client\n");
@@ -620,11 +642,6 @@ static int extract_data(struct epoll_event *ev, struct pair_conn **pc,
 		*to = &(*pc)->client;
 		break;
 	}
-
-	pr_info(
-		"current events are fired for socket %d: ",
-		(*from)->sockfd
-	);
 
 	return 0;
 }
@@ -670,7 +687,10 @@ static int handle_data(struct gwp_conn *from,
 					goto try_send;
 				return 0;
 			}
-			perror("recv on handle data");
+			pr_err(
+				"failed to recv from %s: %s\n",
+				from->addrstr, strerror(ret)
+			);
 			return -EXIT_FAILURE;
 		} else if (!ret) {
 			pr_info(
@@ -708,7 +728,10 @@ try_send:
 			ret = errno;
 			if (ret == EAGAIN || ret == EINTR)
 				return 0;
-			perror("send on handle data");
+			pr_err(
+				"failed to send to %s: %s\n",
+				to->addrstr, strerror(ret)
+			);
 			return -EXIT_FAILURE;
 		} else if (!ret)
 			return -EXIT_FAILURE;
@@ -869,7 +892,7 @@ static int adjust_events(int epfd, struct pair_conn *pc)
 
 		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, client->sockfd, &ev);
 		if (ret < 0) {
-			perror("epoll_ctl");
+			pr_err("failed to modify event: %s\n", strerror(errno));
 			return -EXIT_FAILURE;
 		}
 	}
@@ -882,7 +905,7 @@ static int adjust_events(int epfd, struct pair_conn *pc)
 
 		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, target->sockfd, &ev);
 		if (ret < 0) {
-			perror("epoll_ctl");
+			pr_err("failed to modify event: %s\n", strerror(errno));
 			return -EXIT_FAILURE;
 		}
 	}
@@ -939,9 +962,13 @@ static int accept_greeting(struct pair_conn *pc, struct gwp_ctx *pctx)
 
 	ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
 	if (ret < 0) {
-		if (errno == EAGAIN)
+		ret = errno;
+		if (ret == EAGAIN)
 			return -EAGAIN;
-		perror("recv on accept greeting");
+		pr_err(
+			"failed to recv greeting from %s: %s\n",
+			a->addrstr, strerror(ret)
+		);
 		return -EXIT_FAILURE;
 	}
 	if (!ret) {
@@ -1026,12 +1053,16 @@ static int response_handshake(struct pair_conn *pc)
 	ret = send(
 		a->sockfd,
 		&server_choice[sizeof(server_choice) - a->len],
-		a->len, 0
+		a->len, MSG_NOSIGNAL
 	);
 	if (ret < 0) {
-		if (errno == EAGAIN)
+		ret = errno;
+		if (ret == EAGAIN)
 			return -EAGAIN;
-		perror("send on response handshake");
+		pr_err(
+			"failed to send response handshake to %s: %s\n",
+			a->addrstr, strerror(ret)
+		);
 		return -EXIT_FAILURE;
 	}
 	pr_dbg(
@@ -1061,7 +1092,7 @@ static int response_handshake(struct pair_conn *pc)
 static int prepare_exchange(struct gwp_tctx *tctx, struct pair_conn *pc,
 			struct sockaddr_storage *dst)
 {
-	int ret, tsock = set_target(dst);
+	int ret, tsock = set_target(&pc->target, dst);
 	if (tsock < 0)
 		return -EXIT_FAILURE;
 
@@ -1078,7 +1109,7 @@ static int prepare_exchange(struct gwp_tctx *tctx, struct pair_conn *pc,
 		};
 		ret = timerfd_settime(pc->timerfd, 0, &it, NULL);
 		if (ret < 0) {
-			perror("timerfd_settime");
+			pr_err("failed to set timeout: %s\n", strerror(errno));
 			return -EXIT_FAILURE;
 		}
 	}
@@ -1086,10 +1117,8 @@ static int prepare_exchange(struct gwp_tctx *tctx, struct pair_conn *pc,
 	pc->target.sockfd = tsock;
 	ret = register_events(tsock, tctx->epfd, pc->target.epmask,
 				pc, EV_BIT_TARGET);
-	if (ret < 0) {
-		perror("epoll_ctl");
+	if (ret < 0)
 		return -EXIT_FAILURE;
-	}
 
 	return 0;
 }
@@ -1242,12 +1271,16 @@ static int handle_connect(struct pair_conn *pc, struct gwp_tctx *tctx,
 	ret = send(
 		a->sockfd,
 		((char *)(&reply_buf)) + (reply_len - a->len),
-		a->len, 0
+		a->len, MSG_NOSIGNAL
 	);
 	if (ret < 0) {
-		if (errno == EAGAIN)
+		ret = errno;
+		if (ret == EAGAIN)
 			return -EAGAIN;
-		perror("send on request connect");
+		pr_err(
+			"failed to send request connect reply to %s: %s\n",
+			a->addrstr, strerror(ret)
+		);
 		return -EXIT_FAILURE;
 	}
 	pr_dbg(
@@ -1306,7 +1339,10 @@ static int req_userpwd(struct pair_conn *pc, struct auth_creds *creds)
 		ret = errno;
 		if (ret == EAGAIN)
 			return -ret;
-		perror("recv on handle userpwd");
+		pr_err(
+			"failed to recv username/password from %s: %s\n",
+			c->addrstr, strerror(ret)
+		);
 		return -EXIT_FAILURE;
 	}
 	if (!ret) {
@@ -1392,12 +1428,15 @@ static int rep_userpwd(struct gwp_conn *c, char *reply_buf)
 
 	if (!c->len)
 		c->len = REPLY_LEN;
-	ret = send(c->sockfd, &reply_buf[REPLY_LEN - c->len], c->len, 0);
+	ret = send(c->sockfd, &reply_buf[REPLY_LEN - c->len], c->len, MSG_NOSIGNAL);
 	if (ret < 0) {
 		ret = errno;
 		if (ret == EAGAIN)
 			return -ret;
-		perror("send on handle userpwd");
+		pr_err(
+			"failed to send auth response to %s: %s\n",
+			c->addrstr, strerror(ret)
+		);
 		return -EXIT_FAILURE;
 	}
 	pr_dbg(
@@ -1464,9 +1503,13 @@ static int handle_request(struct pair_conn *pc, struct gwp_tctx *gwp)
 	if (!(pc->state & STATE_SEND)) {
 		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
 		if (ret < 0) {
-			if (errno == EAGAIN)
+			ret = errno;
+			if (ret == EAGAIN)
 				return -EAGAIN;
-			perror("recv on handle request");
+			pr_err(
+				"failed to recv request from %s: %s\n",
+				a->addrstr, strerror(ret)
+			);
 			return -EXIT_FAILURE;
 		}
 		if (!ret) {
@@ -1479,8 +1522,7 @@ static int handle_request(struct pair_conn *pc, struct gwp_tctx *gwp)
 		}
 		pr_dbg(
 			"%d bytes were received from sockfd %d.\n",
-			ret,
-			a->sockfd
+			ret, a->sockfd
 		);
 		VT_HEXDUMP(&a->buf[a->len], ret);
 
@@ -1631,7 +1673,10 @@ adjust_epoll:
 
 	return 0;
 exit_err:
-	pr_info("free the system resources for session on client TODO: print client addr\n");
+	pr_info(
+		"free the system resources for session on %s\n",
+		pc->client.addrstr
+	);
 	if (pc->idx == (tctx->p.nr_item - 1))
 		tctx->p.nr_item--;
 	if (pc->timerfd != -1)
@@ -1663,7 +1708,6 @@ static void process_ready_list(int ready_nr,
 		struct epoll_event *ev = &evs[i];
 
 		if (ev->data.fd == tctx->listen_sock) {
-			pr_info("serving new client: TODO: print client addr\n");
 			handle_incoming_client(tctx);
 		} else if (ev->data.fd == tctx->pctx->stopfd) {
 			break;
@@ -1752,7 +1796,7 @@ static int init_watcher_file(struct gwp_ctx *a)
 	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, a->stopfd, &ev);
 	if (ret < 0) {
 		pr_err(
-			"failed to add eventfd to epoll: %s",
+			"failed to add eventfd to epoll: %s\n",
 			strerror(errno)
 		);
 		goto exit_close_epfd;
@@ -1794,6 +1838,7 @@ static int start_server(struct gwp_tctx *tctx)
 			if (ret == EINTR)
 				continue;
 			pr_err("failed to wait on epoll: %s\n", strerror(ret));
+			ret = -EXIT_FAILURE;
 			goto exit;
 		}
 
@@ -1882,6 +1927,7 @@ static void *watcher_thread(void *args)
 				"failed to wait on epoll: %s\n",
 				strerror(ret)
 			);
+			ret = -EXIT_FAILURE;
 			goto exit_err;
 		}
 
