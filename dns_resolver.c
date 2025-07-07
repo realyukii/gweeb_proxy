@@ -375,7 +375,7 @@ static struct client *init_client(struct tctx *ctx)
 	}
 
 	c->clientfd = -1;
-	// c->req = NULL;
+	c->req = NULL;
 	c->is_valid_req = true;
 	c->state = SEND_REPLY;
 	c->epmask = EPOLLIN;
@@ -439,24 +439,18 @@ exit_err:
 	return;
 }
 
-static void cleanup_client(struct tctx *ctx, struct client *c)
+static int cleanup_client(struct tctx *ctx, struct client *c)
 {
-	// struct dns_req *r = c->req;
 	close(c->clientfd);
 	ctx->cp.clients[c->idx] = NULL;
 	ctx->cp.nr_client--;
-	if (put_c(c))
+	if (put_c(c)) {
 		pr_dbg("pointer to client data at %p was freed\n", c);
-	// if (!put_c(c)) {
-	// 	pr_dbg("pointer to client data at %p was freed\n", c);
-	// 	if (r) {
-	// 		close(r->evfd);
-	// 		free(r);
-	// 	}
-	// 	return -1;
-	// }
+	} else if (c->req) {
+		return -1;
+	}
 
-	// return 0;
+	return 0;
 }
 
 static int send_wrapper(int sockfd, const void *buf, size_t len)
@@ -701,13 +695,11 @@ static int fish_events(struct tctx *ctx)
 			c = data;
 			ret = talk_to_client(ctx, ev);
 			if (ret < 0) {
-				cleanup_client(ctx, c);
-				// ret = cleanup_client(ctx, c);
-				// if (ret < 0)
-				// 	return 0;
-				// else
-				// 	break;
-				break;
+				ret = cleanup_client(ctx, c);
+				if (ret < 0)
+					return 0;
+				else
+					break;
 			}
 			adjust_client_events(ctx, c);
 			break;
@@ -722,39 +714,16 @@ static int fish_events(struct tctx *ctx)
 			}
 			int len = strlen(dr->addrstr);
 
-			// this is a big problem, invalid read of size 4, c is obv already freed when refcnt is zero
-			if (!c->refcnt) {
-				close(dr->evfd);
-				pr_dbg("free dns req: %p\n", dr);
-				free(dr);
-				return 0;
-			}
-
 			if (len)
 				send_wrapper(c->clientfd, dr->addrstr, len);
 			else
 				send_wrapper(c->clientfd, fail_msg, sizeof(fail_msg));
 
-			// ret = read(dr->evfd, &evbuf, sizeof(evbuf));
-			// if (ret < 0) {
-			// 	pr_err("failed to read buffer from evfd\n");
-			// 	return -EXIT_FAILURE;
-			// }
-
-			// if (c->refcnt > 1) {
-			// 	int len = strlen(dr->addrstr);
-			// 	if (len)
-			// 		send_wrapper(c->clientfd, dr->addrstr, len);
-			// 	else
-			// 		send_wrapper(c->clientfd, fail_msg, sizeof(fail_msg));
-			// }
-
-			// if (put_c(c))
-			// 	pr_dbg("pointer to client data at %p was freed\n", c);
 			close(dr->evfd);
 			pr_dbg("free dns req: %p\n", dr);
 			free(dr);
-			break;
+			cleanup_client(ctx, c);
+			return 0;
 		case EV_STOP_PROG:
 			/*
 			* The system deliver SIGTERM or SIGINT,
