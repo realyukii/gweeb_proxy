@@ -150,14 +150,18 @@ struct commandline_args {
 	struct sockaddr_storage dst_addr_st;
 };
 
+struct auth_creds {
+	struct userpwd_list userpwd_l;
+	char *userpwd_buf;
+	char *prev_userpwd_buf;
+};
+
 /*
 * application-specific data
 */
 struct gwp_ctx {
 	struct commandline_args cargs;
-	struct userpwd_list userpwd_arr;
-	char *userpwd_buf;
-	char *prev_userpwd_buf;
+	struct auth_creds creds;
 	int authfd;
 	int eventfd;
 	pthread_rwlock_t authlock;
@@ -964,7 +968,7 @@ static int accept_greeting(struct pair_conn *pc, struct gwp_ctx *args)
 
 	if (args->cargs.auth_file) {
 		pthread_rwlock_rdlock(&args->authlock);
-		have_entry = args->userpwd_arr.nr_entry;
+		have_entry = args->creds.userpwd_l.nr_entry;
 		pthread_rwlock_unlock(&args->authlock);
 	}
 
@@ -1338,8 +1342,8 @@ static int req_userpwd(struct pair_conn *pc, struct gwp_ctx *args)
 
 	pc->is_authenticated = 0x1;
 	pthread_rwlock_rdlock(&args->authlock);
-	for (i = 0; i < args->userpwd_arr.nr_entry; i++) {
-		p = &args->userpwd_arr.arr[i];
+	for (i = 0; i < args->creds.userpwd_l.nr_entry; i++) {
+		p = &args->creds.userpwd_l.arr[i];
 
 		if (pkt->ulen != p->ulen || *plen != p->plen)
 			continue;
@@ -1820,6 +1824,7 @@ static void *inotify_thread(void *args)
 	int ret, ifd, epfd;
 	size_t counter = 0;
 	struct gwp_ctx *a;
+	struct auth_creds *ac;
 	struct userpwd_pair *pr;
 	struct epoll_event ev = {0};
 	struct inotify_event iev;
@@ -1877,24 +1882,25 @@ static void *inotify_thread(void *args)
 			++counter
 		);
 
-		if (a->userpwd_arr.nr_entry) {
-			a->userpwd_arr.prev_arr = a->userpwd_arr.arr;
-			a->prev_userpwd_buf = a->userpwd_buf;
+		ac = &a->creds;
+		if (ac->userpwd_l.nr_entry) {
+			ac->userpwd_l.prev_arr = ac->userpwd_l.arr;
+			ac->prev_userpwd_buf = ac->userpwd_buf;
 		}
 
 		pthread_rwlock_wrlock(&a->authlock);
 
 		ret = parse_auth_file(a->authfd,
-					&a->userpwd_arr, &a->userpwd_buf);
+					&ac->userpwd_l, &ac->userpwd_buf);
 		if (!ret) {
-			free(a->userpwd_arr.prev_arr);
-			free(a->prev_userpwd_buf);
+			free(ac->userpwd_l.prev_arr);
+			free(ac->prev_userpwd_buf);
 		}
 
 		pthread_rwlock_unlock(&a->authlock);
 
-		for (int i = 0; i < a->userpwd_arr.nr_entry; i++) {
-			pr = &a->userpwd_arr.arr[i];
+		for (int i = 0; i < ac->userpwd_l.nr_entry; i++) {
+			pr = &ac->userpwd_l.arr[i];
 			printf("%d. %s:%s\n", i, pr->username, pr->password);
 		}
 	}
@@ -1980,7 +1986,7 @@ static int init_auth_file(struct gwp_ctx *args)
 	}
 
 	args->authfd = afd;
-	ret = parse_auth_file(afd, &args->userpwd_arr, &args->userpwd_buf);
+	ret = parse_auth_file(afd, &args->creds.userpwd_l, &args->creds.userpwd_buf);
 	if (ret < 0)
 		goto exit_err;
 
@@ -2027,6 +2033,7 @@ int main(int argc, char *argv[])
 	void *retval;
 	pthread_t inotify_t, __attribute__((__unused__)) dnsresolv_t;
 	struct rlimit file_limits;
+	struct auth_creds *ac;
 	struct gwp_ctx args = {
 		.authfd = -1,
 		.eventfd = -1
@@ -2114,13 +2121,15 @@ exit_err:
 		pr_info("free threads: %p\n", threads);
 		free(threads);
 	}
-	if (args.userpwd_arr.arr) {
-		pr_info("free userpwd_arr: %p\n", args.userpwd_arr.arr);
-		free(args.userpwd_arr.arr);
+
+	ac = &args.creds;
+	if (ac->userpwd_l.arr) {
+		pr_info("free array of userpwd: %p\n", ac->userpwd_l.arr);
+		free(ac->userpwd_l.arr);
 	}
-	if (args.userpwd_buf) {
-		pr_info("free userpwd_buf: %p\n", args.userpwd_buf);
-		free(args.userpwd_buf);
+	if (ac->userpwd_buf) {
+		pr_info("free userpwd_buf: %p\n", ac->userpwd_buf);
+		free(ac->userpwd_buf);
 	}
 
 	pr_info(
