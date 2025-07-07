@@ -119,9 +119,9 @@ struct pair_conn {
 
 struct connection_pool {
 	/* number of active connection */
-	unsigned int nr_item;
+	unsigned nr_item;
 	/* max number of allocated connection */
-	unsigned int max_item;
+	unsigned max_item;
 	/* array of pointer to established session */
 	struct pair_conn **arr;
 };
@@ -137,6 +137,7 @@ struct gwp_tctx {
 	/* array of active connection */
 	struct connection_pool p;
 	struct gwp_ctx *pctx;
+	pthread_t thandle;
 };
 
 struct commandline_args {
@@ -167,6 +168,7 @@ struct auth_creds {
 struct gwp_ctx {
 	struct commandline_args cargs;
 	struct auth_creds creds;
+	struct gwp_tctx *tctx_pool;
 	int stopfd;
 	volatile bool stop;
 };
@@ -222,7 +224,6 @@ extern char *optarg;
 
 /* only accessed by the signal handler */
 static struct gwp_ctx *g_args;
-static pthread_t *threads;
 static const char opts[] = "hw:b:t:T:f:sn:";
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
@@ -266,6 +267,7 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *a)
 	}
 
 	a->socks5_mode = false;
+	a->auth_file = NULL;
 	memset(&a->src_addr_st, 0, sizeof(a->src_addr_st));
 
 	auth_file_opt = wait_opt = server_thread_opt = bind_opt = target_opt =
@@ -1672,7 +1674,7 @@ static void process_ready_list(int ready_nr,
 * @param  client_nr number of client for pre-allocated memory.
 * @return zero on success, or a negative integer on failure.
 */
-static int init_pool(struct connection_pool *p, int client_nr)
+static int init_conn_pool(struct connection_pool *p, int client_nr)
 {
 	p->arr = calloc(client_nr, sizeof(p->arr));
 	if (!p->arr)
@@ -1773,85 +1775,32 @@ exit_close_filefd:
 * @param pctx Pointer to application data.
 * @return zero on success, or a negative integer on failure.
 */
-static int start_server(struct gwp_ctx *pctx)
+static int start_server(struct gwp_tctx *tctx)
 {
-	int ret, ready_nr, flg;
-	unsigned int i;
-	socklen_t size_addr;
-	struct epoll_event ev;
-	struct gwp_tctx tctx;
-	struct sockaddr_storage *s = &pctx->cargs.src_addr_st;
+	int ret, ready_nr;
+	unsigned i;
 	struct epoll_event evs[NR_EVENTS];
-	static const int val = 1;
 
-	tctx.pctx = pctx;
-
-	size_addr = s->ss_family == AF_INET ? 
-		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-
-	flg = SOCK_STREAM | SOCK_NONBLOCK;
-	tctx.listen_sock = socket(s->ss_family, flg, 0);
-	if (tctx.listen_sock < 0) {
-		perror("socket");
-		return -EXIT_FAILURE;
-	}
-	tctx.epfd = -1;
-
-	setsockopt(tctx.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
-	setsockopt(tctx.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
-
-	ret = bind(tctx.listen_sock, (struct sockaddr *)s, size_addr);
-	if (ret < 0) {
-		perror("bind");
-		goto exit;
-	}
-
-	ret = listen(tctx.listen_sock, SOMAXCONN);
-	if (ret < 0) {
-		perror("listen");
-		goto exit;
-	}
-
-	tctx.epfd = epoll_create(1);
-	ev.events = EPOLLIN;
-	ev.data.fd = tctx.listen_sock;
-	ret = epoll_ctl(tctx.epfd, EPOLL_CTL_ADD, tctx.listen_sock, &ev);
-	if (ret < 0) {
-		perror("epoll_ctl");
-		goto exit;
-	}
-
-	ev.events = EPOLLIN;
-	ev.data.fd = pctx->stopfd;
-	ret = epoll_ctl(tctx.epfd, EPOLL_CTL_ADD, pctx->stopfd, &ev);
-	if (ret < 0) {
-		perror("epoll_ctl");
-		goto exit;
-	}
-
-	ret = init_pool(&tctx.p, pctx->cargs.client_nr);
-	if (ret)
-		goto exit;
-
-	while (!pctx->stop) {
-		ready_nr = epoll_wait(tctx.epfd, evs, NR_EVENTS, -1);
+	while (!tctx->pctx->stop) {
+		ready_nr = epoll_wait(tctx->epfd, evs, NR_EVENTS, -1);
 		if (ready_nr < 0) {
-			if (errno == EINTR)
+			ret = errno;
+			if (ret == EINTR)
 				continue;
-			perror("epoll_wait");
+			pr_err("failed to wait on epoll: %s\n", strerror(ret));
 			goto exit;
 		}
 
-		process_ready_list(ready_nr, evs, &tctx);
+		process_ready_list(ready_nr, evs, tctx);
 	}
 
 	ret = 0;
 exit:
-	pr_info("closing tcp file descriptor: %d\n", tctx.listen_sock);
-	close(tctx.listen_sock);
+	pr_info("closing tcp file descriptor: %d\n", tctx->listen_sock);
+	close(tctx->listen_sock);
 
-	for (i = 0; i < tctx.p.nr_item; i++) {
-		struct pair_conn *pc = tctx.p.arr[i];
+	for (i = 0; i < tctx->p.nr_item; i++) {
+		struct pair_conn *pc = tctx->p.arr[i];
 		if (pc) {
 			pr_info("free client buffer: %p\n", pc->client.buf);
 			free(pc->client.buf);
@@ -1875,25 +1824,24 @@ exit:
 		}
 	}
 
-	pr_info("free the connection pool: %p\n", tctx.p.arr);
-	free(tctx.p.arr);
+	pr_info("free the connection pool: %p\n", tctx->p.arr);
+	free(tctx->p.arr);
 
-	if (tctx.epfd != -1) {
-		pr_info("closing epoll file descriptor: %d\n", tctx.epfd);
-		close(tctx.epfd);
-	}
+	pr_info("closing epoll file descriptor: %d\n", tctx->epfd);
+	close(tctx->epfd);
+
 	return ret;
 }
 
 /*
 * TCP server thread
 *
-* @param pctx Pointer to application data.
+* @param tctx Pointer to thread-specific data.
 * @return negative integer on failure.
 */
-static void *server_thread(void *pctx)
+static void *server_thread(void *tctx)
 {
-	int ret = start_server(pctx);
+	int ret = start_server(tctx);
 
 	return (void *)(intptr_t)ret;
 }
@@ -2055,7 +2003,6 @@ static void signal_handler(int c)
 
 static int init_pctx(struct gwp_ctx *ctx)
 {
-	ctx->cargs.auth_file = NULL;
 	ctx->stop = false;
 	ctx->stopfd = eventfd(0, EFD_NONBLOCK);
 	if (ctx->stopfd < 0) {
@@ -2067,6 +2014,137 @@ static int init_pctx(struct gwp_ctx *ctx)
 	}
 
 	return 0;
+}
+
+static int init_tctx(struct gwp_ctx *pctx, struct gwp_tctx *tctx)
+{
+	int ret, flg;
+	socklen_t size_addr;
+	struct epoll_event ev;
+	struct sockaddr_storage *s = &pctx->cargs.src_addr_st;
+	static const int val = 1;
+
+	tctx->pctx = pctx;
+
+	size_addr = s->ss_family == AF_INET ? 
+		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+
+	flg = SOCK_STREAM | SOCK_NONBLOCK;
+	tctx->listen_sock = socket(s->ss_family, flg, 0);
+	if (tctx->listen_sock < 0) {
+		pr_err(
+			"failed to create TCP socket: %s\n",
+			strerror(errno)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	setsockopt(tctx->listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+	setsockopt(tctx->listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
+
+	ret = bind(tctx->listen_sock, (struct sockaddr *)s, size_addr);
+	if (ret < 0) {
+		pr_err("failed to bind socket: %s\n", strerror(errno));
+		goto exit_close_socket;
+	}
+
+	ret = listen(tctx->listen_sock, SOMAXCONN);
+	if (ret < 0) {
+		pr_err(
+			"failed to prepare to accept connections: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_socket;
+	}
+
+	tctx->epfd = epoll_create(1);
+	if (tctx->epfd < 0) {
+		pr_err(
+			"failed to create epoll file descriptor: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_socket;
+	}
+
+	ev.events = EPOLLIN;
+	ev.data.fd = tctx->listen_sock;
+	ret = epoll_ctl(tctx->epfd, EPOLL_CTL_ADD, tctx->listen_sock, &ev);
+	if (ret < 0) {
+		pr_err(
+			"failed to register event for tcp socket: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_epfd;
+	}
+
+	ev.events = EPOLLIN;
+	ev.data.fd = pctx->stopfd;
+	ret = epoll_ctl(tctx->epfd, EPOLL_CTL_ADD, pctx->stopfd, &ev);
+	if (ret < 0) {
+		pr_err(
+			"failed to register event for eventfd: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_epfd;
+	}
+
+	ret = init_conn_pool(&tctx->p, pctx->cargs.client_nr);
+	if (ret)
+		goto exit_close_epfd;
+
+	return 0;
+exit_close_epfd:
+	close(tctx->epfd);
+exit_close_socket:
+	close(tctx->listen_sock);
+	return -EXIT_FAILURE;
+}
+
+static int setfdlimit(void)
+{
+	struct rlimit file_limits;
+
+	getrlimit(RLIMIT_NOFILE, &file_limits);
+	file_limits.rlim_cur = file_limits.rlim_max;
+	if (setrlimit(RLIMIT_NOFILE, &file_limits) < 0) {
+		pr_err(
+			"failed to set file descriptor limit: %s\n",
+			strerror(errno)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	return 0;
+}
+
+static int spawn_server_threads(struct gwp_ctx *ctx)
+{
+	int ret;
+	size_t i;
+	struct gwp_tctx *t;
+
+	ctx->tctx_pool = malloc(ctx->cargs.server_thread_nr * sizeof(*ctx->tctx_pool));
+	if (!ctx->tctx_pool) {
+		pr_err("out of memory, can't allocate memory for threads\n");
+		return -EXIT_FAILURE;
+	}
+
+	// pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
+	for (i = 0; i < ctx->cargs.server_thread_nr; i++) {
+		t = &ctx->tctx_pool[i];
+		ret = init_tctx(ctx, t);
+		if (ret < 0)
+			return -EXIT_FAILURE;
+	}
+
+	for (i = 0; i < ctx->cargs.server_thread_nr; i++) {
+		t = &ctx->tctx_pool[i];
+		if (i == 0)
+			continue;
+		pthread_create(&t->thandle, NULL, server_thread, t);
+	}
+
+	return start_server(ctx->tctx_pool);
 }
 
 int main(int argc, char *argv[])
@@ -2101,47 +2179,21 @@ int main(int argc, char *argv[])
 		pthread_create(&watcher_t, NULL, watcher_thread, &ctx);
 	}
 
-	getrlimit(RLIMIT_NOFILE, &file_limits);
-	file_limits.rlim_cur = file_limits.rlim_max;
-	ret = setrlimit(RLIMIT_NOFILE, &file_limits);
-	if (ret < 0) {
-		pr_err(
-			"failed to set file descriptor limit: %s\n",
-			strerror(errno)
-		);
+	ret = setfdlimit();
+	if (ret < 0)
 		goto exit_cleanup_auth_creds;
-	}
 
-	threads = calloc(ctx.cargs.server_thread_nr, sizeof(pthread_t));
-	if (!threads) {
-		pr_err("out of memory, can't allocate memory for threads\n");
-		ret = -EXIT_FAILURE;
-		goto exit_cleanup_auth_creds;
-	}
-
-	// pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
-	for (i = 0; i < ctx.cargs.server_thread_nr; i++) {
-		ret = pthread_create(&threads[i], NULL, server_thread, &ctx);
-		if (ret) {
-			errno = ret;
-			pr_err(
-				"failed to spawn thread: %s",
-				strerror(errno)
-			);
-			ret = -EXIT_FAILURE;
-			goto exit_free_pool;
-		}
-	}
-
-	start_server(&ctx);
+	spawn_server_threads(&ctx);
 
 	if (ctx.cargs.auth_file)
-		pthread_join(inotify_t, &retval);
+		pthread_join(watcher_t, &retval);
 	// pthread_join(dnsresolv_t, &retval);
 
 	for (i = 0; i < ctx.cargs.server_thread_nr; i++) {
-		pthread_kill(threads[i], SIGINT);
-		ret = pthread_join(threads[i], &retval);
+		if (i == 0)
+			continue;
+
+		ret = pthread_join(ctx.tctx_pool[i].thandle, &retval);
 		if (ret) {
 			errno = ret;
 			pr_err("failed to join the thread: %s\n", strerror(ret));
@@ -2158,8 +2210,8 @@ int main(int argc, char *argv[])
 
 	ret = 0;
 exit_free_pool:
-	pr_info("free the threads pool: %p\n", threads);
-	free(threads);
+	pr_info("free the threads pool: %p\n", ctx.tctx_pool);
+	free(ctx.tctx_pool);
 exit_cleanup_auth_creds:
 	if (ctx.cargs.auth_file) {
 		ac = &ctx.creds;
