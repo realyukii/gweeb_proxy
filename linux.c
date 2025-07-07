@@ -68,8 +68,6 @@ void __pr_log(unsigned lvl, const char *fmt, ...)
 
 	va_end(args);
 }
-#else 
-#define pr_log(LVL, FMT, ...)
 #endif
 
 int parse_auth_file(int filefd, struct userpwd_list *l, char **buf)
