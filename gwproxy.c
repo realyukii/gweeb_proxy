@@ -136,6 +136,7 @@ struct gwp_tctx {
 	int epfd;
 	/* array of active connection */
 	struct connection_pool p;
+	struct gwp_ctx *pctx;
 };
 
 struct commandline_args {
@@ -151,6 +152,8 @@ struct commandline_args {
 };
 
 struct auth_creds {
+	int authfd;
+	pthread_rwlock_t authlock;
 	struct userpwd_list userpwd_l;
 	char *userpwd_buf;
 	char *prev_userpwd_buf;
@@ -162,9 +165,7 @@ struct auth_creds {
 struct gwp_ctx {
 	struct commandline_args cargs;
 	struct auth_creds creds;
-	int authfd;
-	int eventfd;
-	pthread_rwlock_t authlock;
+	int stopfd;
 	volatile bool stop;
 };
 
@@ -246,10 +247,10 @@ static const char usage[] =
 *
 * @param argc total argument passed.
 * @param argv Pointer to an array of string.
-* @param args Pointer to application configuration to initialize.
+* @param a Pointer to cmdline arguments to initialize.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_cmdline(int argc, char *argv[], struct gwp_ctx *args)
+static int handle_cmdline(int argc, char *argv[], struct commandline_args *a)
 {
 	char c,  *bind_opt, *target_opt, *server_thread_opt, *client_nr_opt,
 	*wait_opt, *auth_file_opt;
@@ -267,7 +268,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_ctx *args)
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 's':
-			args->cargs.socks5_mode = true;
+			a->socks5_mode = true;
 			break;
 		case 'f':
 			auth_file_opt = optarg;
@@ -296,7 +297,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_ctx *args)
 		}
 	}
 
-	if (!target_opt && !args->cargs.socks5_mode) {
+	if (!target_opt && !a->socks5_mode) {
 		pr_err("-t option is required\n");
 		return -EINVAL;
 	}
@@ -307,7 +308,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_ctx *args)
 	}
 
 	if (auth_file_opt)
-		args->cargs.auth_file = auth_file_opt;
+		a->auth_file = auth_file_opt;
 
 	if (client_nr_opt) {
 		client_nr = atoi(client_nr_opt);
@@ -316,7 +317,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_ctx *args)
 	} else
 		client_nr = DEFAULT_CLIENT;
 
-	args->cargs.client_nr = client_nr;
+	a->client_nr = client_nr;
 
 	if (server_thread_opt) {
 		server_thread_nr = atoi(server_thread_opt);
@@ -325,7 +326,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_ctx *args)
 	} else
 		server_thread_nr = DEFAULT_THREAD_NR;
 
-	args->cargs.server_thread_nr = server_thread_nr;
+	a->server_thread_nr = server_thread_nr;
 
 	if (wait_opt) {
 		timeout = atoi(wait_opt);
@@ -334,18 +335,18 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_ctx *args)
 	} else
 		timeout = DEFAULT_TIMEOUT;
 
-	args->cargs.timeout = timeout;
+	a->timeout = timeout;
 
-	ret = init_addr(bind_opt, &args->cargs.src_addr_st);
+	ret = init_addr(bind_opt, &a->src_addr_st);
 	if (ret < 0) {
 		pr_err("invalid format for %s\n", bind_opt);
 		return -EINVAL;
 	}
 
-	if (args->cargs.socks5_mode)
+	if (a->socks5_mode)
 		return 0;
 
-	ret = init_addr(target_opt, &args->cargs.dst_addr_st);
+	ret = init_addr(target_opt, &a->dst_addr_st);
 	if (ret < 0) {
 		pr_err("invalid format for %s\n", target_opt);
 		return -EINVAL;
@@ -505,15 +506,15 @@ static int register_events(int fd, int epfd, uint32_t epmask,
 * @param gwp Pointer to the gwp_tctx struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
-static void handle_incoming_client(struct gwp_tctx *gwp, struct gwp_ctx *args)
+static void handle_incoming_client(struct gwp_tctx *tctx)
 {
 	int client_fd, ret;
-	struct pair_conn *pc = init_pair(gwp);
+	struct pair_conn *pc = init_pair(tctx);
 	if (!pc)
 		return;
 
 	client_fd = -1;
-	if (args->cargs.timeout) {
+	if (tctx->pctx->cargs.timeout) {
 		int tmfd, flg;
 
 		flg = TFD_NONBLOCK;
@@ -525,7 +526,7 @@ static void handle_incoming_client(struct gwp_tctx *gwp, struct gwp_ctx *args)
 		pc->timerfd = tmfd;
 
 		ret = register_events(
-			tmfd, gwp->epfd,
+			tmfd, tctx->epfd,
 			EPOLLIN, pc, EV_BIT_TIMER
 		);
 		if (ret < 0) {
@@ -534,7 +535,7 @@ static void handle_incoming_client(struct gwp_tctx *gwp, struct gwp_ctx *args)
 		}
 	}
 
-	client_fd = accept4(gwp->listen_sock, NULL, NULL, SOCK_NONBLOCK);
+	client_fd = accept4(tctx->listen_sock, NULL, NULL, SOCK_NONBLOCK);
 	if (client_fd < 0) {
 		ret = errno;
 		perror("accept");
@@ -544,7 +545,7 @@ static void handle_incoming_client(struct gwp_tctx *gwp, struct gwp_ctx *args)
 	set_sockattr(client_fd);
 	pc->client.sockfd = client_fd;
 	ret = register_events(
-		client_fd, gwp->epfd,
+		client_fd, tctx->epfd,
 		pc->client.epmask, pc, EV_BIT_CLIENT
 	);
 	if (ret < 0) {
@@ -552,7 +553,7 @@ static void handle_incoming_client(struct gwp_tctx *gwp, struct gwp_ctx *args)
 		goto exit_err;
 	}
 
-	if (args->cargs.socks5_mode)
+	if (tctx->pctx->cargs.socks5_mode)
 		pc->state = STATE_GREETING;
 	else
 		pc->state = NO_SOCKS5;
@@ -918,9 +919,10 @@ static int exchange_data(struct epoll_event *ev,
 * Handshake with the client.
 *
 * @param pc Pointer to pair_conn struct of current session.
+* @param pctx Pointer to application data.
 * @return zero on success, and a negative integer on failure.
 */
-static int accept_greeting(struct pair_conn *pc, struct gwp_ctx *args)
+static int accept_greeting(struct pair_conn *pc, struct gwp_ctx *pctx)
 {
 	struct gwp_conn *a = &pc->client;
 	struct socks5_greeting *g = (void *)a->buf;
@@ -966,10 +968,10 @@ static int accept_greeting(struct pair_conn *pc, struct gwp_ctx *args)
 	if (a->len - 2 < g->nauth)
 		return -EAGAIN;
 
-	if (args->cargs.auth_file) {
-		pthread_rwlock_rdlock(&args->authlock);
-		have_entry = args->creds.userpwd_l.nr_entry;
-		pthread_rwlock_unlock(&args->authlock);
+	if (pctx->cargs.auth_file) {
+		pthread_rwlock_rdlock(&pctx->creds.authlock);
+		have_entry = pctx->creds.userpwd_l.nr_entry;
+		pthread_rwlock_unlock(&pctx->creds.authlock);
 	}
 
 	for (i = 0; i < g->nauth; i++) {
@@ -1041,23 +1043,22 @@ static int response_handshake(struct pair_conn *pc)
 * connecting to either the configured target supplied from cmdline args
 * or the specified target by client in socks5 mode.
 *
-* @param gwp Pointer to the gwp_tctx struct (thread data).
+* @param tctx Pointer to the gwp_tctx struct (thread data).
 * @param pc Pointer that need to be saved 
 * @param dst the address structure to which the client connects.
-* @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int prepare_exchange(struct gwp_tctx *gwp, struct pair_conn *pc,
-			struct sockaddr_storage *dst, struct gwp_ctx *args)
+static int prepare_exchange(struct gwp_tctx *tctx, struct pair_conn *pc,
+			struct sockaddr_storage *dst)
 {
 	int ret, tsock = set_target(dst);
 	if (tsock < 0)
 		return -EXIT_FAILURE;
 
-	if (args->cargs.timeout) {
+	if (tctx->pctx->cargs.timeout) {
 		const struct itimerspec it = {
 			.it_value = {
-				.tv_sec = args->cargs.timeout,
+				.tv_sec = tctx->pctx->cargs.timeout,
 				.tv_nsec = 0
 			},
 			.it_interval = {
@@ -1073,7 +1074,7 @@ static int prepare_exchange(struct gwp_tctx *gwp, struct pair_conn *pc,
 	}
 
 	pc->target.sockfd = tsock;
-	ret = register_events(tsock, gwp->epfd, pc->target.epmask,
+	ret = register_events(tsock, tctx->epfd, pc->target.epmask,
 				pc, EV_BIT_TARGET);
 	if (ret < 0) {
 		perror("epoll_ctl");
@@ -1206,13 +1207,12 @@ static int parse_request(struct gwp_conn *a, struct sockaddr_storage *d)
 * Handle client's CONNECT command.
 * 
 * @param pc Pointer to pair_conn struct of current session.
-* @param gwp Pointer to the gwp_tctx struct (thread data).
-* @param args Pointer to application configuration.
+* @param tctx Pointer to the gwp_tctx struct (thread data).
 * @param d Pointer to initialized target address.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_connect(struct pair_conn *pc, struct gwp_tctx *gwp,
-			struct gwp_ctx *args, struct sockaddr_storage *d)
+static int handle_connect(struct pair_conn *pc, struct gwp_tctx *tctx,
+				struct sockaddr_storage *d)
 {
 	/* filled with target address to which the client connect. */
 	struct gwp_conn *a = &pc->client;
@@ -1221,7 +1221,7 @@ static int handle_connect(struct pair_conn *pc, struct gwp_tctx *gwp,
 	size_t reply_len;
 
 	if (pc->target.sockfd == -1) {
-		ret = prepare_exchange(gwp, pc, d, args);
+		ret = prepare_exchange(tctx, pc, d);
 		if (ret < 0)
 			return -EXIT_FAILURE;
 	}
@@ -1277,10 +1277,10 @@ static int handle_udp(void)
 * Read user/password auth data.
 *
 * @param pc Pointer to pair_conn struct of current session.
-* @param args Pointer to application configuration.
+* @param creds Pointer to username/password credentials.
 * @return zero on success, or a negative integer on failure.
 */
-static int req_userpwd(struct pair_conn *pc, struct gwp_ctx *args)
+static int req_userpwd(struct pair_conn *pc, struct auth_creds *creds)
 {
 	struct gwp_conn *c = &pc->client;
 	struct socks5_userpwd *pkt = (void *)c->buf;
@@ -1341,9 +1341,9 @@ static int req_userpwd(struct pair_conn *pc, struct gwp_ctx *args)
 	password = (void *)(plen + 1);
 
 	pc->is_authenticated = 0x1;
-	pthread_rwlock_rdlock(&args->authlock);
-	for (i = 0; i < args->creds.userpwd_l.nr_entry; i++) {
-		p = &args->creds.userpwd_l.arr[i];
+	pthread_rwlock_rdlock(&creds->authlock);
+	for (i = 0; i < creds->userpwd_l.nr_entry; i++) {
+		p = &creds->userpwd_l.arr[i];
 
 		if (pkt->ulen != p->ulen || *plen != p->plen)
 			continue;
@@ -1359,7 +1359,7 @@ static int req_userpwd(struct pair_conn *pc, struct gwp_ctx *args)
 		pc->is_authenticated = 0x0;
 		break;
 	}
-	pthread_rwlock_unlock(&args->authlock);
+	pthread_rwlock_unlock(&creds->authlock);
 
 	pc->state |= STATE_SEND;
 
@@ -1404,16 +1404,16 @@ static int rep_userpwd(struct gwp_conn *c, char *reply_buf)
 * Handle sub-negotiation with username/password auth method.
 *
 * @param pc Pointer to pair_conn struct of current session.
-* @param args Pointer to application configuration.
+* @param pctx Pointer to application data.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_userpwd(struct pair_conn *pc, struct gwp_ctx *args)
+static int handle_userpwd(struct pair_conn *pc, struct gwp_ctx *pctx)
 {
 	char reply_buf[2];
 	int ret;
 
 	if (!(pc->state & STATE_SEND)) {
-		ret = req_userpwd(pc, args);
+		ret = req_userpwd(pc, &pctx->creds);
 		if (ret < 0)
 			return ret;
 	}
@@ -1437,11 +1437,9 @@ static int handle_userpwd(struct pair_conn *pc, struct gwp_ctx *args)
 *
 * @param pc Pointer to pair_conn struct of current session.
 * @param gwp Pointer to the gwp_tctx struct (thread data).
-* @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_request(struct pair_conn *pc,
-			struct gwp_tctx *gwp, struct gwp_ctx *args)
+static int handle_request(struct pair_conn *pc, struct gwp_tctx *gwp)
 {
 	/* filled with target address to which the client connect. */
 	struct sockaddr_storage d;
@@ -1500,7 +1498,7 @@ static int handle_request(struct pair_conn *pc,
 			return -EXIT_FAILURE;
 		}
 
-		ret = handle_connect(pc, gwp, args, &d);
+		ret = handle_connect(pc, gwp, &d);
 		if (ret < 0)
 			return ret;
 	}
@@ -1534,12 +1532,10 @@ static bool is_sock_connected(int sockfd)
 *   * communication on socks5 protocol.
 *
 * @param ev Pointer to epoll event structure.
-* @param gwp Pointer to the gwp_tctx struct (thread data).
-* @param args Pointer to application configuration.
+* @param tctx Pointer to the gwp_tctx struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
-static int process_tcp(struct epoll_event *ev, struct gwp_tctx *gwp,
-			struct gwp_ctx *args)
+static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 {
 	int ret;
 	struct pair_conn *pc;
@@ -1559,14 +1555,14 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *gwp,
 	}
 
 	if (pc->state == NO_SOCKS5) {
-		ret = prepare_exchange(gwp, pc, &args->cargs.dst_addr_st, args);
+		ret = prepare_exchange(tctx, pc, &tctx->pctx->cargs.dst_addr_st);
 		if (ret < 0)
 			goto exit_err;
 
 		pc->state = STATE_EXCHANGE;
 	} else if (pc->state & STATE_GREETING) {
 		if (!(pc->state & STATE_SEND)) {
-			ret = accept_greeting(pc, args);
+			ret = accept_greeting(pc, tctx->pctx);
 			if (ret < 0) {
 				if (ret == -EAGAIN)
 					goto adjust_epoll;
@@ -1590,7 +1586,7 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *gwp,
 	}
 
 	if (pc->state & STATE_AUTH) {
-		ret = handle_userpwd(pc, args);
+		ret = handle_userpwd(pc, tctx->pctx);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				goto adjust_epoll;
@@ -1601,7 +1597,7 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *gwp,
 	}
 
 	if (pc->state & STATE_REQUEST) {
-		ret = handle_request(pc, gwp, args);
+		ret = handle_request(pc, tctx);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				goto adjust_epoll;
@@ -1618,13 +1614,13 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *gwp,
 	}
 
 adjust_epoll:
-	adjust_events(gwp->epfd, pc);
+	adjust_events(tctx->epfd, pc);
 
 	return 0;
 exit_err:
 	pr_info("free the system resources for session on client TODO: print client addr\n");
-	if (pc->idx == (gwp->p.nr_item - 1))
-		gwp->p.nr_item--;
+	if (pc->idx == (tctx->p.nr_item - 1))
+		tctx->p.nr_item--;
 	if (pc->timerfd != -1)
 		close(pc->timerfd);
 	if (a->sockfd != -1)
@@ -1633,7 +1629,7 @@ exit_err:
 		close(b->sockfd);
 	free(pc->client.buf);
 	free(pc->target.buf);
-	gwp->p.arr[pc->idx] = NULL;
+	tctx->p.arr[pc->idx] = NULL;
 	free(pc);
 	return -EXIT_FAILURE;
 }
@@ -1642,25 +1638,24 @@ exit_err:
 * Process epoll event that are 'ready'.
 *
 * @param ready_nr Number of ready events.
-* @param args Pointer to application configuration.
 * @param evs Pointer to epoll event struct.
-* @param gwp Pointer to the gwp_tctx struct (thread data).
+* @param tctx Pointer to the gwp_tctx struct (thread data).
 */
-static void process_ready_list(int ready_nr, struct gwp_ctx *args,
-				struct epoll_event *evs, struct gwp_tctx *gwp)
+static void process_ready_list(int ready_nr,
+				struct epoll_event *evs, struct gwp_tctx *tctx)
 {
 	int i;
 	pr_info("number of ready events %d\n", ready_nr);
 	for (i = 0; i < ready_nr; i++) {
 		struct epoll_event *ev = &evs[i];
 
-		if (ev->data.fd == gwp->listen_sock) {
+		if (ev->data.fd == tctx->listen_sock) {
 			pr_info("serving new client: TODO: print client addr\n");
-			handle_incoming_client(gwp, args);
-		} else if (ev->data.fd == args->eventfd) {
+			handle_incoming_client(tctx);
+		} else if (ev->data.fd == tctx->pctx->stopfd) {
 			break;
 		} else
-			if (process_tcp(ev, gwp, args) < 0)
+			if (process_tcp(ev, tctx) < 0)
 				return;
 	}
 }
@@ -1687,17 +1682,17 @@ static int init_pool(struct connection_pool *p, int client_nr)
 /*
 * Start the TCP proxy server.
 * 
-* @param args Pointer to application configuration.
+* @param pctx Pointer to application data.
 * @return zero on success, or a negative integer on failure.
 */
-static int start_server(struct gwp_ctx *args)
+static int start_server(struct gwp_ctx *pctx)
 {
 	int ret, ready_nr, flg;
 	unsigned int i;
 	socklen_t size_addr;
 	struct epoll_event ev;
-	struct gwp_tctx gwp;
-	struct sockaddr_storage *s = &args->cargs.src_addr_st;
+	struct gwp_tctx tctx;
+	struct sockaddr_storage *s = &pctx->cargs.src_addr_st;
 	struct epoll_event evs[NR_EVENTS];
 	static const int val = 1;
 
@@ -1705,51 +1700,51 @@ static int start_server(struct gwp_ctx *args)
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 
 	flg = SOCK_STREAM | SOCK_NONBLOCK;
-	gwp.listen_sock = socket(s->ss_family, flg, 0);
-	if (gwp.listen_sock < 0) {
+	tctx.listen_sock = socket(s->ss_family, flg, 0);
+	if (tctx.listen_sock < 0) {
 		perror("socket");
 		return -EXIT_FAILURE;
 	}
-	gwp.epfd = -1;
+	tctx.epfd = -1;
 
-	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
-	setsockopt(gwp.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
+	setsockopt(tctx.listen_sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+	setsockopt(tctx.listen_sock, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
 
-	ret = bind(gwp.listen_sock, (struct sockaddr *)s, size_addr);
+	ret = bind(tctx.listen_sock, (struct sockaddr *)s, size_addr);
 	if (ret < 0) {
 		perror("bind");
 		goto exit;
 	}
 
-	ret = listen(gwp.listen_sock, SOMAXCONN);
+	ret = listen(tctx.listen_sock, SOMAXCONN);
 	if (ret < 0) {
 		perror("listen");
 		goto exit;
 	}
 
-	gwp.epfd = epoll_create(1);
+	tctx.epfd = epoll_create(1);
 	ev.events = EPOLLIN;
-	ev.data.fd = gwp.listen_sock;
-	ret = epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, gwp.listen_sock, &ev);
+	ev.data.fd = tctx.listen_sock;
+	ret = epoll_ctl(tctx.epfd, EPOLL_CTL_ADD, tctx.listen_sock, &ev);
 	if (ret < 0) {
 		perror("epoll_ctl");
 		goto exit;
 	}
 
 	ev.events = EPOLLIN;
-	ev.data.fd = args->eventfd;
-	ret = epoll_ctl(gwp.epfd, EPOLL_CTL_ADD, args->eventfd, &ev);
+	ev.data.fd = pctx->stopfd;
+	ret = epoll_ctl(tctx.epfd, EPOLL_CTL_ADD, pctx->stopfd, &ev);
 	if (ret < 0) {
 		perror("epoll_ctl");
 		goto exit;
 	}
 
-	ret = init_pool(&gwp.p, args->cargs.client_nr);
+	ret = init_pool(&tctx.p, pctx->cargs.client_nr);
 	if (ret)
 		goto exit;
 
-	while (!args->stop) {
-		ready_nr = epoll_wait(gwp.epfd, evs, NR_EVENTS, -1);
+	while (!pctx->stop) {
+		ready_nr = epoll_wait(tctx.epfd, evs, NR_EVENTS, -1);
 		if (ready_nr < 0) {
 			if (errno == EINTR)
 				continue;
@@ -1757,16 +1752,16 @@ static int start_server(struct gwp_ctx *args)
 			goto exit;
 		}
 
-		process_ready_list(ready_nr, args, evs, &gwp);
+		process_ready_list(ready_nr, evs, &tctx);
 	}
 
 	ret = 0;
 exit:
-	pr_info("closing tcp file descriptor: %d\n", gwp.listen_sock);
-	close(gwp.listen_sock);
+	pr_info("closing tcp file descriptor: %d\n", tctx.listen_sock);
+	close(tctx.listen_sock);
 
-	for (i = 0; i < gwp.p.nr_item; i++) {
-		struct pair_conn *pc = gwp.p.arr[i];
+	for (i = 0; i < tctx.p.nr_item; i++) {
+		struct pair_conn *pc = tctx.p.arr[i];
 		if (pc) {
 			pr_info("free client buffer: %p\n", pc->client.buf);
 			free(pc->client.buf);
@@ -1790,12 +1785,12 @@ exit:
 		}
 	}
 
-	pr_info("free the connection pool: %p\n", gwp.p.arr);
-	free(gwp.p.arr);
+	pr_info("free the connection pool: %p\n", tctx.p.arr);
+	free(tctx.p.arr);
 
-	if (gwp.epfd != -1) {
-		pr_info("closing epoll file descriptor: %d\n", gwp.epfd);
-		close(gwp.epfd);
+	if (tctx.epfd != -1) {
+		pr_info("closing epoll file descriptor: %d\n", tctx.epfd);
+		close(tctx.epfd);
 	}
 	return ret;
 }
@@ -1803,12 +1798,12 @@ exit:
 /*
 * Thread callback
 *
-* @param args Pointer to application configuration.
+* @param pctx Pointer to application data.
 * @return negative integer on failure.
 */
-static void *thread_cb(void *args)
+static void *thread_cb(void *pctx)
 {
-	int ret = start_server(args);
+	int ret = start_server(pctx);
 
 	return (void *)(intptr_t)ret;
 }
@@ -1816,7 +1811,7 @@ static void *thread_cb(void *args)
 /*
 * Inotify thread.
 *
-* @param args Pointer to application configuration.
+* @param args Pointer to application data.
 * @return negative integer on failure.
 */
 static void *inotify_thread(void *args)
@@ -1855,8 +1850,8 @@ static void *inotify_thread(void *args)
 	}
 
 	ev.events = EPOLLIN;
-	ev.data.fd = a->eventfd;
-	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, a->eventfd, &ev);
+	ev.data.fd = a->stopfd;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, a->stopfd, &ev);
 	if (ret < 0) {
 		perror("epoll_ctl");
 		goto exit_err;
@@ -1871,7 +1866,7 @@ static void *inotify_thread(void *args)
 			goto exit_err;
 		}
 
-		if (ev.data.fd == a->eventfd)
+		if (ev.data.fd == a->stopfd)
 			break;
 
 		read(ifd, &iev, sizeof(iev));
@@ -1888,16 +1883,16 @@ static void *inotify_thread(void *args)
 			ac->prev_userpwd_buf = ac->userpwd_buf;
 		}
 
-		pthread_rwlock_wrlock(&a->authlock);
+		pthread_rwlock_wrlock(&a->creds.authlock);
 
-		ret = parse_auth_file(a->authfd,
+		ret = parse_auth_file(a->creds.authfd,
 					&ac->userpwd_l, &ac->userpwd_buf);
 		if (!ret) {
 			free(ac->userpwd_l.prev_arr);
 			free(ac->prev_userpwd_buf);
 		}
 
-		pthread_rwlock_unlock(&a->authlock);
+		pthread_rwlock_unlock(&a->creds.authlock);
 
 		for (int i = 0; i < ac->userpwd_l.nr_entry; i++) {
 			pr = &ac->userpwd_l.arr[i];
@@ -1972,28 +1967,28 @@ __attribute__((__unused__))
 /*
 * Load specified auth file.
 *
-* @param args Pointer to application configuration.
+* @param pctx Pointer to application data.
 * @return zero on success, or a negative integer on failure.
 */
-static int init_auth_file(struct gwp_ctx *args)
+static int init_auth_file(struct gwp_ctx *pctx)
 {
 	int ret, afd;
 
-	afd = open(args->cargs.auth_file, O_RDONLY);
+	afd = open(pctx->cargs.auth_file, O_RDONLY);
 	if (afd < 0) {
 		perror("open");
 		goto exit_err;
 	}
 
-	args->authfd = afd;
-	ret = parse_auth_file(afd, &args->creds.userpwd_l, &args->creds.userpwd_buf);
+	pctx->creds.authfd = afd;
+	ret = parse_auth_file(afd, &pctx->creds.userpwd_l, &pctx->creds.userpwd_buf);
 	if (ret < 0)
 		goto exit_err;
 
-	pthread_rwlock_init(&args->authlock, NULL);
+	pthread_rwlock_init(&pctx->creds.authlock, NULL);
 	return 0;
 exit_err:
-	pr_err("failed to load %s file\n", args->cargs.auth_file);
+	pr_err("failed to load %s file\n", pctx->cargs.auth_file);
 	return -EXIT_FAILURE;
 }
 
@@ -2023,7 +2018,7 @@ static void signal_handler(int c)
 	}
 
 	g_args->stop = true;
-	write(g_args->eventfd, &val, sizeof(val));
+	write(g_args->stopfd, &val, sizeof(val));
 }
 
 int main(int argc, char *argv[])
@@ -2034,29 +2029,29 @@ int main(int argc, char *argv[])
 	pthread_t inotify_t, __attribute__((__unused__)) dnsresolv_t;
 	struct rlimit file_limits;
 	struct auth_creds *ac;
-	struct gwp_ctx args = {
-		.authfd = -1,
-		.eventfd = -1
+	struct gwp_ctx ctx = {
+		.creds.authfd = -1,
+		.stopfd = -1
 	};
 	struct sigaction s = {
 		.sa_handler = signal_handler
 	};
 
-	g_args = &args;
-	args.eventfd = eventfd(0, EFD_NONBLOCK);
+	g_args = &ctx;
+	ctx.stopfd = eventfd(0, EFD_NONBLOCK);
 
 	sigaction(SIGTERM, &s, NULL);
 	sigaction(SIGINT, &s, NULL);
 
-	ret = handle_cmdline(argc, argv, &args);
+	ret = handle_cmdline(argc, argv, &ctx.cargs);
 	if (ret < 0)
 		return ret;
 
-	if (args.cargs.auth_file) {
-		ret = init_auth_file(&args);
+	if (ctx.cargs.auth_file) {
+		ret = init_auth_file(&ctx);
 		if (ret < 0)
 			goto exit_err;
-		pthread_create(&inotify_t, NULL, inotify_thread, &args);
+		pthread_create(&inotify_t, NULL, inotify_thread, &ctx);
 	}
 
 	getrlimit(RLIMIT_NOFILE, &file_limits);
@@ -2067,7 +2062,7 @@ int main(int argc, char *argv[])
 		goto exit_err;
 	}
 
-	threads = calloc(args.cargs.server_thread_nr, sizeof(pthread_t));
+	threads = calloc(ctx.cargs.server_thread_nr, sizeof(pthread_t));
 	if (!threads) {
 		pr_err("out of memory, can't allocate memory for threads\n");
 		ret = -EXIT_FAILURE;
@@ -2075,8 +2070,8 @@ int main(int argc, char *argv[])
 	}
 
 	// pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
-	for (i = 0; i < args.cargs.server_thread_nr; i++) {
-		ret = pthread_create(&threads[i], NULL, thread_cb, &args);
+	for (i = 0; i < ctx.cargs.server_thread_nr; i++) {
+		ret = pthread_create(&threads[i], NULL, thread_cb, &ctx);
 		if (ret) {
 			errno = ret;
 			perror("pthread_create");
@@ -2085,12 +2080,12 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	start_server(&args);
+	start_server(&ctx);
 
 	pthread_join(inotify_t, &retval);
 	// pthread_join(dnsresolv_t, &retval);
 
-	for (i = 0; i < args.cargs.server_thread_nr; i++) {
+	for (i = 0; i < ctx.cargs.server_thread_nr; i++) {
 		pthread_kill(threads[i], SIGINT);
 		ret = pthread_join(threads[i], &retval);
 		if (ret) {
@@ -2109,20 +2104,20 @@ int main(int argc, char *argv[])
 
 	ret = 0;
 exit_err:
-	if (args.authfd != -1) {
-		pr_info("closing open file descriptor %d\n", args.authfd);
-		close(args.authfd);
+	if (ctx.creds.authfd != -1) {
+		pr_info("closing open file descriptor %d\n", ctx.creds.authfd);
+		close(ctx.creds.authfd);
 	}
-	if (args.eventfd != -1) {
-		pr_info("closing eventfd file descriptor %d\n", args.eventfd);
-		close(args.eventfd);
+	if (ctx.stopfd != -1) {
+		pr_info("closing stopfd file descriptor %d\n", ctx.stopfd);
+		close(ctx.stopfd);
 	}
 	if (threads) {
 		pr_info("free threads: %p\n", threads);
 		free(threads);
 	}
 
-	ac = &args.creds;
+	ac = &ctx.creds;
 	if (ac->userpwd_l.arr) {
 		pr_info("free array of userpwd: %p\n", ac->userpwd_l.arr);
 		free(ac->userpwd_l.arr);
