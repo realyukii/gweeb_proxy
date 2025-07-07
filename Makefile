@@ -19,7 +19,7 @@ TARGET4		:= $(BUILDDIR)/dns_resolver
 TARGET5		:= $(BUILDDIR)/dns_client
 
 CC		:= gcc
-CFLAGS		:= -Wmaybe-uninitialized -DDEBUG_LVL=0 -Wall -Wextra -g3
+CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -g3
 # LDFLAGS		:= -fsanitize=address
 
 all: $(TARGET1) $(TARGET2) $(TARGET3) $(TARGET4) $(TARGET5)

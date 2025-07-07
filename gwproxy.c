@@ -15,8 +15,8 @@
 #include <sys/inotify.h>
 #include <sys/eventfd.h>
 #include <signal.h>
-#include "general.h"
 #include "linux.h"
+#include "general.h"
 
 #define REPLY_LEN 2
 #define PORT_SZ 2
@@ -29,20 +29,6 @@
 #define DEFAULT_THREAD_NR 4
 #define DEFAULT_BUF_SZ	1024
 #define NR_EVENTS 512
-#ifndef DEBUG_LVL
-#define DEBUG_LVL 0
-#endif
-#define FOCUS 1
-#define DEBUG 2
-#define VERBOSE 3
-#define DEBUG_EPOLL_EVENTS 4
-#define DEBUG_SEND_RECV 5
-#define pr_debug(lvl, fmt, ...)				\
-do {							\
-	if (DEBUG_LVL == (lvl)) {			\
-		fprintf(stderr, fmt, ##__VA_ARGS__);	\
-	}						\
-} while (0)
 #define pr_menu printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT, DEFAULT_CLIENT)
 
 enum typemask {
@@ -296,12 +282,12 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 	}
 
 	if (!target_opt && !args->socks5_mode) {
-		fprintf(stderr, "-t option is required\n");
+		pr_err("-t option is required\n");
 		return -EINVAL;
 	}
 
 	if (!bind_opt) {
-		fprintf(stderr, "-b option is required\n");
+		pr_err("-b option is required\n");
 		return -EINVAL;
 	}
 
@@ -337,7 +323,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 
 	ret = init_addr(bind_opt, &args->src_addr_st);
 	if (ret < 0) {
-		fprintf(stderr, "invalid format for %s\n", bind_opt);
+		pr_err("invalid format for %s\n", bind_opt);
 		return -EINVAL;
 	}
 
@@ -346,7 +332,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
 
 	ret = init_addr(target_opt, &args->dst_addr_st);
 	if (ret < 0) {
-		fprintf(stderr, "invalid format for %s\n", target_opt);
+		pr_err("invalid format for %s\n", target_opt);
 		return -EINVAL;
 	}
 
@@ -586,10 +572,6 @@ static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
 	*pc = ev->data.ptr;
 
-	pr_debug(
-		DEBUG_EPOLL_EVENTS,
-		"ressurected from sleep, let's start extracting the bit\n"
-	);
 	switch (ev_bit) {
 	case EV_BIT_TIMER:
 		/*
@@ -601,29 +583,25 @@ static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 		*/
 		*from = &(*pc)->client;
 		*to = &(*pc)->target;
-		pr_debug(VERBOSE, "timed out, terminating the session\n");
+		pr_info("timed out, terminating the session for TODO: print client addr\n");
 		return -ETIMEDOUT;
 	case EV_BIT_CLIENT:
-		pr_debug(DEBUG_EPOLL_EVENTS, "receiving data from client\n");
+		pr_info("receiving data from client\n");
 		*from = &(*pc)->client;
 		*to = &(*pc)->target;
 		break;
 
 	case EV_BIT_TARGET:
-		pr_debug(DEBUG_EPOLL_EVENTS, "receiving data from target\n");
+		pr_info("receiving data from target\n");
 		*from = &(*pc)->target;
 		*to = &(*pc)->client;
 		break;
 	}
 
-	pr_debug(
-		DEBUG_EPOLL_EVENTS,
-		"current events on socket %d: ",
+	pr_info(
+		"current events are fired for socket %d: ",
 		(*from)->sockfd
 	);
-	if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
-		printBits(sizeof(ev->events), &ev->events);
-	}
 
 	return 0;
 }
@@ -648,8 +626,7 @@ static int handle_data(struct single_connection *from,
 
 	/* length of empty buffer */
 	rlen = DEFAULT_BUF_SZ - from->len;
-	pr_debug(
-		DEBUG_EPOLL_EVENTS,
+	pr_info(
 		"receive from socket %d "
 		"with buffer that have free space of %ld bytes\n",
 		from->sockfd, rlen
@@ -673,8 +650,7 @@ static int handle_data(struct single_connection *from,
 			perror("recv on handle data");
 			return -EXIT_FAILURE;
 		} else if (!ret) {
-			pr_debug(
-				DEBUG_SEND_RECV,
+			pr_info(
 				"EoF received on sockfd %d, "
 				"closing the connection."
 				" terminating the session.\n",
@@ -682,26 +658,23 @@ static int handle_data(struct single_connection *from,
 			);
 			return -EXIT_FAILURE;
 		}
-		pr_debug(
-			DEBUG_SEND_RECV,
+		pr_dbg(
 			"%ld bytes were received from sockfd %d.\n",
 			ret,
 			from->sockfd
 		);
-		if (DEBUG_LVL == DEBUG_SEND_RECV)
-			VT_HEXDUMP(&from->buf[from->len], ret);
+		VT_HEXDUMP(&from->buf[from->len], ret);
 
 		from->len += (size_t)ret;
 
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"buffer filled with %ld bytes\n",
-			from->len
+		pr_info(
+			"buffer on socket %d filled with %ld bytes\n",
+			from->sockfd, from->len
 		);
 	}
 
 try_send:
-	pr_debug(DEBUG_EPOLL_EVENTS, "send to socket %d.\n", to->sockfd);
+	pr_info("send to socket %d.\n", to->sockfd);
 	/* length of filled buffer */
 	if (from->len > 0) {
 		ret = send(
@@ -716,16 +689,14 @@ try_send:
 			return -EXIT_FAILURE;
 		} else if (!ret)
 			return -EXIT_FAILURE;
-		pr_debug(
-			DEBUG_SEND_RECV,
+		pr_dbg(
 			"%ld bytes were sent to sockfd %d.\n",
 			ret, to->sockfd
 		);
 
 		from->len -= ret;
 		from->off += ret;
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
+		pr_info(
 			"remaining bytes on the buffer: %ld\n",
 			from->len
 		);
@@ -777,43 +748,25 @@ static void adjust_pollout(struct single_connection *src,
 	* dst
 	*/
 	if (src->len > 0) {
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"[set EPOLLOUT] there is still buffer remaining "
+		pr_info(
+			"set EPOLLOUT: there is still buffer remaining "
 			"in socket %d, need to drain it by sending it "
 			"to the socket %d\n",
 			src->sockfd, dst->sockfd
 		);
 
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"current events on socket %d: ",
-			dst->sockfd
-		);
-		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
-			printBits(sizeof(dst->epmask), &dst->epmask);
-		}
 		if (!(dst->epmask & EPOLLOUT)) {
 			dst->epmask |= EPOLLOUT;
 			*epmask_changed = true;
 		}
 	} else {
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"[unset EPOLLOUT] no buffer left on socket %d, "
+		pr_info(
+			"unset EPOLLOUT: no buffer left on socket %d, "
 			"it is fully empty, "
 			"send to socket %d is now completed\n",
 			src->sockfd, dst->sockfd
 		);
 
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"current events on socket %d: ",
-			dst->sockfd
-		);
-		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
-			printBits(sizeof(dst->epmask), &dst->epmask);
-		}
 		if (dst->epmask & EPOLLOUT) {
 			dst->epmask &= ~EPOLLOUT;
 			*epmask_changed = true;
@@ -834,41 +787,23 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 	* otherwise, set it.
 	*/
 	if (!(DEFAULT_BUF_SZ - src->len)) {
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"[unset EPOLLIN] buffer on socket %d is full "
+		pr_info(
+			"unset EPOLLIN: buffer on socket %d is full "
 			"can't receive anymore\n",
 			src->sockfd
 		);
 
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"current events on socket %d: ",
-			src->sockfd
-		);
-		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
-			printBits(sizeof(src->epmask), &src->epmask);
-		}
 		if (src->epmask & EPOLLIN) {
 			src->epmask &= ~EPOLLIN;
 			*epmask_changed = true;
 		}
 	} else {
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"[set EPOLLIN] buffer on socket %d still have "
+		pr_info(
+			"set EPOLLIN: buffer on socket %d still have "
 			"some free space to fill in\n",
 			src->sockfd
 		);
 
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"current events on socket %d: ",
-			src->sockfd
-		);
-		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
-			printBits(sizeof(src->epmask), &src->epmask);
-		}
 		if (!(src->epmask & EPOLLIN)) {
 			src->epmask |= EPOLLIN;
 			*epmask_changed = true;
@@ -909,14 +844,6 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 		ev.data.u64 |= EV_BIT_CLIENT;
 		ev.events = client->epmask;
 
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"modifying events on socket %d: ",
-			client->sockfd
-		);
-		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
-			printBits(sizeof(ev.events), &ev.events);
-		}
 		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, client->sockfd, &ev);
 		if (ret < 0) {
 			perror("epoll_ctl");
@@ -930,14 +857,6 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 		ev.data.ptr = pc;
 		ev.data.u64 |= EV_BIT_TARGET;
 
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"modifying events on socket %d: ",
-			target->sockfd
-		);
-		if (DEBUG_LVL == DEBUG_EPOLL_EVENTS) {
-			printBits(sizeof(ev.events), &ev.events);
-		}
 		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, target->sockfd, &ev);
 		if (ret < 0) {
 			perror("epoll_ctl");
@@ -963,20 +882,14 @@ static int exchange_data(struct epoll_event *ev,
 	int ret;
 
 	if (ev->events & EPOLLIN) {
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"current epoll events have EPOLLIN bit set\n"
-		);
+		pr_info("current epoll events have EPOLLIN bit set\n");
 		ret = handle_data(a, b);
 		if (ret < 0)
 			return -EXIT_FAILURE;
 	}
 
 	if (ev->events & EPOLLOUT) {
-		pr_debug(
-			DEBUG_EPOLL_EVENTS,
-			"current epoll events have EPOLLOUT bit set\n"
-		);
+		pr_info("current epoll events have EPOLLOUT bit set\n");
 
 		ret = handle_data(b, a);
 		if (ret < 0)
@@ -1008,33 +921,30 @@ static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
 		return -EXIT_FAILURE;
 	}
 	if (!ret) {
-		pr_debug(
-			VERBOSE,
+		pr_warn(
 			"sockfd %d closes the connection "
 			"while accept greeting\n",
 			a->sockfd
 		);
 		return -EXIT_FAILURE;
 	}
-	pr_debug(
-		DEBUG_SEND_RECV,
+	pr_dbg(
 		"%d bytes were received from sockfd %d.\n",
 		ret,
 		a->sockfd
 	);
-	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&a->buf[a->len], ret);
+	VT_HEXDUMP(&a->buf[a->len], ret);
 	a->len += ret;
 	if (a->len < 2)
 		return -EAGAIN;
 
 	if (g->ver != SOCKS5_VER) {
-		pr_debug(VERBOSE, "unsupported socks version.\n");
+		pr_err("unsupported socks version.\n");
 		return -EXIT_FAILURE;
 	}
 	
 	if (g->nauth == 0) {
-		pr_debug(VERBOSE, "invalid value in field nauth.\n");
+		pr_err("invalid value in field nauth.\n");
 		return -EXIT_FAILURE;
 	}
 
@@ -1097,13 +1007,11 @@ static int response_handshake(struct pair_connection *pc)
 		perror("send on response handshake");
 		return -EXIT_FAILURE;
 	}
-	pr_debug(
-		DEBUG_SEND_RECV,
+	pr_dbg(
 		"%d bytes were sent to sockfd %d.\n",
 		ret, a->sockfd
 	);
-	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&server_choice[sizeof(server_choice) - a->len], ret);
+	VT_HEXDUMP(&server_choice[sizeof(server_choice) - a->len], ret);
 
 	a->len -= ret;
 	if (a->len)
@@ -1272,7 +1180,7 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 		break;
 
 	default:
-		pr_debug(VERBOSE, "unknown address type.\n");
+		pr_err("unknown address type.\n");
 		return -EXIT_FAILURE;
 	}
 
@@ -1317,13 +1225,11 @@ static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp,
 		perror("send on request connect");
 		return -EXIT_FAILURE;
 	}
-	pr_debug(
-		DEBUG_SEND_RECV,
+	pr_dbg(
 		"%d bytes were sent to sockfd %d.\n",
 		ret, a->sockfd
 	);
-	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(((char *)(&reply_buf)) + (reply_len - a->len), ret);
+	VT_HEXDUMP(((char *)(&reply_buf)) + (reply_len - a->len), ret);
 
 	a->len -= ret;
 	if (a->len)
@@ -1379,22 +1285,19 @@ static int req_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		return -EXIT_FAILURE;
 	}
 	if (!ret) {
-		pr_debug(
-			VERBOSE,
+		pr_warn(
 			"sockfd %d closes the connection "
 			"while handle usr/pwd auth\n",
 			c->sockfd
 		);
 		return -EXIT_FAILURE;
 	}
-	pr_debug(
-		DEBUG_SEND_RECV,
+	pr_dbg(
 		"%d bytes were received from sockfd %d.\n",
 		ret,
 		c->sockfd
 	);
-	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&c->buf[c->len], ret);
+	VT_HEXDUMP(&c->buf[c->len], ret);
 
 	c->len += ret;
 
@@ -1402,8 +1305,7 @@ static int req_userpwd(struct pair_connection *pc, struct gwp_args *args)
 		return -EAGAIN;
 
 	if (pkt->ver != 1) {
-		pr_debug(
-			VERBOSE,
+		pr_err(
 			"invalid version, not comply with the RFC standard.\n"
 		);
 		return -EXIT_FAILURE;
@@ -1470,13 +1372,11 @@ static int rep_userpwd(struct single_connection *c, char *reply_buf)
 		perror("send on handle userpwd");
 		return -EXIT_FAILURE;
 	}
-	pr_debug(
-		DEBUG_SEND_RECV,
+	pr_dbg(
 		"%d bytes were sent to sockfd %d.\n",
 		ret, c->sockfd
 	);
-	if (DEBUG_LVL == DEBUG_SEND_RECV)
-		VT_HEXDUMP(&reply_buf[REPLY_LEN - c->len], ret);
+	VT_HEXDUMP(&reply_buf[REPLY_LEN - c->len], ret);
 
 	c->len -= ret;
 	if (c->len)
@@ -1544,22 +1444,19 @@ static int handle_request(struct pair_connection *pc,
 			return -EXIT_FAILURE;
 		}
 		if (!ret) {
-			pr_debug(
-				VERBOSE,
+			pr_info(
 				"sockfd %d closes the connection "
 				"while handle request\n",
 				a->sockfd
 			);
 			return -EXIT_FAILURE;
 		}
-		pr_debug(
-			DEBUG_SEND_RECV,
+		pr_dbg(
 			"%d bytes were received from sockfd %d.\n",
 			ret,
 			a->sockfd
 		);
-		if (DEBUG_LVL == DEBUG_SEND_RECV)
-			VT_HEXDUMP(&a->buf[a->len], ret);
+		VT_HEXDUMP(&a->buf[a->len], ret);
 
 		a->len += ret;
 		fixed_len = sizeof(*c) - sizeof(c->dst_addr.addr) + PORT_SZ;
@@ -1579,12 +1476,12 @@ static int handle_request(struct pair_connection *pc,
 
 	if (pc->state & STATE_SEND) {
 		if (c->ver != SOCKS5_VER) {
-			pr_debug(VERBOSE, "unsupported socks version.\n");
+			pr_err("unsupported socks version.\n");
 			return -EXIT_FAILURE;
 		}
 
 		if (c->cmd != CONNECT) {
-			pr_debug(VERBOSE, "unsupported command, yet.\n");
+			pr_err("unsupported command, yet.\n");
 			return -EXIT_FAILURE;
 		}
 
@@ -1710,7 +1607,7 @@ adjust_epoll:
 
 	return 0;
 exit_err:
-	pr_debug(VERBOSE, "free the system resources for this session\n");
+	pr_info("free the system resources for session on client TODO: print client addr\n");
 	if (pc->idx == (gwp->p.nr_item - 1))
 		gwp->p.nr_item--;
 	if (pc->timerfd != -1)
@@ -1738,12 +1635,12 @@ static void process_ready_list(int ready_nr, struct gwp_args *args,
 				struct epoll_event *evs, struct gwproxy *gwp)
 {
 	int i;
-	pr_debug(VERBOSE, "number of epoll events %d\n", ready_nr);
+	pr_info("number of ready events %d\n", ready_nr);
 	for (i = 0; i < ready_nr; i++) {
 		struct epoll_event *ev = &evs[i];
 
 		if (ev->data.fd == gwp->listen_sock) {
-			pr_debug(VERBOSE, "serving new client\n");
+			pr_info("serving new client: TODO: print client addr\n");
 			handle_incoming_client(gwp, args);
 		} else if (ev->data.fd == args->eventfd) {
 			break;
@@ -1785,7 +1682,6 @@ static int start_server(struct gwp_args *args)
 	socklen_t size_addr;
 	struct epoll_event ev;
 	struct gwproxy gwp;
-	pid_t tid;
 	struct sockaddr_storage *s = &args->src_addr_st;
 	struct epoll_event evs[NR_EVENTS];
 	static const int val = 1;
@@ -1851,49 +1747,27 @@ static int start_server(struct gwp_args *args)
 
 	ret = 0;
 exit:
-	tid = gettid();
-	fprintf(
-		stderr,
-		"[thread %d] closing tcp file descriptor: %d\n",
-		tid, gwp.listen_sock
-	);
+	pr_info("closing tcp file descriptor: %d\n", gwp.listen_sock);
 	close(gwp.listen_sock);
-	fprintf(
-		stderr,
-		"[thread %d] closing epoll file descriptor: %d\n",
-		tid, gwp.epfd
-	);
 
 	for (i = 0; i < gwp.p.nr_item; i++) {
 		struct pair_connection *pc = gwp.p.arr[i];
 		if (pc) {
-			fprintf(
-				stderr,
-				"[thread %d] free client buffer: %p\n",
-				tid, pc->client.buf
-			);
+			pr_info("free client buffer: %p\n", pc->client.buf);
 			free(pc->client.buf);
-			fprintf(
-				stderr,
-				"[thread %d] free target buffer: %p\n",
-				tid, pc->target.buf
-			);
+			pr_info("free target buffer: %p\n", pc->target.buf);
 			free(pc->target.buf);
 			if (pc->client.sockfd != -1) {
-				fprintf(
-					stderr,
-					"[thread %d] close client connection on socket: "
-					"%d\n",
-					tid, pc->client.sockfd
+				pr_info(
+					"close client connection on socket: "
+					"%d\n", pc->client.sockfd
 				);
 				close(pc->client.sockfd);
 			}
 			if (pc->target.sockfd != -1) {
-				fprintf(
-					stderr,
-					"[thread %d] close target connection on socket: "
-					"%d\n",
-					tid, pc->target.sockfd
+				pr_info(
+					"close target connection on socket: "
+					"%d\n", pc->target.sockfd
 				);
 				close(pc->target.sockfd);
 			}
@@ -1901,15 +1775,13 @@ exit:
 		}
 	}
 
-	fprintf(
-		stderr,
-		"[thread %d] free the connection pool: %p\n",
-		tid, gwp.p.arr
-	);
+	pr_info("free the connection pool: %p\n", gwp.p.arr);
 	free(gwp.p.arr);
 
-	if (gwp.epfd != -1)
+	if (gwp.epfd != -1) {
+		pr_info("closing epoll file descriptor: %d\n", gwp.epfd);
 		close(gwp.epfd);
+	}
 	return ret;
 }
 
@@ -1935,7 +1807,6 @@ static void *thread_cb(void *args)
 static void *inotify_thread(void *args)
 {
 	int ret, ifd, epfd;
-	pid_t tid;
 	size_t counter = 0;
 	struct gwp_args *a;
 	struct userpwd_pair *pr;
@@ -2019,74 +1890,67 @@ static void *inotify_thread(void *args)
 
 	ret = 0;
 exit_err:
-	tid = gettid();
 	if (ifd != -1) {
-		fprintf(
-			stderr,
-			"[thread %d] closing inotify file descriptor: %d\n",
-			tid, ifd
-		);
+		pr_info("closing inotify file descriptor: %d\n", ifd);
 		close(ifd);
 	}
+
 	if (epfd != -1) {
-		fprintf(
-			stderr,
-			"[thread %d] closing epoll file descriptor: %d\n",
-			tid, epfd
-		);
+		pr_info("closing epoll file descriptor: %d\n", epfd);
 		close(epfd);
 	}
+
 	return (void *)(intptr_t)ret;
 }
 
 /*
 * Serve resolve request from another thread.
 */
-static void *dns_resolver_thread(void *args)
-{
-	char dname[MAX_DOMAIN_LEN], *dname_ptr;
-	uint8_t domainname_sz;
-	struct addrinfo *l;
-	struct sockaddr_in *in, *tmp;
-	struct sockaddr_in6 *in6, *tmp6;
-	struct sockaddr_storage *d;
-	int ret;
-	ret = getaddrinfo(dname, NULL, NULL, &l);
-	if (ret != 0) {
-		fprintf(
-			stderr,
-			"failed to resolve domain name: %s\n",
-			gai_strerror(ret)
-		);
-		return NULL;
-	}
+__attribute__((__unused__))
+// static void *dns_resolver_thread(void *args)
+// {
+// 	char dname[MAX_DOMAIN_LEN], *dname_ptr;
+// 	uint8_t domainname_sz;
+// 	struct addrinfo *l;
+// 	struct sockaddr_in *in, *tmp;
+// 	struct sockaddr_in6 *in6, *tmp6;
+// 	struct sockaddr_storage *d;
+// 	int ret;
+// 	ret = getaddrinfo(dname, NULL, NULL, &l);
+// 	if (ret != 0) {
+// 		pr_err(
+// 			"failed to resolve domain name: %s\n",
+// 			gai_strerror(ret)
+// 		);
+// 		return NULL;
+// 	}
 
-	switch (l->ai_family) {
-	case AF_INET:
-		in = (struct sockaddr_in *)d;
-		in->sin_family = AF_INET;
-		tmp = (struct sockaddr_in *)l->ai_addr;
-		memcpy(
-			&in->sin_addr, &tmp->sin_addr,
-			sizeof(in->sin_addr)
-		);
-		in->sin_port = *(uint16_t *)(dname_ptr + domainname_sz);
-		break;
-	case AF_INET6:
-		in6 = (struct sockaddr_in6 *)d;
-		in6->sin6_family = AF_INET6;
-		tmp6 = (struct sockaddr_in6 *)l->ai_addr;
-		memcpy(
-			&in6->sin6_addr, &tmp6->sin6_addr,
-			sizeof(in6->sin6_addr)
-		);
-		in6->sin6_port = *(uint16_t *)(dname_ptr + domainname_sz);
-		break;
-	}
-	freeaddrinfo(l);
-	(void)args;
-	return NULL;
-}
+// 	switch (l->ai_family) {
+// 	case AF_INET:
+// 		in = (struct sockaddr_in *)d;
+// 		in->sin_family = AF_INET;
+// 		tmp = (struct sockaddr_in *)l->ai_addr;
+// 		memcpy(
+// 			&in->sin_addr, &tmp->sin_addr,
+// 			sizeof(in->sin_addr)
+// 		);
+// 		in->sin_port = *(uint16_t *)(dname_ptr + domainname_sz);
+// 		break;
+// 	case AF_INET6:
+// 		in6 = (struct sockaddr_in6 *)d;
+// 		in6->sin6_family = AF_INET6;
+// 		tmp6 = (struct sockaddr_in6 *)l->ai_addr;
+// 		memcpy(
+// 			&in6->sin6_addr, &tmp6->sin6_addr,
+// 			sizeof(in6->sin6_addr)
+// 		);
+// 		in6->sin6_port = *(uint16_t *)(dname_ptr + domainname_sz);
+// 		break;
+// 	}
+// 	freeaddrinfo(l);
+// 	(void)args;
+// 	return NULL;
+// }
 
 /*
 * Load specified auth file.
@@ -2112,8 +1976,7 @@ static int init_auth_file(struct gwp_args *args)
 	pthread_rwlock_init(&args->authlock, NULL);
 	return 0;
 exit_err:
-
-	fprintf(stderr, "failed to load %s file\n", args->auth_file);
+	pr_err("failed to load %s file\n", args->auth_file);
 	return -EXIT_FAILURE;
 }
 
@@ -2129,15 +1992,13 @@ static void signal_handler(int c)
 
 	switch (c) {
 	case SIGTERM:
-		fprintf(
-			stderr,
+		pr_info(
 			"SIGTERM signal received, "
 			"gracefully exiting the program...\n"
 		);
 		break;
 	case SIGINT:
-		fprintf(
-			stderr,
+		pr_info(
 			"SIGINT signal received, "
 			"gracefully exiting the program...\n"
 		);
@@ -2151,10 +2012,9 @@ static void signal_handler(int c)
 int main(int argc, char *argv[])
 {
 	int ret;
-	pid_t pid;
 	size_t i;
 	void *retval;
-	pthread_t inotify_t, dnsresolv_t;
+	pthread_t inotify_t, __attribute__((__unused__)) dnsresolv_t;
 	struct rlimit file_limits;
 	struct gwp_args args = {
 		.auth_fd = -1,
@@ -2191,15 +2051,12 @@ int main(int argc, char *argv[])
 
 	threads = calloc(args.thread_nr, sizeof(pthread_t));
 	if (!threads) {
-		fprintf(
-			stderr,
-			"out of memory, can't allocate memory for threads\n"
-		);
+		pr_err("out of memory, can't allocate memory for threads\n");
 		ret = -EXIT_FAILURE;
 		goto exit_err;
 	}
 
-	pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
+	// pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
 	for (i = 0; i < args.thread_nr; i++) {
 		ret = pthread_create(&threads[i], NULL, thread_cb, &args);
 		if (ret) {
@@ -2213,7 +2070,7 @@ int main(int argc, char *argv[])
 	start_server(&args);
 
 	pthread_join(inotify_t, &retval);
-	pthread_join(dnsresolv_t, &retval);
+	// pthread_join(dnsresolv_t, &retval);
 
 	for (i = 0; i < args.thread_nr; i++) {
 		pthread_kill(threads[i], SIGINT);
@@ -2226,60 +2083,38 @@ int main(int argc, char *argv[])
 		}
 
 		if ((intptr_t)retval < 0) {
-			fprintf(stderr, "fatal: failed to start server\n");
+			pr_err("fatal: failed to start server\n");
 			ret = (intptr_t)retval;
 			goto exit_err;
 		}
 	}
 
-	pid = getpid();
 	ret = 0;
 exit_err:
 	if (args.auth_fd != -1) {
-		fprintf(
-			stderr,
-			"[thread %d] closing open file descriptor %d\n",
-			pid, args.auth_fd
-		);
+		pr_info("closing open file descriptor %d\n", args.auth_fd);
 		close(args.auth_fd);
 	}
 	if (args.eventfd != -1) {
-		fprintf(
-			stderr,
-			"[thread %d] closing eventfd file descriptor %d\n",
-			pid, args.eventfd
-		);
+		pr_info("closing eventfd file descriptor %d\n", args.eventfd);
 		close(args.eventfd);
 	}
 	if (threads) {
-		fprintf(
-			stderr,
-			"[thread %d] free threads: %p\n",
-			pid, threads
-		);
+		pr_info("free threads: %p\n", threads);
 		free(threads);
 	}
 	if (args.userpwd_arr.arr) {
-		fprintf(
-			stderr,
-			"[thread %d] free userpwd_arr: %p\n",
-			pid, args.userpwd_arr.arr
-		);
+		pr_info("free userpwd_arr: %p\n", args.userpwd_arr.arr);
 		free(args.userpwd_arr.arr);
 	}
 	if (args.userpwd_buf) {
-		fprintf(
-			stderr,
-			"[thread %d] free userpwd_buf: %p\n",
-			pid, args.userpwd_buf
-		);
+		pr_info("free userpwd_buf: %p\n", args.userpwd_buf);
 		free(args.userpwd_buf);
 	}
 
-	fprintf(
-		stderr,
+	pr_info(
 		"all system resources were freed, "
-		"now program can exit peacefully.\n"
+		"now program can exit peacefully. "
 		"transfer control back to the kernel.\n"
 	);
 
