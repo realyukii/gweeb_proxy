@@ -522,6 +522,12 @@ static int send_hello(struct client *c)
 		}
 	}
 
+	pr_info(
+		"sending hello to %s, "
+		"not blocked while performing dns resolution!\n",
+		c->addrstr
+	);
+
 	if (c->is_valid_req) {
 		if (!c->boff)
 			c->boff = sizeof(wait_msg);
@@ -714,9 +720,14 @@ static int fish_events(struct tctx *ctx)
 			}
 			int len = strlen(dr->addrstr);
 
-			if (len)
+			if (len) {
 				send_wrapper(c->clientfd, dr->addrstr, len);
-			else
+				pr_info(
+					"sending response to %s's request: %s, "
+					"not blocked while performing dns resolution!\n",
+					c->addrstr, dr->addrstr
+				);
+			} else
 				send_wrapper(c->clientfd, fail_msg, sizeof(fail_msg));
 
 			close(dr->evfd);
