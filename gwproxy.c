@@ -31,7 +31,7 @@
 #define NR_EVENTS 512
 #define pr_menu printf(usage, DEFAULT_THREAD_NR, DEFAULT_TIMEOUT, DEFAULT_CLIENT)
 
-enum typemask {
+enum evmask {
 	/* indicate a client file descriptor */
 	EV_BIT_CLIENT		= (0x0001ULL << 48ULL),
 	/* indicate a target file descriptor */
@@ -85,7 +85,7 @@ enum addr_type {
 #define GET_EV_BIT(X)	((X) & ALL_EV_BIT)
 #define CLEAR_EV_BIT(X)	((X) & ~ALL_EV_BIT)
 
-struct single_connection {
+struct gwp_conn {
 	/* TCP socket file descriptor */
 	int sockfd;
 	/* buffer allocated on dynamic memory */
@@ -98,13 +98,13 @@ struct single_connection {
 	uint32_t epmask;
 };
 
-struct pair_connection {
+struct pair_conn {
 	/* id of current session in the connection pool */
 	unsigned int idx;
 	/* represent client connection */
-	struct single_connection client;
+	struct gwp_conn client;
 	/* represent target connection */
-	struct single_connection target;
+	struct gwp_conn target;
 	/* timer file descriptor for setting timeout */
 	int timerfd;
 	/* connection state of target */
@@ -122,19 +122,39 @@ struct connection_pool {
 	unsigned int nr_item;
 	/* max number of allocated connection */
 	unsigned int max_item;
-	/* array of pointer to established connection session */
-	struct pair_connection **arr;
+	/* array of pointer to established session */
+	struct pair_conn **arr;
 };
 
 /*
-* thread variables
+* thread-specific data
 */
-struct gwproxy {
+struct gwp_tctx {
 	/* TCP socket file descriptor */
 	int listen_sock;
 	/* epoll file descriptor */
 	int epfd;
+	/* array of active connection */
 	struct connection_pool p;
+};
+
+/*
+* application-specific data
+*/
+struct gwp_ctx {
+	struct userpwd_list userpwd_arr;
+	char *userpwd_buf;
+	char *prev_userpwd_buf;
+	struct sockaddr_storage src_addr_st, dst_addr_st;
+	size_t thread_nr;
+	size_t timeout;
+	bool socks5_mode;
+	char *auth_file;
+	int auth_fd;
+	int eventfd;
+	int nr_client;
+	pthread_rwlock_t authlock;
+	volatile bool stop;
 };
 
 struct socks5_greeting {
@@ -184,26 +204,10 @@ struct socks5_userpwd {
 	char rest_bytes[];
 };
 
-struct gwp_args {
-	struct userpwd_list userpwd_arr;
-	char *userpwd_buf;
-	char *prev_userpwd_buf;
-	struct sockaddr_storage src_addr_st, dst_addr_st;
-	size_t thread_nr;
-	size_t timeout;
-	bool socks5_mode;
-	char *auth_file;
-	int auth_fd;
-	int eventfd;
-	int nr_client;
-	pthread_rwlock_t authlock;
-	volatile bool stop;
-};
-
 extern char *optarg;
 
-/* only accessed by signal handler */
-static struct gwp_args *g_args;
+/* only accessed by the signal handler */
+static struct gwp_ctx *g_args;
 static pthread_t *threads;
 static const char opts[] = "hw:b:t:T:f:sn:";
 static const char usage[] =
@@ -220,7 +224,7 @@ static const char usage[] =
 "-h\tShow this help message and exit\n";
 
 /*
-* Handle command-line arguments and initialize gwp_args.
+* Handle command-line arguments and initialize gwp_ctx.
 *
 * The function initialize the following configuration:
 * - wait time out in seconds
@@ -234,7 +238,7 @@ static const char usage[] =
 * @param args Pointer to application configuration to initialize.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_cmdline(int argc, char *argv[], struct gwp_args *args)
+static int handle_cmdline(int argc, char *argv[], struct gwp_ctx *args)
 {
 	char c,  *bind_opt, *target_opt, *thread_opt, *nr_client_opt,
 	*wait_opt, *auth_file_opt;
@@ -371,15 +375,15 @@ static int realloc_pool(struct connection_pool *cp)
 /*
 * Initialize a pair of connection: client:target.
 *
-* @param gwp Pointer to the gwproxy struct (thread data).
+* @param gwp Pointer to the gwp_tctx struct (thread data).
 * @return pointer to the malloc'd address
 */
-static struct pair_connection *init_pair(struct gwproxy *gwp)
+static struct pair_conn *init_pair(struct gwp_tctx *gwp)
 {
 	unsigned int idx;
-	struct pair_connection *pc;
-	struct single_connection *client;
-	struct single_connection *target;
+	struct pair_conn *pc;
+	struct gwp_conn *client;
+	struct gwp_conn *target;
 
 	gwp->p.nr_item++;
 	if (gwp->p.nr_item > gwp->p.max_item) {
@@ -464,17 +468,17 @@ static int set_target(struct sockaddr_storage *sockaddr)
 * @param epfd epoll file descriptor.
 * @param epmask epoll events.
 * @param ptr a pointer to be saved and returned once particular events is ready.
-* @param typemask used to identify the type of file descriptor.
+* @param evmask used to identify the epoll event.
 */
 static int register_events(int fd, int epfd, uint32_t epmask,
-				void *ptr, uint64_t typemask) {
+				void *ptr, uint64_t evmask) {
 	struct epoll_event ev;
 	int ret;
 
 	ev.events = epmask;
 	ev.data.u64 = 0;
 	ev.data.ptr = ptr;
-	ev.data.u64 |= typemask;
+	ev.data.u64 |= evmask;
 	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
 	if (ret < 0) {
 		perror("epoll_ctl");
@@ -487,13 +491,13 @@ static int register_events(int fd, int epfd, uint32_t epmask,
 /*
 * Handle or serve incoming client.
 *
-* @param gwp Pointer to the gwproxy struct (thread data).
+* @param gwp Pointer to the gwp_tctx struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
-static void handle_incoming_client(struct gwproxy *gwp, struct gwp_args *args)
+static void handle_incoming_client(struct gwp_tctx *gwp, struct gwp_ctx *args)
 {
 	int client_fd, ret;
-	struct pair_connection *pc = init_pair(gwp);
+	struct pair_conn *pc = init_pair(gwp);
 	if (!pc)
 		return;
 
@@ -564,8 +568,8 @@ exit_err:
 * @param to the peer.
 * @return zero on success, or a negative integer on failure.
 */
-static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
-		struct single_connection **from, struct single_connection **to)
+static int extract_data(struct epoll_event *ev, struct pair_conn **pc,
+		struct gwp_conn **from, struct gwp_conn **to)
 {
 	uint64_t ev_bit = GET_EV_BIT(ev->data.u64);
 
@@ -618,8 +622,8 @@ static int extract_data(struct epoll_event *ev, struct pair_connection **pc,
 * @param to The destination of data to be sent.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_data(struct single_connection *from,
-			struct single_connection *to)
+static int handle_data(struct gwp_conn *from,
+			struct gwp_conn *to)
 {
 	ssize_t ret;
 	size_t rlen;
@@ -713,7 +717,7 @@ try_send:
 * @param a Pointer to struct client.
 * @param epmask_changed Pointer to boolean.
 */
-static void adjust_single_pollout(struct single_connection *a,
+static void adjust_single_pollout(struct gwp_conn *a,
 					bool *epmask_changed)
 {
 	if (a->len > 0) {
@@ -732,12 +736,12 @@ static void adjust_single_pollout(struct single_connection *a,
 /*
 * Set EPOLLOUT bit on epmask member of dst.
 *
-* @param src Pointer to struct single_connection.
-* @param dst Pointer to struct single_connection.
+* @param src Pointer to struct gwp_conn.
+* @param dst Pointer to struct gwp_conn.
 * @param epmask_changed Pointer to boolean.
 */
-static void adjust_pollout(struct single_connection *src,
-			struct single_connection *dst, bool *epmask_changed)
+static void adjust_pollout(struct gwp_conn *src,
+			struct gwp_conn *dst, bool *epmask_changed)
 {
 	/*
 	* set EPOLLOUT to epmask when there's remaining bytes in the buffer
@@ -777,10 +781,10 @@ static void adjust_pollout(struct single_connection *src,
 /*
 * Set EPOLLIN bit on epmask member.
 *
-* @param src Pointer to struct single_connection.
+* @param src Pointer to struct gwp_conn.
 * @param epmask_changed Pointer to boolean.
 */
-static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
+static void adjust_pollin(struct gwp_conn *src, bool *epmask_changed)
 {
 	/*
 	* unset EPOLLIN from epmask when the buffer is full,
@@ -820,13 +824,13 @@ static void adjust_pollin(struct single_connection *src, bool *epmask_changed)
 * and returned once particular event is triggered.
 * @return zero on success, or a negative integer on failure.
 */
-static int adjust_events(int epfd, struct pair_connection *pc)
+static int adjust_events(int epfd, struct pair_conn *pc)
 {
 	int ret;
 	bool is_client_changed = false;
 	bool is_target_changed = false;
 	struct epoll_event ev;
-	struct single_connection *client = &pc->client, *target = &pc->target;
+	struct gwp_conn *client = &pc->client, *target = &pc->target;
 
 	if (pc->state == STATE_EXCHANGE)
 		adjust_pollout(target, client, &is_client_changed);
@@ -877,7 +881,7 @@ static int adjust_events(int epfd, struct pair_connection *pc)
 * @return zero on success, or a negative integer on failure.
 */
 static int exchange_data(struct epoll_event *ev,
-			struct single_connection *a, struct single_connection *b)
+			struct gwp_conn *a, struct gwp_conn *b)
 {
 	int ret;
 
@@ -902,12 +906,12 @@ static int exchange_data(struct epoll_event *ev,
 /*
 * Handshake with the client.
 *
-* @param pc Pointer to pair_connection struct of current session.
+* @param pc Pointer to pair_conn struct of current session.
 * @return zero on success, and a negative integer on failure.
 */
-static int accept_greeting(struct pair_connection *pc, struct gwp_args *args)
+static int accept_greeting(struct pair_conn *pc, struct gwp_ctx *args)
 {
-	struct single_connection *a = &pc->client;
+	struct gwp_conn *a = &pc->client;
 	struct socks5_greeting *g = (void *)a->buf;
 	unsigned preferred_auth = NONE;
 	bool have_entry;
@@ -983,12 +987,12 @@ auth_method_found:
 /*
 * Send a response to the client's greeting.
 *
-* @param pc Pointer to pair_connection struct of current session.
+* @param pc Pointer to pair_conn struct of current session.
 * @return zero on success, or a negative integer on failure.
 */
-static int response_handshake(struct pair_connection *pc)
+static int response_handshake(struct pair_conn *pc)
 {
-	struct single_connection *a = &pc->client;
+	struct gwp_conn *a = &pc->client;
 	char server_choice[2];
 	int ret;
 
@@ -1026,14 +1030,14 @@ static int response_handshake(struct pair_connection *pc)
 * connecting to either the configured target supplied from cmdline args
 * or the specified target by client in socks5 mode.
 *
-* @param gwp Pointer to the gwproxy struct (thread data).
+* @param gwp Pointer to the gwp_tctx struct (thread data).
 * @param pc Pointer that need to be saved 
 * @param dst the address structure to which the client connects.
 * @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int prepare_exchange(struct gwproxy *gwp, struct pair_connection *pc,
-			struct sockaddr_storage *dst, struct gwp_args *args)
+static int prepare_exchange(struct gwp_tctx *gwp, struct pair_conn *pc,
+			struct sockaddr_storage *dst, struct gwp_ctx *args)
 {
 	int ret, tsock = set_target(dst);
 	if (tsock < 0)
@@ -1125,7 +1129,7 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 * @param d Pointer of sockaddr to initialize.
 * @return zero on success, or a negative integer on failure.
 */
-static int parse_request(struct single_connection *a, struct sockaddr_storage *d)
+static int parse_request(struct gwp_conn *a, struct sockaddr_storage *d)
 {
 	struct socks5_connect_request *c;
 	struct sockaddr_in *in;
@@ -1190,17 +1194,17 @@ static int parse_request(struct single_connection *a, struct sockaddr_storage *d
 /*
 * Handle client's CONNECT command.
 * 
-* @param pc Pointer to pair_connection struct of current session.
-* @param gwp Pointer to the gwproxy struct (thread data).
+* @param pc Pointer to pair_conn struct of current session.
+* @param gwp Pointer to the gwp_tctx struct (thread data).
 * @param args Pointer to application configuration.
 * @param d Pointer to initialized target address.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_connect(struct pair_connection *pc, struct gwproxy *gwp,
-			struct gwp_args *args, struct sockaddr_storage *d)
+static int handle_connect(struct pair_conn *pc, struct gwp_tctx *gwp,
+			struct gwp_ctx *args, struct sockaddr_storage *d)
 {
 	/* filled with target address to which the client connect. */
-	struct single_connection *a = &pc->client;
+	struct gwp_conn *a = &pc->client;
 	struct socks5_connect_reply reply_buf;
 	int ret;
 	size_t reply_len;
@@ -1261,13 +1265,13 @@ static int handle_udp(void)
 /*
 * Read user/password auth data.
 *
-* @param pc Pointer to pair_connection struct of current session.
+* @param pc Pointer to pair_conn struct of current session.
 * @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int req_userpwd(struct pair_connection *pc, struct gwp_args *args)
+static int req_userpwd(struct pair_conn *pc, struct gwp_ctx *args)
 {
-	struct single_connection *c = &pc->client;
+	struct gwp_conn *c = &pc->client;
 	struct socks5_userpwd *pkt = (void *)c->buf;
 	struct userpwd_pair *p;
 	char *username, *password;
@@ -1358,7 +1362,7 @@ static int req_userpwd(struct pair_connection *pc, struct gwp_args *args)
 * @param reply_buf Pointer to the buffer.
 * @return zero on success, or a negative integer on failure.
 */
-static int rep_userpwd(struct single_connection *c, char *reply_buf)
+static int rep_userpwd(struct gwp_conn *c, char *reply_buf)
 {
 	int ret;
 
@@ -1388,11 +1392,11 @@ static int rep_userpwd(struct single_connection *c, char *reply_buf)
 /*
 * Handle sub-negotiation with username/password auth method.
 *
-* @param pc Pointer to pair_connection struct of current session.
+* @param pc Pointer to pair_conn struct of current session.
 * @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
+static int handle_userpwd(struct pair_conn *pc, struct gwp_ctx *args)
 {
 	char reply_buf[2];
 	int ret;
@@ -1420,17 +1424,17 @@ static int handle_userpwd(struct pair_connection *pc, struct gwp_args *args)
 /*
 * Handle client's request, evaluate it and return a reply.
 *
-* @param pc Pointer to pair_connection struct of current session.
-* @param gwp Pointer to the gwproxy struct (thread data).
+* @param pc Pointer to pair_conn struct of current session.
+* @param gwp Pointer to the gwp_tctx struct (thread data).
 * @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_request(struct pair_connection *pc,
-			struct gwproxy *gwp, struct gwp_args *args)
+static int handle_request(struct pair_conn *pc,
+			struct gwp_tctx *gwp, struct gwp_ctx *args)
 {
 	/* filled with target address to which the client connect. */
 	struct sockaddr_storage d;
-	struct single_connection *a = &pc->client;
+	struct gwp_conn *a = &pc->client;
 	struct socks5_connect_request *c = (void *)a->buf;
 	int ret, rlen = (sizeof(*c) + PORT_SZ) - a->len;
 	size_t fixed_len;
@@ -1519,16 +1523,16 @@ static bool is_sock_connected(int sockfd)
 *   * communication on socks5 protocol.
 *
 * @param ev Pointer to epoll event structure.
-* @param gwp Pointer to the gwproxy struct (thread data).
+* @param gwp Pointer to the gwp_tctx struct (thread data).
 * @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int process_tcp(struct epoll_event *ev, struct gwproxy *gwp,
-			struct gwp_args *args)
+static int process_tcp(struct epoll_event *ev, struct gwp_tctx *gwp,
+			struct gwp_ctx *args)
 {
 	int ret;
-	struct pair_connection *pc;
-	struct single_connection *a, *b;
+	struct pair_conn *pc;
+	struct gwp_conn *a, *b;
 
 	ret = extract_data(ev, &pc, &a, &b);
 	if (ret < 0)
@@ -1629,10 +1633,10 @@ exit_err:
 * @param ready_nr Number of ready events.
 * @param args Pointer to application configuration.
 * @param evs Pointer to epoll event struct.
-* @param gwp Pointer to the gwproxy struct (thread data).
+* @param gwp Pointer to the gwp_tctx struct (thread data).
 */
-static void process_ready_list(int ready_nr, struct gwp_args *args,
-				struct epoll_event *evs, struct gwproxy *gwp)
+static void process_ready_list(int ready_nr, struct gwp_ctx *args,
+				struct epoll_event *evs, struct gwp_tctx *gwp)
 {
 	int i;
 	pr_info("number of ready events %d\n", ready_nr);
@@ -1675,13 +1679,13 @@ static int init_pool(struct connection_pool *p, int client_nr)
 * @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int start_server(struct gwp_args *args)
+static int start_server(struct gwp_ctx *args)
 {
 	int ret, ready_nr, flg;
 	unsigned int i;
 	socklen_t size_addr;
 	struct epoll_event ev;
-	struct gwproxy gwp;
+	struct gwp_tctx gwp;
 	struct sockaddr_storage *s = &args->src_addr_st;
 	struct epoll_event evs[NR_EVENTS];
 	static const int val = 1;
@@ -1751,7 +1755,7 @@ exit:
 	close(gwp.listen_sock);
 
 	for (i = 0; i < gwp.p.nr_item; i++) {
-		struct pair_connection *pc = gwp.p.arr[i];
+		struct pair_conn *pc = gwp.p.arr[i];
 		if (pc) {
 			pr_info("free client buffer: %p\n", pc->client.buf);
 			free(pc->client.buf);
@@ -1808,7 +1812,7 @@ static void *inotify_thread(void *args)
 {
 	int ret, ifd, epfd;
 	size_t counter = 0;
-	struct gwp_args *a;
+	struct gwp_ctx *a;
 	struct userpwd_pair *pr;
 	struct epoll_event ev = {0};
 	struct inotify_event iev;
@@ -1958,7 +1962,7 @@ __attribute__((__unused__))
 * @param args Pointer to application configuration.
 * @return zero on success, or a negative integer on failure.
 */
-static int init_auth_file(struct gwp_args *args)
+static int init_auth_file(struct gwp_ctx *args)
 {
 	int ret, afd;
 
@@ -2016,7 +2020,7 @@ int main(int argc, char *argv[])
 	void *retval;
 	pthread_t inotify_t, __attribute__((__unused__)) dnsresolv_t;
 	struct rlimit file_limits;
-	struct gwp_args args = {
+	struct gwp_ctx args = {
 		.auth_fd = -1,
 		.eventfd = -1
 	};
