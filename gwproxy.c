@@ -1696,6 +1696,8 @@ static int start_server(struct gwp_ctx *pctx)
 	struct epoll_event evs[NR_EVENTS];
 	static const int val = 1;
 
+	tctx.pctx = pctx;
+
 	size_addr = s->ss_family == AF_INET ? 
 		sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 
@@ -1796,12 +1798,12 @@ exit:
 }
 
 /*
-* Thread callback
+* TCP server thread
 *
 * @param pctx Pointer to application data.
 * @return negative integer on failure.
 */
-static void *thread_cb(void *pctx)
+static void *server_thread(void *pctx)
 {
 	int ret = start_server(pctx);
 
@@ -2071,7 +2073,7 @@ int main(int argc, char *argv[])
 
 	// pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
 	for (i = 0; i < ctx.cargs.server_thread_nr; i++) {
-		ret = pthread_create(&threads[i], NULL, thread_cb, &ctx);
+		ret = pthread_create(&threads[i], NULL, server_thread, &ctx);
 		if (ret) {
 			errno = ret;
 			perror("pthread_create");
