@@ -29,13 +29,26 @@ enum auth_type {
 	NONE = 0xFF
 };
 
-struct socks5_conn {
-	enum socks5_state s;
+struct socks5_sendbuf {
 	/* capacity of buffer */
 	size_t clen;
-	/* processed length */
-	size_t plen;
-	char buffer[];
+	/* available length */
+	size_t alen;
+	unsigned char buffer[1024];
+};
+
+struct socks5_recvbuf {
+	/* capacity of buffer */
+	size_t clen;
+	/* available length */
+	size_t alen;
+	unsigned char buffer[1024];
+};
+
+struct socks5_conn {
+	enum socks5_state s;
+	struct socks5_sendbuf sbuf;
+	struct socks5_recvbuf rbuf;
 };
 
 struct socks5_param {
@@ -54,7 +67,6 @@ struct socks5_creds {
 };
 
 struct socks5_ctx {
-	struct socks5_conn c;
 	struct socks5_creds creds;
 };
 
@@ -117,3 +129,12 @@ struct userpwd_list {
 	struct userpwd_pair *arr;
 	struct userpwd_pair *prev_arr;
 };
+
+/*
+* Accept client greeting and prepare hadnshake buffer.
+*
+* @param ctx Pointer to the SOCKS5 context.
+* @param conn Pointer to the SOCKS5 connection data.
+* @return zero on success, -EAGAIN if more data is needed, -EINVAL if the payload is malformed.
+*/
+static int socks5_accept_greet(struct socks5_ctx *ctx, struct socks5_conn *conn);

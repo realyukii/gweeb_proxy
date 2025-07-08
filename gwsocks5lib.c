@@ -132,14 +132,14 @@ static int socks5_init(struct socks5_ctx *ctx, struct socks5_param *p)
 	return 0;
 }
 
-// static struct socks5_conn *socks5_accept_greet(struct socks5_ctx *ctx,
-static int socks5_accept_greet(struct socks5_ctx *ctx,
-						struct socks5_greeting *buffer)
+static int socks5_accept_greet(struct socks5_ctx *ctx, struct socks5_conn *conn)
 {
 	uint8_t i, preferred_auth = NONE;
+	struct socks5_greeting *buffer = (void *)conn->rbuf.buffer;
+	conn->s = GREETING;
 
 	if (buffer->ver != 0x5)
-		return preferred_auth;
+		return -EINVAL;
 
 	for (i = 0; i < buffer->nauth; i++) {
 		switch (buffer->methods[i]) {
@@ -157,7 +157,9 @@ static int socks5_accept_greet(struct socks5_ctx *ctx,
 	}
 
 auth_method_found:
-	return preferred_auth;
+	conn->sbuf.buffer[0] = 0x5;
+	conn->sbuf.buffer[1] = preferred_auth;
+	return 0;
 }
 
 static int socks5_free_conn(struct socks5_ctx *ctx)
@@ -180,16 +182,21 @@ static void socks5_test_noauth(void)
 	struct socks5_param param = {
 		.auth_file = NULL
 	};
-	struct socks5_greeting greeting_buf;
+	struct socks5_conn scon;
+	struct socks5_greeting *greeting_buf;
 	struct socks5_ctx ctx;
 	r = socks5_init(&ctx, &param);
 	assert(!r);
 
-	greeting_buf.ver = 0x5;
-	greeting_buf.nauth = 0x1;
-	greeting_buf.methods[0] = NO_AUTH;
-	r = socks5_accept_greet(&ctx, &greeting_buf);
-	assert(r == NO_AUTH);
+	greeting_buf = (void *)&scon.rbuf.buffer;
+	greeting_buf->ver = 0x5;
+	greeting_buf->nauth = 0x1;
+	greeting_buf->methods[0] = NO_AUTH;
+	scon.rbuf.clen = sizeof(scon.rbuf.buffer);
+	scon.rbuf.alen = 3;
+	r = socks5_accept_greet(&ctx, &scon);
+	assert(scon.sbuf.buffer[0] == 0x5);
+	assert(scon.sbuf.buffer[1] == NO_AUTH);
 
 	socks5_free_conn(&ctx);
 	PRTEST_OK();
@@ -201,16 +208,21 @@ static void socks5_test_userpwd(void)
 	struct socks5_param param = {
 		.auth_file = "./auth.db"
 	};
-	struct socks5_greeting greeting_buf;
+	struct socks5_conn scon;
+	struct socks5_greeting *greeting_buf;
 	struct socks5_ctx ctx;
 	r = socks5_init(&ctx, &param);
 	assert(!r);
 
-	greeting_buf.ver = 0x5;
-	greeting_buf.nauth = 0x1;
-	greeting_buf.methods[0] = USERNAME_PWD;
-	r = socks5_accept_greet(&ctx, &greeting_buf);
-	assert(r == USERNAME_PWD);
+	greeting_buf = (void *)&scon.rbuf.buffer;
+	greeting_buf->ver = 0x5;
+	greeting_buf->nauth = 0x1;
+	greeting_buf->methods[0] = USERNAME_PWD;
+	scon.rbuf.clen = sizeof(scon.rbuf.buffer);
+	scon.rbuf.alen = 3;
+	r = socks5_accept_greet(&ctx, &scon);
+	assert(scon.sbuf.buffer[0] == 0x5);
+	assert(scon.sbuf.buffer[1] == USERNAME_PWD);
 
 	socks5_free_conn(&ctx);
 	PRTEST_OK();
