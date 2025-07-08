@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <assert.h>
 #include "gwsocks5lib.h"
 
@@ -146,8 +147,10 @@ static int socks5_free_conn(struct socks5_ctx *ctx)
 		free((void *)ctx->creds.auth_file);
 		free(ctx->creds.userpwd_l.arr);
 		free(ctx->creds.userpwd_buf);
+		close(ctx->creds.authfd);
+		pthread_rwlock_destroy(&ctx->creds.creds_lock);
 	}
-	
+
 	return 0;
 }
 
@@ -193,10 +196,39 @@ static void socks5_test_userpwd(void)
 	PRTEST_OK();
 }
 
+static void socks5_test_creds_file_not_found(void)
+{
+	int r;
+	struct socks5_param param = {
+		.auth_file = "./notfound.db"
+	};
+	struct socks5_ctx ctx;
+	r = socks5_init(&ctx, &param);
+	assert(r);
+
+	PRTEST_OK();
+}
+
+static void socks5_test_invalid_creds_format(void)
+{
+	int r;
+	struct socks5_param param = {
+		.auth_file = "./invalid_creds.db"
+	};
+	struct socks5_ctx ctx;
+	r = socks5_init(&ctx, &param);
+	assert(r);
+
+	PRTEST_OK();
+}
+
 static void socks5_run_tests()
 {
 	socks5_test_noauth();
 	socks5_test_userpwd();
+	socks5_test_creds_file_not_found();
+	socks5_test_invalid_creds_format();
+	pr_info("All tests passed!\n");
 }
 
 int main()
