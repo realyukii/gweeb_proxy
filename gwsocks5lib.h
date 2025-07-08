@@ -6,6 +6,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+// used for hot reload feature
+#include <sys/epoll.h>
+#include <sys/inotify.h>
+
 #include "linux.h"
 
 #define MAX_DOMAIN_LEN 255

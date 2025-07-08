@@ -8,7 +8,6 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 {
 	int ret, afd;
 	struct socks5_creds *ac;
-	// struct epoll_event ev;
 
 	ctx->creds.auth_file = strdup(auth_file);
 	if (!ctx->creds.auth_file)
@@ -28,42 +27,61 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 		goto exit_close_filefd;
 	}
 
-	// ifd = inotify_init1(IN_NONBLOCK);
-	// if (ifd < 0) {
-	// 	pr_err(
-	// 		"failed to create inotify file descriptor: %s\n",
-	// 		strerror(errno)
-	// 	);
-	// 	goto exit_close_filefd;
-	// }
+	ac = &ctx->creds;
+	// ac->epfd = epfd;
+	// ac->ifd = ifd;
+	ac->authfd = afd;
 
-	// ret = inotify_add_watch(ifd, ctx->creds.auth_file, IN_CLOSE_WRITE);
-	// if (ret < 0) {
-	// 	pr_err(
-	// 		"failed to add file to inotify watch: %s\n",
-	// 		strerror(errno)
-	// 	);
-	// 	goto exit_close_ifd;
-	// }
+	return 0;
+exit_close_filefd:
+	close(afd);
+	return -EXIT_FAILURE;
+}
 
-	// epfd = epoll_create(1);
-	// if (epfd < 0) {
-	// 	pr_err(
-	// 		"failed to create epoll file descriptor: %s\n",
-	// 		strerror(errno)
-	// 	);
-	// 	goto exit_close_ifd;
-	// }
+__attribute__((__unused__))
+static int socks5_prepare_hotreload(struct socks5_ctx *ctx)
+{
+	int ret, ifd, epfd;
+	struct epoll_event ev;
+	struct socks5_creds *ac;
 
-	// ev.events = EPOLLIN;
-	// ret = epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
-	// if (ret < 0) {
-	// 	pr_err(
-	// 		"failed to add inotifyfd to epoll: %s\n",
-	// 		strerror(errno)
-	// 	);
-	// 	goto exit_close_epfd;
-	// }
+	ifd = inotify_init1(IN_NONBLOCK);
+	if (ifd < 0) {
+		pr_err(
+			"failed to create inotify file descriptor: %s\n",
+			strerror(errno)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	ac = &ctx->creds;
+	ret = inotify_add_watch(ifd, ac->auth_file, IN_CLOSE_WRITE);
+	if (ret < 0) {
+		pr_err(
+			"failed to add file to inotify watch: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_ifd;
+	}
+
+	epfd = epoll_create(1);
+	if (epfd < 0) {
+		pr_err(
+			"failed to create epoll file descriptor: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_ifd;
+	}
+
+	ev.events = EPOLLIN;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
+	if (ret < 0) {
+		pr_err(
+			"failed to add inotifyfd to epoll: %s\n",
+			strerror(errno)
+		);
+		goto exit_close_epfd;
+	}
 
 	// ev.events = EPOLLIN;
 	// ev.data.fd = a->stopfd;
@@ -76,21 +94,22 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 	// 	goto exit_close_epfd;
 	// }
 
-	ac = &ctx->creds;
-	// ac->epfd = epfd;
-	// ac->ifd = ifd;
-	ac->authfd = afd;
-
+	ac->ifd = ifd;
 	pthread_rwlock_init(&ctx->creds.creds_lock, NULL);
 
 	return 0;
-// exit_close_epfd:
-// 	close(epfd);
-// exit_close_ifd:
-// 	close(ifd);
-exit_close_filefd:
-	close(afd);
+exit_close_epfd:
+	close(epfd);
+exit_close_ifd:
+	close(ifd);
 	return -EXIT_FAILURE;
+}
+
+static int socks5_init_creds(struct socks5_ctx *ctx, const char *auth_file)
+{
+	return socks5_load_creds_file(ctx, auth_file);
+	// TODO: when hot reload feature is enabled, figure out how other program interact with it.
+	// socks5_prepare_hotreload(ctx);
 }
 
 /*
@@ -104,7 +123,7 @@ static int socks5_init(struct socks5_ctx *ctx, struct socks5_param *p)
 {
 	int r;
 	if (p->auth_file) {
-		r = socks5_load_creds_file(ctx, p->auth_file);
+		r = socks5_init_creds(ctx, p->auth_file);
 		if (r < 0)
 			return -EXIT_FAILURE;
 	} else
@@ -148,7 +167,8 @@ static int socks5_free_conn(struct socks5_ctx *ctx)
 		free(ctx->creds.userpwd_l.arr);
 		free(ctx->creds.userpwd_buf);
 		close(ctx->creds.authfd);
-		pthread_rwlock_destroy(&ctx->creds.creds_lock);
+		// destroyed only when hot reload feature is enabled
+		// pthread_rwlock_destroy(&ctx->creds.creds_lock);
 	}
 
 	return 0;
