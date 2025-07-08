@@ -669,12 +669,81 @@ static int adjust_client_events(struct tctx *ctx, struct client *c)
 	return 0;
 }
 
+static int handle_resolved_dns(struct tctx *ctx, struct dns_req *dr)
+{
+	int ret;
+	uint64_t evbuf;
+	struct client *c;
+
+	c = dr->c;
+	ret = read(dr->evfd, &evbuf, sizeof(evbuf));
+	if (ret < 0) {
+		pr_err("failed to read buffer from evfd\n");
+		return -EXIT_FAILURE;
+	}
+	int len = strlen(dr->addrstr);
+
+	if (len) {
+		send_wrapper(c->clientfd, dr->addrstr, len);
+		pr_info(
+			"sending response to %s's request: %s, "
+			"not blocked while performing dns resolution!\n",
+			c->addrstr, dr->addrstr
+		);
+	} else
+		send_wrapper(c->clientfd, fail_msg, sizeof(fail_msg));
+
+	close(dr->evfd);
+	pr_dbg("free dns req: %p\n", dr);
+	free(dr);
+	cleanup_client(ctx, c);
+
+	return 0;
+}
+
+static int process_event(struct tctx *ctx, struct epoll_event *ev)
+{
+	int ret;
+	void *data;
+	uint64_t ev_bit = GET_EVBIT(ev->data.u64);
+
+	ev->data.u64 = CLEAR_EVBIT(ev->data.u64);
+	data = ev->data.ptr;
+
+	switch (ev_bit) {
+	case EV_ACCEPT:
+		serve_incoming_client(ctx);
+		break;
+	case EV_CLIENT:
+		ret = talk_to_client(ctx, ev);
+		if (ret < 0) {
+			ret = cleanup_client(ctx, data);
+			if (ret < 0)
+				return -EAGAIN;
+			else
+				break;
+		}
+		adjust_client_events(ctx, data);
+		break;
+	case EV_DNS_RESOLVED:
+		handle_resolved_dns(ctx, data);
+		break;
+	case EV_STOP_PROG:
+		/*
+		* The system deliver SIGTERM or SIGINT,
+		* the program MUST stop the event loop.
+		*/
+		break;
+	}
+
+	return 0;
+}
+
 static int fish_events(struct tctx *ctx)
 {
-	int nr_events, i, ret;
+	int nr_events, i;
 	struct epoll_event evs[DEFAULT_EVENTS_NR];
 	struct epoll_event *ev;
-	uint64_t evbuf;
 
 	nr_events = epoll_wait(ctx->epfd, evs, DEFAULT_EVENTS_NR, -1);
 	if (nr_events < 0) {
@@ -686,62 +755,8 @@ static int fish_events(struct tctx *ctx)
 
 	for (i = 0; i < nr_events; i++) {
 		ev = &evs[i];
-		struct client *c;
-		struct dns_req *dr;
-		void *data;
-		uint64_t ev_bit = GET_EVBIT(ev->data.u64);
-		ev->data.u64 = CLEAR_EVBIT(ev->data.u64);
-		data = ev->data.ptr;
-
-		switch (ev_bit) {
-		case EV_ACCEPT:
-			serve_incoming_client(ctx);
-			break;
-		case EV_CLIENT:
-			c = data;
-			ret = talk_to_client(ctx, ev);
-			if (ret < 0) {
-				ret = cleanup_client(ctx, c);
-				if (ret < 0)
-					return 0;
-				else
-					break;
-			}
-			adjust_client_events(ctx, c);
-			break;
-		case EV_DNS_RESOLVED:
-			int ret;
-			dr = data;
-			c = dr->c;
-			ret = read(dr->evfd, &evbuf, sizeof(evbuf));
-			if (ret < 0) {
-				pr_err("failed to read buffer from evfd\n");
-				return -EXIT_FAILURE;
-			}
-			int len = strlen(dr->addrstr);
-
-			if (len) {
-				send_wrapper(c->clientfd, dr->addrstr, len);
-				pr_info(
-					"sending response to %s's request: %s, "
-					"not blocked while performing dns resolution!\n",
-					c->addrstr, dr->addrstr
-				);
-			} else
-				send_wrapper(c->clientfd, fail_msg, sizeof(fail_msg));
-
-			close(dr->evfd);
-			pr_dbg("free dns req: %p\n", dr);
-			free(dr);
-			cleanup_client(ctx, c);
+		if (process_event(ctx, ev) < 0)
 			return 0;
-		case EV_STOP_PROG:
-			/*
-			* The system deliver SIGTERM or SIGINT,
-			* the program MUST stop the event loop.
-			*/
-			return 0;
-		}
 	}
 
 	return 0;
