@@ -117,10 +117,6 @@ struct gwp_conn {
 	uint32_t epmask;
 	/* human-readable network address and port */
 	char addrstr[ADDRSTR_SZ];
-	/* only for client to track ownership of the client pointer */
-	atomic_int refcnt;
-	/* only for client to hold processed request */
-	struct dns_req *r;
 };
 
 struct pair_conn {
@@ -140,6 +136,10 @@ struct pair_conn {
 	enum auth_type preferred_method;
 	/* username/pwd auth state */
 	bool is_authenticated;
+	/* used to track ownership of the client pointer */
+	atomic_int refcnt;
+	/* hold the processed request */
+	struct dns_req *r;
 };
 
 struct connection_pool {
@@ -472,12 +472,11 @@ static void dequeue_dns(struct dns_queue *q)
 
 static bool put_pc(struct pair_conn *pc)
 {
-	struct gwp_conn *c = &pc->client;
-	int x = atomic_fetch_sub(&c->refcnt, 1);
+	int x = atomic_fetch_sub(&pc->refcnt, 1);
 
 	assert(x >= 1);
 	if (x == 1) {
-		assert(c->refcnt == 0);
+		assert(pc->refcnt == 0);
 		free(pc);
 		return true;
 	}
@@ -571,7 +570,7 @@ static struct pair_conn *init_pair(struct gwp_tctx *gwp)
 	gwp->p.arr[idx] = pc;
 	pc->idx = idx;
 
-	atomic_init(&client->refcnt, 1);
+	atomic_init(&pc->refcnt, 1);
 
 	return pc;
 }
@@ -737,12 +736,7 @@ static int extract_data(struct epoll_event *ev, struct pair_conn **pc,
 		break;
 
 	case EV_BIT_DNS_RESOLVED:
-		*from = &(*pc)->client;
-		*to = &(*pc)->target;
-		pr_info(
-			"dns query for %s is completed for %s\n",
-			(*from)->r->domainname, (*from)->addrstr
-		);
+		// TODO: refactor codebase
 		break;
 	}
 
@@ -1326,7 +1320,7 @@ static int parse_request(struct gwp_tctx *ctx,
 		dname_ptr = s->addr.domain.name;
 		r = init_req(ctx, pc, dname_ptr, domainname_sz);
 		if (r) {
-			atomic_fetch_add(&a->refcnt, 1);
+			atomic_fetch_add(&pc->refcnt, 1);
 			pr_dbg("attempting to lock dns_lock\n");
 			pthread_mutex_lock(&ctx->pctx->dns_lock);
 			pr_dbg("acquired dns_lock\n");
@@ -1763,9 +1757,9 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 
 	if (pc->state == STATE_DNS_RESOLV) {
 		// for testing purposes, always assume dns resolution always succeded
-		ret = prepare_exchange(tctx, pc, (struct sockaddr_storage *)&a->r->in);
-		close(a->r->finishfd);
-		free(a->r);
+		ret = prepare_exchange(tctx, pc, (struct sockaddr_storage *)&pc->r->in);
+		close(pc->r->finishfd);
+		free(pc->r);
 		if (ret < 0)
 			goto exit_err;
 
