@@ -4,6 +4,7 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include <sys/inotify.h>
 #include <sys/eventfd.h>
 #include <signal.h>
+#include <assert.h>
 #include "linux.h"
 #include "general.h"
 
@@ -37,7 +39,9 @@ enum evmask {
 	/* indicate a target file descriptor */
 	EV_BIT_TARGET		= (0x0002ULL << 48ULL),
 	/* indicate a timer file descriptor */
-	EV_BIT_TIMER		= (0x0003ULL << 48ULL)
+	EV_BIT_TIMER		= (0x0003ULL << 48ULL),
+	/* indicate dns request is completed */
+	EV_BIT_DNS_RESOLVED	= (0x0004ULL << 48ULL)
 };
 
 enum gwp_substate {
@@ -55,7 +59,9 @@ enum gwp_state {
 	/* client request. */
 	STATE_REQUEST		= 0x4,
 	/* exchange the data between client and destination */
-	STATE_EXCHANGE		= 0x8
+	STATE_EXCHANGE		= 0x8,
+	/* dns query request is completed */
+	STATE_DNS_RESOLV	= 0x16
 };
 
 enum auth_type {
@@ -81,9 +87,22 @@ enum addr_type {
 	IPv6 = 4
 };
 
-#define ALL_EV_BIT	(EV_BIT_CLIENT | EV_BIT_TARGET | EV_BIT_TIMER)
+#define ALL_EV_BIT	(EV_BIT_CLIENT | EV_BIT_TARGET | EV_BIT_TIMER | EV_BIT_DNS_RESOLVED)
 #define GET_EV_BIT(X)	((X) & ALL_EV_BIT)
 #define CLEAR_EV_BIT(X)	((X) & ~ALL_EV_BIT)
+
+struct dns_req {
+	char domainname[MAX_DOMAIN_LEN];
+	int finishfd;
+	struct sockaddr_in6 in;
+	struct pair_conn *pc;
+	struct dns_req *next;
+};
+
+struct dns_queue {
+	struct dns_req *head;
+	struct dns_req *tail;
+};
 
 struct gwp_conn {
 	/* TCP socket file descriptor */
@@ -96,7 +115,12 @@ struct gwp_conn {
 	size_t off;
 	/* epoll mask used to store epoll event*/
 	uint32_t epmask;
+	/* human-readable network address and port */
 	char addrstr[ADDRSTR_SZ];
+	/* only for client to track ownership of the client pointer */
+	atomic_int refcnt;
+	/* only for client to hold processed request */
+	struct dns_req *r;
 };
 
 struct pair_conn {
@@ -168,8 +192,11 @@ struct auth_creds {
 */
 struct gwp_ctx {
 	struct commandline_args cargs;
-	struct auth_creds creds;
 	struct gwp_tctx *tctx_pool;
+	struct auth_creds creds;
+	struct dns_queue q;
+	pthread_cond_t dns_cond;
+	pthread_mutex_t dns_lock;
 	int stopfd;
 	volatile bool stop;
 };
@@ -187,7 +214,7 @@ struct socks5_addr {
 		uint8_t ipv4[4];
 		struct {
 			uint8_t len;
-			char domain[MAX_DOMAIN_LEN];
+			char name[MAX_DOMAIN_LEN];
 		} domain;
 		uint8_t ipv6[16];
 	} addr;
@@ -224,7 +251,7 @@ struct socks5_userpwd {
 extern char *optarg;
 
 /* only accessed by the signal handler */
-static struct gwp_ctx *g_args;
+static struct gwp_ctx *gctx;
 static const char opts[] = "hw:b:t:T:f:sn:";
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
@@ -364,6 +391,101 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *a)
 }
 
 /*
+* Register events on socket file descriptor to the epoll's interest list.
+*
+* @param fd file descriptor to be registered.
+* @param epfd epoll file descriptor.
+* @param epmask epoll events.
+* @param ptr a pointer to be saved and returned once particular events is ready.
+* @param evmask used to identify the epoll event.
+*/
+static int register_events(int fd, int epfd, uint32_t epmask,
+				void *ptr, uint64_t evmask) {
+	struct epoll_event ev;
+	int ret;
+
+	ev.events = epmask;
+	ev.data.u64 = 0;
+	ev.data.ptr = ptr;
+	ev.data.u64 |= evmask;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+	if (ret < 0) {
+		pr_err(
+			"failed to register event to epoll: %s\n",
+			strerror(errno)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	return 0;
+}
+
+static struct dns_req *init_req(struct gwp_tctx *ctx, struct pair_conn *pc,
+				char *domainname, uint8_t domainname_sz)
+{
+	struct dns_req *r = malloc(sizeof(*r));
+	if (!r) {
+		pr_err("insufficient memory to allocate new dns query req\n");
+		return NULL;
+	}
+
+	r->pc = pc;
+	r->in.sin6_family = AF_UNSPEC;
+	r->in.sin6_port = *(uint16_t *)(domainname + domainname_sz);
+	r->finishfd = eventfd(0, EFD_NONBLOCK);
+	if (r->finishfd < 0) {
+		pr_err(
+			"failed to create event file descriptor: %s\n",
+			strerror(errno)
+		);
+
+		free(r);
+		return NULL;
+	}
+	register_events(r->finishfd, ctx->epfd, EPOLLIN, pc, EV_BIT_DNS_RESOLVED);
+	memcpy(r->domainname, domainname, domainname_sz);
+	r->domainname[domainname_sz] = '\0';
+
+	return r;
+}
+
+static void enqueue_dns(struct dns_queue *q, struct dns_req *r)
+{
+	if (q->head) {
+		q->tail->next = r;
+		q->tail = r;
+	} else
+		q->head = q->tail = r;
+}
+
+static void dequeue_dns(struct dns_queue *q)
+{
+	struct dns_req *r = q->head;
+
+	if (!r)
+		return;
+
+	q->head = q->head->next;
+	if (!q->head)
+		q->tail = NULL;
+}
+
+static bool put_pc(struct pair_conn *pc)
+{
+	struct gwp_conn *c = &pc->client;
+	int x = atomic_fetch_sub(&c->refcnt, 1);
+
+	assert(x >= 1);
+	if (x == 1) {
+		assert(c->refcnt == 0);
+		free(pc);
+		return true;
+	}
+
+	return false;
+}
+
+/*
 * Set socket attribute
 *
 * @param sock network socket file descriptor.
@@ -449,6 +571,8 @@ static struct pair_conn *init_pair(struct gwp_tctx *gwp)
 	gwp->p.arr[idx] = pc;
 	pc->idx = idx;
 
+	atomic_init(&client->refcnt, 1);
+
 	return pc;
 }
 
@@ -484,36 +608,6 @@ static int set_target(struct gwp_conn *tc, struct sockaddr_storage *sockaddr)
 	}
 
 	return tsock;
-}
-
-/*
-* Register events on socket file descriptor to the epoll's interest list.
-*
-* @param fd file descriptor to be registered.
-* @param epfd epoll file descriptor.
-* @param epmask epoll events.
-* @param ptr a pointer to be saved and returned once particular events is ready.
-* @param evmask used to identify the epoll event.
-*/
-static int register_events(int fd, int epfd, uint32_t epmask,
-				void *ptr, uint64_t evmask) {
-	struct epoll_event ev;
-	int ret;
-
-	ev.events = epmask;
-	ev.data.u64 = 0;
-	ev.data.ptr = ptr;
-	ev.data.u64 |= evmask;
-	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
-	if (ret < 0) {
-		pr_err(
-			"failed to register event to epoll: %s\n",
-			strerror(errno)
-		);
-		return -EXIT_FAILURE;
-	}
-
-	return 0;
 }
 
 /*
@@ -640,6 +734,15 @@ static int extract_data(struct epoll_event *ev, struct pair_conn **pc,
 		pr_info("receiving data from target\n");
 		*from = &(*pc)->target;
 		*to = &(*pc)->client;
+		break;
+
+	case EV_BIT_DNS_RESOLVED:
+		*from = &(*pc)->client;
+		*to = &(*pc)->target;
+		pr_info(
+			"dns query for %s is completed for %s\n",
+			(*from)->r->domainname, (*from)->addrstr
+		);
 		break;
 	}
 
@@ -1176,20 +1279,25 @@ static size_t craft_reply(struct socks5_connect_reply *reply_buf,
 /*
 * Read and evaluate client's request.
 *
-* @param a Pointer to the client's information.
+* @param ctx Pointer to thread-specific data.
+* @param pc Pointer to the pair connection struct.
 * @param d Pointer of sockaddr to initialize.
 * @return zero on success, or a negative integer on failure.
 */
-static int parse_request(struct gwp_conn *a, struct sockaddr_storage *d)
+static int parse_request(struct gwp_tctx *ctx,
+			struct pair_conn *pc, struct sockaddr_storage *d)
 {
 	struct socks5_connect_request *c;
 	struct sockaddr_in *in;
 	struct sockaddr_in6 *in6;
 	struct socks5_addr *s;
+	struct gwp_conn *a;
+	struct dns_req *r;
 	uint8_t ipv4_sz, ipv6_sz, domainlen_sz, domainname_sz;
 	size_t expected_len, fixed_len;
-	char dname[MAX_DOMAIN_LEN], *dname_ptr;
+	char *dname_ptr;
 
+	a = &pc->client;
 	c = (void *)a->buf;
 	s = &c->dst_addr;
 	ipv4_sz = sizeof(struct in_addr);
@@ -1215,13 +1323,20 @@ static int parse_request(struct gwp_conn *a, struct sockaddr_storage *d)
 		expected_len = fixed_len + domainlen_sz + domainname_sz;
 		if (a->len < expected_len)
 			return -EAGAIN;
-		dname_ptr = s->addr.domain.domain;
-		memcpy(dname, dname_ptr, domainname_sz);
-		dname[domainname_sz] = '\0';
-		/*
-		* TODO: buat request ke thread dns resolver
-		* untuk resolve domain dname.
-		*/
+		dname_ptr = s->addr.domain.name;
+		r = init_req(ctx, pc, dname_ptr, domainname_sz);
+		if (r) {
+			atomic_fetch_add(&a->refcnt, 1);
+			pr_dbg("attempting to lock dns_lock\n");
+			pthread_mutex_lock(&ctx->pctx->dns_lock);
+			pr_dbg("acquired dns_lock\n");
+			pr_info("sending request to dns resolver thread\n");
+			enqueue_dns(&ctx->pctx->q, r);
+			pthread_cond_signal(&ctx->pctx->dns_cond);
+			pr_dbg("releasing dns_lock\n");
+			pthread_mutex_unlock(&ctx->pctx->dns_lock);
+		}
+		pc->state = STATE_DNS_RESOLV;
 		break;
 	case IPv6:
 		expected_len = fixed_len + ipv6_sz;
@@ -1531,7 +1646,7 @@ static int handle_request(struct pair_conn *pc, struct gwp_tctx *gwp)
 		if (a->len < fixed_len)
 			return -EAGAIN;
 
-		ret = parse_request(a, &d);
+		ret = parse_request(gwp, pc, &d);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				return ret;
@@ -1576,6 +1691,43 @@ static bool is_sock_connected(int sockfd)
 	return err == 0;
 }
 
+static void cleanup_session(struct gwp_tctx *tctx, struct pair_conn *pc)
+{
+	pr_info(
+		"free the system resources for session on %s\n",
+		pc->client.addrstr
+	);
+	if (pc->idx == (tctx->p.nr_item - 1))
+		tctx->p.nr_item--;
+	if (pc->timerfd != -1) {
+		pr_info("close timer file descriptor: %d\n", pc->timerfd);
+		close(pc->timerfd);
+	}
+	if (pc->client.sockfd != -1) {
+		pr_info(
+			"close client connection on socket: "
+			"%d\n", pc->client.sockfd
+		);
+		close(pc->client.sockfd);
+	}
+	if (pc->target.sockfd != -1) {
+		pr_info(
+			"close target connection on socket: "
+			"%d\n", pc->target.sockfd
+		);
+		close(pc->target.sockfd);
+	}
+	pr_info("free client buffer: %p\n", pc->client.buf);
+	free(pc->client.buf);
+	pr_info("free target buffer: %p\n", pc->target.buf);
+	free(pc->target.buf);
+	tctx->p.arr[pc->idx] = NULL;
+
+	if (put_pc(pc)) {
+		pr_dbg("pointer to the session was freed: %p\n", pc);
+	}
+}
+
 /*
 * Process epoll event from tcp connection.
 *
@@ -1607,6 +1759,17 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 			pc->timerfd = -1;
 			pc->is_connected = true;
 		}
+	}
+
+	if (pc->state == STATE_DNS_RESOLV) {
+		// for testing purposes, always assume dns resolution always succeded
+		ret = prepare_exchange(tctx, pc, (struct sockaddr_storage *)&a->r->in);
+		close(a->r->finishfd);
+		free(a->r);
+		if (ret < 0)
+			goto exit_err;
+
+		pc->state = STATE_EXCHANGE;
 	}
 
 	if (pc->state == NO_SOCKS5) {
@@ -1673,22 +1836,7 @@ adjust_epoll:
 
 	return 0;
 exit_err:
-	pr_info(
-		"free the system resources for session on %s\n",
-		pc->client.addrstr
-	);
-	if (pc->idx == (tctx->p.nr_item - 1))
-		tctx->p.nr_item--;
-	if (pc->timerfd != -1)
-		close(pc->timerfd);
-	if (a->sockfd != -1)
-		close(a->sockfd);
-	if (b->sockfd != -1)
-		close(b->sockfd);
-	free(pc->client.buf);
-	free(pc->target.buf);
-	tctx->p.arr[pc->idx] = NULL;
-	free(pc);
+	cleanup_session(tctx, pc);
 	return -EXIT_FAILURE;
 }
 
@@ -1852,27 +2000,8 @@ exit:
 
 	for (i = 0; i < tctx->p.nr_item; i++) {
 		struct pair_conn *pc = tctx->p.arr[i];
-		if (pc) {
-			pr_info("free client buffer: %p\n", pc->client.buf);
-			free(pc->client.buf);
-			pr_info("free target buffer: %p\n", pc->target.buf);
-			free(pc->target.buf);
-			if (pc->client.sockfd != -1) {
-				pr_info(
-					"close client connection on socket: "
-					"%d\n", pc->client.sockfd
-				);
-				close(pc->client.sockfd);
-			}
-			if (pc->target.sockfd != -1) {
-				pr_info(
-					"close target connection on socket: "
-					"%d\n", pc->target.sockfd
-				);
-				close(pc->target.sockfd);
-			}
-			free(pc);
-		}
+		if (pc)
+			cleanup_session(tctx, pc);
 	}
 
 	pr_info("free the connection pool: %p\n", tctx->p.arr);
@@ -1885,7 +2014,7 @@ exit:
 }
 
 /*
-* TCP server thread
+* TCP proxy server thread
 *
 * @param tctx Pointer to thread-specific data.
 * @return negative integer on failure.
@@ -1899,6 +2028,7 @@ static void *server_thread(void *tctx)
 
 /*
 * File watcher thread.
+* dedicated thread to perform hot-reload username/pwd credential file
 *
 * @param args Pointer to application data.
 * @return zero on success, or a negative integer on failure.
@@ -1978,54 +2108,87 @@ exit_err:
 	return (void *)(intptr_t)ret;
 }
 
+void resolve_dns(struct dns_req *r)
+{
+	struct sockaddr_in *in, *tr;
+	struct sockaddr_in6 *in6;
+	struct addrinfo *l;
+	int ret;
+
+	ret = getaddrinfo(r->domainname, NULL, NULL, &l);
+	if (ret != 0) {
+		pr_err(
+			"failed to resolve domain name %s: %s\n",
+			r->domainname, gai_strerror(ret)
+		);
+		return;
+	}
+
+	switch (l->ai_family) {
+	case AF_INET:
+		tr = (void *)&r->in;
+		tr->sin_family = AF_INET;
+		in = (struct sockaddr_in *)l->ai_addr;
+		memcpy(
+			&tr->sin_addr, &in->sin_addr,
+			sizeof(in->sin_addr)
+		);
+		break;
+	case AF_INET6:
+		r->in.sin6_family = AF_INET6;
+		in6 = (struct sockaddr_in6 *)l->ai_addr;
+		memcpy(
+			&r->in.sin6_addr, &in6->sin6_addr,
+			sizeof(in6->sin6_addr)
+		);
+		break;
+	}
+
+	freeaddrinfo(l);
+}
+
 /*
 * Dedicated thread to resolve dns query request from another thread.
 */
-__attribute__((__unused__))
-// static void *dns_resolver_thread(void *args)
-// {
-// 	char dname[MAX_DOMAIN_LEN], *dname_ptr;
-// 	uint8_t domainname_sz;
-// 	struct addrinfo *l;
-// 	struct sockaddr_in *in, *tmp;
-// 	struct sockaddr_in6 *in6, *tmp6;
-// 	struct sockaddr_storage *d;
-// 	int ret;
-// 	ret = getaddrinfo(dname, NULL, NULL, &l);
-// 	if (ret != 0) {
-// 		pr_err(
-// 			"failed to resolve domain name: %s\n",
-// 			gai_strerror(ret)
-// 		);
-// 		return NULL;
-// 	}
+static void *dns_resolver_thread(void *args)
+{
+	struct dns_req *r;
+	struct gwp_ctx *ctx = args;
+	uint64_t val = 1;
 
-// 	switch (l->ai_family) {
-// 	case AF_INET:
-// 		in = (struct sockaddr_in *)d;
-// 		in->sin_family = AF_INET;
-// 		tmp = (struct sockaddr_in *)l->ai_addr;
-// 		memcpy(
-// 			&in->sin_addr, &tmp->sin_addr,
-// 			sizeof(in->sin_addr)
-// 		);
-// 		in->sin_port = *(uint16_t *)(dname_ptr + domainname_sz);
-// 		break;
-// 	case AF_INET6:
-// 		in6 = (struct sockaddr_in6 *)d;
-// 		in6->sin6_family = AF_INET6;
-// 		tmp6 = (struct sockaddr_in6 *)l->ai_addr;
-// 		memcpy(
-// 			&in6->sin6_addr, &tmp6->sin6_addr,
-// 			sizeof(in6->sin6_addr)
-// 		);
-// 		in6->sin6_port = *(uint16_t *)(dname_ptr + domainname_sz);
-// 		break;
-// 	}
-// 	freeaddrinfo(l);
-// 	(void)args;
-// 	return NULL;
-// }
+	pr_dbg("attempting to lock dns_lock\n");
+	pthread_mutex_lock(&ctx->dns_lock);
+	pr_dbg("acquired dns_lock\n");
+	while (!ctx->stop) {
+		r = ctx->q.head;
+		if (!r) {
+			pr_dbg("releasing dns_lock and waiting for signal\n");
+			pthread_cond_wait(&ctx->dns_cond, &ctx->dns_lock);
+			pr_dbg("acquired dns_lock\n");
+			r = ctx->q.head;
+			if (!r)
+				continue;
+		}
+
+		pr_info("doing blocking operation, releasing dns_lock\n");
+		pthread_mutex_unlock(&ctx->dns_lock);
+		resolve_dns(r);
+		pr_dbg("attempting to lock dns_lock\n");
+		pthread_mutex_lock(&ctx->dns_lock);
+		pr_dbg("acquired dns_lock\n");
+		dequeue_dns(&ctx->q);
+		if (put_pc(r->pc)) {
+			pr_dbg("pointer to the session was freed: %p\n", r->pc);
+			close(r->finishfd);
+			free(r);
+		} else
+			write(r->finishfd, &val, sizeof(val));
+	}
+	pr_dbg("releasing dns_lock\n");
+	pthread_mutex_unlock(&ctx->dns_lock);
+
+	return NULL;
+}
 
 /*
 * Signal handler.
@@ -2052,12 +2215,14 @@ static void signal_handler(int c)
 		break;
 	}
 
-	g_args->stop = true;
-	write(g_args->stopfd, &val, sizeof(val));
+	gctx->stop = true;
+	write(gctx->stopfd, &val, sizeof(val));
+	pthread_cond_signal(&gctx->dns_cond);
 }
 
 static int init_pctx(struct gwp_ctx *ctx)
 {
+	ctx->q.head = NULL;
 	ctx->stop = false;
 	ctx->stopfd = eventfd(0, EFD_NONBLOCK);
 	if (ctx->stopfd < 0) {
@@ -2067,6 +2232,11 @@ static int init_pctx(struct gwp_ctx *ctx)
 		);
 		return -EXIT_FAILURE;
 	}
+
+	pr_info("initialize dns pthread_cond_t\n");
+	pthread_cond_init(&ctx->dns_cond, NULL);
+	pr_info("initialize dns pthread_mutex_t\n");
+	pthread_mutex_init(&ctx->dns_lock, NULL);
 
 	return 0;
 }
@@ -2184,7 +2354,6 @@ static int spawn_server_threads(struct gwp_ctx *ctx)
 		return -EXIT_FAILURE;
 	}
 
-	// pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, NULL);
 	for (i = 0; i < ctx->cargs.server_thread_nr; i++) {
 		t = &ctx->tctx_pool[i];
 		ret = init_tctx(ctx, t);
@@ -2222,7 +2391,7 @@ int main(int argc, char *argv[])
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
-	g_args = &ctx;
+	gctx = &ctx;
 
 	sigaction(SIGTERM, &s, NULL);
 	sigaction(SIGINT, &s, NULL);
@@ -2238,11 +2407,12 @@ int main(int argc, char *argv[])
 	if (ret < 0)
 		goto exit_cleanup_auth_creds;
 
+	pthread_create(&dnsresolv_t, NULL, dns_resolver_thread, &ctx);
 	spawn_server_threads(&ctx);
 
 	if (ctx.cargs.auth_file)
 		pthread_join(watcher_t, &retval);
-	// pthread_join(dnsresolv_t, &retval);
+	pthread_join(dnsresolv_t, &retval);
 
 	for (i = 0; i < ctx.cargs.server_thread_nr; i++) {
 		if (i == 0)
