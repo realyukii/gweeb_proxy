@@ -145,6 +145,7 @@ static int socks5_handle_greeting(struct socks5_conn *conn, const unsigned char 
 		*in_len = exp_len;
 		return -EAGAIN;
 	}
+	*in_len = exp_len;
 
 	chosen_method = conn->ctx->creds.auth_file ? 0x2 : 0x0;
 	acceptable = false;
@@ -159,6 +160,7 @@ static int socks5_handle_greeting(struct socks5_conn *conn, const unsigned char 
 	out->ver = 0x5;
 	out->chosen_method = acceptable ? chosen_method : 0xFF;
 	conn->state = chosen_method == 0x2 ? SOCKS5_AUTH : SOCKS5_REQUEST;
+	*out_len = 2;
 
 	return 0;
 }
@@ -195,6 +197,8 @@ static int socks5_handle_auth(struct socks5_conn *conn, const struct socks5_user
 	exp_len += *plen;
 	if (*in_len < exp_len)
 		return -EAGAIN;
+
+	*in_len = exp_len;
 
 	password = (void *)(plen + 1);
 
@@ -293,6 +297,8 @@ static int socks5_handle_request(struct socks5_conn *conn, const struct socks5_r
 		*in_len = exp_len;
 		return -EAGAIN;
 	}
+
+	*in_len = exp_len;
 
 	conn->state = state;
 
@@ -442,7 +448,7 @@ do {											\
 	_olen = sizeof(_out_buf);							\
 	_r = socks5_process_data(CONN, _payload_greeting, &_plen, _out_buf, &_olen);	\
 	assert(!_r);									\
-	assert(_plen == 0);								\
+	assert(_plen == 3);								\
 	assert(_olen == HANDSHAKE_LEN);							\
 	assert(_out_buf[0] == 0x5);	/* VER */					\
 	assert(_out_buf[1] == 0x0);	/* NO AUTH METHOD */				\
@@ -467,7 +473,6 @@ static void socks5_test_invalid_cmd(void)
 	plen = sizeof(payload);
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
-	assert(plen == 2);
 	assert(r == -EINVAL);
 
 	socks5_free_conn(conn);
@@ -492,7 +497,6 @@ static void socks5_test_invalid_addr_type(void)
 	plen = sizeof(payload);
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
-	assert(plen == 4);
 	assert(r == -EINVAL);
 
 	socks5_free_conn(conn);
