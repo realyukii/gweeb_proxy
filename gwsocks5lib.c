@@ -160,8 +160,15 @@ int socks5_process_data(struct socks5_conn *conn, const void *in, unsigned *in_l
 }
 
 int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr,
-				uint8_t rep_code, void *replybuf, unsigned *replylen)
+				uint8_t rep_code, void *rep_buf, unsigned *rep_len)
 {
+	(void)conn;
+	(void)addr;
+	(void)rep_code;
+	(void)rep_buf;
+	(void)rep_len;
+
+	return 0;
 }
 
 void socks5_free_ctx(struct socks5_ctx *ctx)
@@ -209,84 +216,98 @@ static void socks5_test_invalid_creds_format(void)
 	PRTEST_OK();
 }
 
-static void socks5_test_invalid_cmd()
+#define socks5_do_init_ctx_noauth(CTX)				\
+do {								\
+	struct socks5_cfg param = {				\
+		.auth_file = NULL				\
+	};							\
+	int _r;							\
+	_r = socks5_init(CTX, &param);				\
+	assert(!_r);						\
+} while (0)
+
+#define socks5_do_alloc_conn(CTX, CONN)				\
+do {								\
+	CONN = socks5_alloc_conn(CTX);				\
+	assert(CONN);						\
+	assert(CONN->state == SOCKS5_GREETING);			\
+} while (0)
+
+#define socks5_do_greeting_noauth(CONN)							\
+do {											\
+	int _r;										\
+	const uint8_t _payload_greeting[] = {						\
+		0x5, 0x1, 0x0,	/* VER, NMETHODS, NO AUTH METHOD */			\
+	};										\
+	char _out_buf[HANDSHAKE_LEN];							\
+	unsigned _plen, _olen;								\
+	_plen = sizeof(_payload_greeting);						\
+	_olen = sizeof(_out_buf);							\
+	_r = socks5_process_data(CONN, _payload_greeting, &_plen, _out_buf, &_olen);	\
+	assert(!_r);									\
+	assert(_plen == 0);								\
+	assert(_olen == HANDSHAKE_LEN);							\
+	assert(_out_buf[0] == 0x5);	/* VER */					\
+	assert(_out_buf[1] == 0x0);	/* NO AUTH METHOD */				\
+	assert(CONN->state == SOCKS5_REQUEST);						\
+} while(0)
+
+static void socks5_test_invalid_cmd(void)
 {
 	int r;
-	unsigned plen, olen, tlen;
-	char out_buf[1024];
-	const uint8_t payload[] = {
-		0x5, 0x1, 0x0,		// VER, NMETHODS, NO AUTH METHOD
-		0x5, 0xf, 0x0, 0x5, 	// VER, invalid CMD, RSV, IPv6 ATYP
-		0x0, 0x0, 0x0, 0x0,
-		0x0, 0x0, 0x0, 0x0,
-		0x0, 0x0, 0x0, 0x0,
-		0x0, 0x0, 0x0, 0x1,	// address ::1
-		0x1f, 0x91		// port 8081
-	};
-	struct socks5_cfg param = {
-		.auth_file = NULL
-	};
+	unsigned plen, olen;
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
-	r = socks5_init(&ctx, &param);
-	assert(!r);
+	char out_buf[1024];
+	const uint8_t payload[] = {
+		0x5, 0xf, 0x0, 0x5, 	// VER, invalid CMD, RSV, IPv6 ATYP
+	};
 
-	conn = socks5_alloc_conn(ctx);
-	assert(conn);
-	assert(conn->state == SOCKS5_GREETING);
+	socks5_do_init_ctx_noauth(&ctx);
+	socks5_do_alloc_conn(ctx, conn);
+	socks5_do_greeting_noauth(conn);
 
-	tlen = 0;
 	plen = sizeof(payload);
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
-	assert(plen == 0);
-	assert(olen == HANDSHAKE_LEN);
-	tlen += olen;
+	assert(plen == 2);
+	assert(r == -EINVAL);
+
+	socks5_free_conn(conn);
+	socks5_free_ctx(ctx);
 }
 
-static void socks5_test_invalid_addr_type()
+static void socks5_test_invalid_addr_type(void)
 {
 	int r;
-	unsigned plen, olen, tlen;
-	char out_buf[1024];
-	const uint8_t payload[] = {
-		0x5, 0x1, 0x0,		// VER, NMETHODS, NO AUTH METHOD
-		0x5, 0x1, 0x0, 0x5, 	// VER, CONNECT CMD, RSV, invalid ATYP
-		0x0, 0x0, 0x0, 0x0,
-		0x0, 0x0, 0x0, 0x0,
-		0x0, 0x0, 0x0, 0x0,
-		0x0, 0x0, 0x0, 0x1,	// address ::1
-		0x1f, 0x91		// port 8081
-	};
-	struct socks5_cfg param = {
-		.auth_file = NULL
-	};
+	unsigned plen, olen;
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
-	r = socks5_init(&ctx, &param);
-	assert(!r);
+	char out_buf[1024];
+	const uint8_t payload[] = {
+		0x5, 0x1, 0x0, 0x5, 	// VER, CONNECT CMD, RSV, invalid ATYP
+	};
 
-	conn = socks5_alloc_conn(ctx);
-	assert(conn);
-	assert(conn->state == SOCKS5_GREETING);
+	socks5_do_init_ctx_noauth(&ctx);
+	socks5_do_alloc_conn(ctx, conn);
+	socks5_do_greeting_noauth(conn);
 
-	tlen = 0;
 	plen = sizeof(payload);
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
-	assert(plen == 0);
-	assert(olen == HANDSHAKE_LEN);
-	tlen += olen;
+	assert(plen == 4);
+	assert(r == -EINVAL);
+
+	socks5_free_conn(conn);
+	socks5_free_ctx(ctx);
 }
 
 static void socks5_test_ipv6_noauth(void)
 {
 	int r;
-	const char ipv6_netaddr[] = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01";
-	unsigned plen, olen, tlen;
+	unsigned plen, olen;
 	char out_buf[1024];
 	const uint8_t payload[] = {
-		0x5, 0x1, 0x0,		// VER, NMETHODS, NO AUTH METHOD
 		0x5, 0x1, 0x0, 0x4, 	// VER, CONNECT CMD, RSV, IPv6 ATYP
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x0,
@@ -294,28 +315,17 @@ static void socks5_test_ipv6_noauth(void)
 		0x0, 0x0, 0x0, 0x1,	// address ::1
 		0x1f, 0x91		// port 8081
 	};
-	struct socks5_cfg param = {
-		.auth_file = NULL
-	};
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
-	r = socks5_init(&ctx, &param);
-	assert(!r);
 
-	conn = socks5_alloc_conn(ctx);
-	assert(conn);
-	assert(conn->state == SOCKS5_GREETING);
+	socks5_do_init_ctx_noauth(&ctx);
+	socks5_do_alloc_conn(ctx, conn);
+	socks5_do_greeting_noauth(conn);
 
-	tlen = 0;
 	plen = sizeof(payload);
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
-	assert(plen == 0);
-	assert(olen == HANDSHAKE_LEN);
-	tlen += olen;
-
-	assert(out_buf[0] == 0x5);			// VER
-	assert(out_buf[1] == 0x0);			// METHOD NO AUTH
+	assert(!r);
 	assert(conn->state == SOCKS5_CMD_CONNECT);
 
 	/* .. pretend perform connect syscall ... */
@@ -323,21 +333,24 @@ static void socks5_test_ipv6_noauth(void)
 	struct socks5_addr saddr = {
 		.type = 0x4,
 		.port = 5081,
-		.addr.ipv6 = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01"
+		.addr.ipv6 = {
+			0x0, 0x0, 0x0, 0x0,
+			0x0, 0x0, 0x0, 0x0,
+			0x0, 0x0, 0x0, 0x0,
+			0x0, 0x0, 0x0, 0x1
+		}
 	};
-	olen = sizeof(out_buf) - tlen;
-	socks5_handle_cmd_connect(conn, &saddr, 0, &out_buf[2], &olen);
+	olen = sizeof(out_buf);
+	socks5_handle_cmd_connect(conn, &saddr, 0, out_buf, &olen);
 	assert(olen == REPLY_REQ_IPV6_LEN);
-	tlen += olen;
 
-	assert(out_buf[2] == 0x5);			// VER
-	assert(out_buf[3] == 0x0);			// REP success
-	assert(out_buf[4] == 0x0);			// RSV
-	assert(out_buf[5] == 0x4);			// ATYP IPv6
-	assert(!memcmp(&out_buf[6], ipv6_netaddr, 16));	// BND ADDR ::1
-	assert(!memcmp(&out_buf[22], "\x13\xd9", 2));	// BND PORT 5081
+	assert(out_buf[2] == 0x5);				// VER
+	assert(out_buf[3] == 0x0);				// REP success
+	assert(out_buf[4] == 0x0);				// RSV
+	assert(out_buf[5] == 0x4);				// ATYP IPv6
+	assert(!memcmp(&out_buf[6], saddr.addr.ipv6, 16));	// BND ADDR ::1
+	assert(!memcmp(&out_buf[22], "\x13\xd9", 2));		// BND PORT 5081
 
-	assert(tlen == HANDSHAKE_LEN + REPLY_REQ_IPV6_LEN);
 	socks5_free_conn(conn);
 	socks5_free_ctx(ctx);
 
@@ -346,8 +359,12 @@ static void socks5_test_ipv6_noauth(void)
 
 static void socks5_run_tests()
 {
+	/* test case for improper usage of library */
 	socks5_test_creds_file_not_found();
 	socks5_test_invalid_creds_format();
+	/* test case for malformed payload */
+	socks5_test_invalid_cmd();
+	socks5_test_invalid_addr_type();
 	socks5_test_ipv6_noauth();
 	pr_info("All tests passed!\n");
 }
