@@ -43,7 +43,7 @@ enum socks5_state {
 };
 
 enum socks5_cmd {
-	SOCKS5_CMD_CONNECT,
+	SOCKS5_CMD_CONNECT = 0x1,
 	SOCKS5_CMD_BIND,
 	SOCKS5_CMD_UDP_ASSOCIATE
 };
