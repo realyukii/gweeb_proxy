@@ -53,8 +53,6 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 	}
 
 	ac = &ctx->creds;
-	// ac->epfd = epfd;
-	// ac->ifd = ifd;
 	ac->authfd = afd;
 
 	return 0;
@@ -63,7 +61,6 @@ exit_close_filefd:
 	return -EXIT_FAILURE;
 }
 
-__attribute__((__unused__))
 static int socks5_prepare_hotreload(struct socks5_ctx *ctx)
 {
 	int ret, ifd, epfd;
@@ -108,19 +105,7 @@ static int socks5_prepare_hotreload(struct socks5_ctx *ctx)
 		goto exit_close_epfd;
 	}
 
-	// ev.events = EPOLLIN;
-	// ev.data.fd = a->stopfd;
-	// ret = epoll_ctl(epfd, EPOLL_CTL_ADD, a->stopfd, &ev);
-	// if (ret < 0) {
-	// 	pr_err(
-	// 		"failed to add eventfd to epoll: %s\n",
-	// 		strerror(errno)
-	// 	);
-	// 	goto exit_close_epfd;
-	// }
-
 	ac->ifd = ifd;
-	pthread_rwlock_init(&ctx->creds.creds_lock, NULL);
 
 	return 0;
 exit_close_epfd:
@@ -132,9 +117,13 @@ exit_close_ifd:
 
 static int socks5_init_creds(struct socks5_ctx *ctx, const char *auth_file)
 {
-	return socks5_load_creds_file(ctx, auth_file);
-	// TODO: when hot reload feature is enabled, figure out how other program interact with it.
-	// socks5_prepare_hotreload(ctx);
+	int ret;
+	ret = socks5_load_creds_file(ctx, auth_file);
+	if (ret < 0)
+		return -EXIT_FAILURE;
+
+	ret = socks5_prepare_hotreload(ctx);
+	return ret;
 }
 
 static int socks5_handle_greeting(struct data_args *args)
@@ -348,6 +337,24 @@ static int socks5_handle_request(struct data_args *args)
 	return 0;
 }
 
+int socks5_reload_creds_file(struct socks5_ctx *ctx)
+{
+	int ret;
+	struct socks5_creds *ac = &ctx->creds;
+	if (ac->userpwd_l.nr_entry) {
+		ac->userpwd_l.prev_arr = ac->userpwd_l.arr;
+		ac->prev_userpwd_buf = ac->userpwd_buf;
+	}
+
+	ret = parse_auth_file(ac->authfd, &ac->userpwd_l, &ac->userpwd_buf);
+	if (!ret) {
+		free(ac->userpwd_l.prev_arr);
+		free(ac->prev_userpwd_buf);
+	}
+
+	return ret;
+}
+
 int socks5_init(struct socks5_ctx **ctx, struct socks5_cfg *p)
 {
 	int r;
@@ -440,8 +447,7 @@ void socks5_free_ctx(struct socks5_ctx *ctx)
 		free(ctx->creds.userpwd_l.arr);
 		free(ctx->creds.userpwd_buf);
 		close(ctx->creds.authfd);
-		// destroyed only when hot reload feature is enabled
-		// pthread_rwlock_destroy(&ctx->creds.creds_lock);
+		close(ctx->creds.ifd);
 	}
 
 	free(ctx);

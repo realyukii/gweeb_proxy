@@ -67,8 +67,6 @@ struct socks5_cfg {
 struct socks5_creds {
 	int authfd;
 	int ifd;
-	int epfd;
-	pthread_rwlock_t creds_lock;
 	const char *auth_file;
 	struct userpwd_list userpwd_l;
 	char *userpwd_buf;
@@ -189,3 +187,13 @@ int socks5_process_data(struct socks5_conn *conn,
 */
 int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr,
 				uint8_t rep_code, void *replybuf, unsigned *replylen);
+
+/*
+* Reload username/password credential.
+* it's recommended to call this function when inotify event on epoll is triggered.
+*
+* @param ctx
+* @return zoro on success, or a negative integer on failure
+* (you can ignore if you want, it will restore previous value).
+*/
+static int socks5_reload_creds_file(struct socks5_ctx *ctx);
