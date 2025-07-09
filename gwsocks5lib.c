@@ -137,16 +137,14 @@ static int socks5_handle_greeting(struct data_args *args)
 	struct socks5_handshake *out = args->out;
 
 	if (*args->out_len < required_len) {
-		*args->out_len = 2;
+		args->written_out = 2;
 		return -ENOBUFS;
 	}
 
 	exp_len = 2;
-	if (*args->in_len < exp_len) {
-		*args->in_len = exp_len;
+	if (*args->in_len < exp_len)
 		return -EAGAIN;
-	}
-	
+
 	if (in[0] != 0x5)
 		return -EINVAL;
 	
@@ -154,10 +152,9 @@ static int socks5_handle_greeting(struct data_args *args)
 		return -EINVAL;
 
 	exp_len += in[1];
-	if (*args->in_len < exp_len) {
-		*args->in_len = exp_len;
+	if (*args->in_len < exp_len)
 		return -EAGAIN;
-	}
+
 	advance_inbuf(args, exp_len);
 
 	chosen_method = args->conn->ctx->creds.auth_file ? 0x2 : 0x0;
@@ -193,7 +190,7 @@ static int socks5_handle_auth(struct data_args *args)
 	int i, ret;
 
 	if (*args->out_len < required_len) {
-		*args->out_len = required_len;
+		args->written_out = required_len;
 		return -ENOBUFS;
 	}
 
@@ -268,14 +265,12 @@ static int socks5_handle_request(struct data_args *args)
 	unsigned exp_len = 4, required_len = 4 + 4 + 2;
 
 	if (*args->out_len < required_len) {
-		*args->out_len = required_len;
+		args->written_out = required_len;
 		return -ENOBUFS;
 	}
 
-	if (*args->in_len < exp_len) {
-		*args->in_len = exp_len;
+	if (*args->in_len < exp_len)
 		return -EAGAIN;
-	}
 
 	if (in->ver != 0x5) {
 		set_err_reply(out, SOCKS5_GENERAL_FAILURE);
@@ -326,10 +321,8 @@ static int socks5_handle_request(struct data_args *args)
 	}
 	exp_len += 2;
 
-	if (*args->in_len < exp_len) {
-		*args->in_len = exp_len;
+	if (*args->in_len < exp_len)
 		return -EAGAIN;
-	}
 
 	advance_inbuf(args, exp_len);
 
