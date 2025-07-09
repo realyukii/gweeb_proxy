@@ -7,6 +7,16 @@
 #define REPLY_REQ_IPV6_LEN (1 + 1 + 1 + 1 + 16 + 2)
 #define MAX_USERPWD_PKT (1 + 1 + 255 + 1 + 255)
 
+struct data_args {
+	struct socks5_conn *conn;
+	const void *in;
+	unsigned *in_len;
+	void *out;
+	unsigned *out_len;
+	unsigned total_advance;
+};
+
+
 static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 {
 	int ret, afd;
@@ -115,22 +125,23 @@ static int socks5_init_creds(struct socks5_ctx *ctx, const char *auth_file)
 	// socks5_prepare_hotreload(ctx);
 }
 
-static int socks5_handle_greeting(struct socks5_conn *conn, const unsigned char *in,
-				unsigned *in_len, struct socks5_handshake *out, unsigned *out_len)
+static int socks5_handle_greeting(struct data_args *args)
 {
 	uint8_t chosen_method;
 	const uint8_t *ptr;
 	unsigned exp_len;
 	bool acceptable;
+	const unsigned char *in = args->in;
+	struct socks5_handshake *out = args->out;
 
-	if (*out_len < 2) {
-		*out_len = 2;
+	if (*args->out_len < 2) {
+		*args->out_len = 2;
 		return -ENOBUFS;
 	}
 
 	exp_len = 2;
-	if (*in_len < exp_len) {
-		*in_len = exp_len;
+	if (*args->in_len < exp_len) {
+		*args->in_len = exp_len;
 		return -EAGAIN;
 	}
 	
@@ -141,13 +152,13 @@ static int socks5_handle_greeting(struct socks5_conn *conn, const unsigned char 
 		return -EINVAL;
 
 	exp_len += in[1];
-	if (*in_len < exp_len) {
-		*in_len = exp_len;
+	if (*args->in_len < exp_len) {
+		*args->in_len = exp_len;
 		return -EAGAIN;
 	}
-	*in_len = exp_len;
+	*args->in_len = exp_len;
 
-	chosen_method = conn->ctx->creds.auth_file ? 0x2 : 0x0;
+	chosen_method = args->conn->ctx->creds.auth_file ? 0x2 : 0x0;
 	acceptable = false;
 	ptr = &in[2];
 	for (size_t i = 0; i < in[1]; i++) {
@@ -159,28 +170,29 @@ static int socks5_handle_greeting(struct socks5_conn *conn, const unsigned char 
 
 	out->ver = 0x5;
 	out->chosen_method = acceptable ? chosen_method : 0xFF;
-	conn->state = chosen_method == 0x2 ? SOCKS5_AUTH : SOCKS5_REQUEST;
-	*out_len = 2;
+	args->conn->state = chosen_method == 0x2 ? SOCKS5_AUTH : SOCKS5_REQUEST;
+	*args->out_len = 2;
 
 	return 0;
 }
 
-static int socks5_handle_auth(struct socks5_conn *conn, const struct socks5_userpwd *in,
-				unsigned *in_len, char *out, unsigned *out_len)
+static int socks5_handle_auth(struct data_args *args)
 {
 	struct userpwd_pair *p;
+	const struct socks5_userpwd *in = args->in;
 	const char *username, *password;
+	char *out = args->out;
 	bool is_authenticated;
 	uint8_t *plen;
 	unsigned exp_len = 2;
 	int i, ret;
 
-	if (*out_len < 2) {
-		*out_len = 2;
+	if (*args->out_len < 2) {
+		*args->out_len = 2;
 		return -ENOBUFS;
 	}
 
-	if (*in_len < exp_len)
+	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
 	// if (in->ver != 1) {
@@ -188,23 +200,23 @@ static int socks5_handle_auth(struct socks5_conn *conn, const struct socks5_user
 	// }
 
 	exp_len += in->ulen + 1;
-	if (*in_len < exp_len)
+	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
 	username = in->rest_bytes;
 	plen = (void *)&in->rest_bytes[in->ulen];
 
 	exp_len += *plen;
-	if (*in_len < exp_len)
+	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
-	*in_len = exp_len;
+	*args->in_len = exp_len;
 
 	password = (void *)(plen + 1);
 
 	is_authenticated = 0x1;
-	for (i = 0; i < conn->ctx->creds.userpwd_l.nr_entry; i++) {
-		p = &conn->ctx->creds.userpwd_l.arr[i];
+	for (i = 0; i < args->conn->ctx->creds.userpwd_l.nr_entry; i++) {
+		p = &args->conn->ctx->creds.userpwd_l.arr[i];
 
 		if (in->ulen != p->ulen || *plen != p->plen)
 			continue;
@@ -239,20 +251,21 @@ static void set_err_reply(struct socks5_reply *out, uint8_t rep_code)
 	memcpy((void *)(out->bnd_addr.addr.ipv4 + 4), &port, 2);
 }
 
-static int socks5_handle_request(struct socks5_conn *conn, const struct socks5_request *in,
-				unsigned *in_len, struct socks5_reply *out, unsigned *out_len)
+static int socks5_handle_request(struct data_args *args)
 {
 	uint8_t atyp;
+	struct socks5_reply *out = args->out;
+	const struct socks5_request *in = args->in;
 	enum socks5_state state;
 	unsigned exp_len = 4, required_len = 4 + 4 + 2;
 
-	if (*out_len < required_len) {
-		*out_len = required_len;
+	if (*args->out_len < required_len) {
+		*args->out_len = required_len;
 		return -ENOBUFS;
 	}
 
-	if (*in_len < exp_len) {
-		*in_len = exp_len;
+	if (*args->in_len < exp_len) {
+		*args->in_len = exp_len;
 		return -EAGAIN;
 	}
 
@@ -293,14 +306,14 @@ static int socks5_handle_request(struct socks5_conn *conn, const struct socks5_r
 		return -EINVAL;
 	}
 
-	if (*in_len < exp_len) {
-		*in_len = exp_len;
+	if (*args->in_len < exp_len) {
+		*args->in_len = exp_len;
 		return -EAGAIN;
 	}
 
-	*in_len = exp_len;
+	*args->in_len = exp_len;
 
-	conn->state = state;
+	args->conn->state = state;
 
 	return 0;
 }
@@ -342,17 +355,25 @@ struct socks5_conn *socks5_alloc_conn(struct socks5_ctx *ctx)
 int socks5_process_data(struct socks5_conn *conn, const void *in, unsigned *in_len,
 			void *out, unsigned *out_len)
 {
+	struct data_args args = {
+		.conn = conn,
+		.in = in,
+		.in_len = in_len,
+		.out = out,
+		.out_len = out_len,
+		.total_advance = 0
+	};
 	int r;
 
 	switch (conn->state) {
 	case SOCKS5_GREETING:
-		r = socks5_handle_greeting(conn, in, in_len, out, out_len);
+		r = socks5_handle_greeting(&args);
 		break;
 	case SOCKS5_AUTH:
-		r = socks5_handle_auth(conn, in, in_len, out, out_len);
+		r = socks5_handle_auth(&args);
 		break;
 	case SOCKS5_REQUEST:
-		r = socks5_handle_request(conn, in, in_len, out, out_len);
+		r = socks5_handle_request(&args);
 		break;
 	default:
 		abort();
