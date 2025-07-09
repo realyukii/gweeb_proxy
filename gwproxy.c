@@ -2370,7 +2370,7 @@ int main(int argc, char *argv[])
 	int ret;
 	size_t i;
 	void *retval;
-	pthread_t watcher_t, __attribute__((__unused__)) dnsresolv_t;
+	pthread_t watcher_t, dnsresolv_t;
 	struct auth_creds *ac;
 	struct gwp_ctx ctx;
 	struct sigaction s = {
@@ -2387,8 +2387,13 @@ int main(int argc, char *argv[])
 
 	gctx = &ctx;
 
-	sigaction(SIGTERM, &s, NULL);
-	sigaction(SIGINT, &s, NULL);
+	ret = 0;
+	ret |= sigaction(SIGTERM, &s, NULL);
+	ret |= sigaction(SIGINT, &s, NULL);
+	if (ret < 0) {
+		pr_err("failed to register signal handler\n");
+		goto exit_close_stopfd;
+	}
 
 	if (ctx.cargs.auth_file) {
 		ret = init_watcher_file(&ctx);
