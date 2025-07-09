@@ -23,7 +23,7 @@ TARGET6		:= $(BUILDDIR)/gwsocks5lib
 
 CC		:= gcc
 CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -g3
-# LDFLAGS		:= -fsanitize=address
+# LDFLAGS		:= -fsanitize=address -fsanitize=undefined
 
 all: $(TARGET1) $(TARGET2) $(TARGET3) $(TARGET4) $(TARGET5) $(TARGET6)
 

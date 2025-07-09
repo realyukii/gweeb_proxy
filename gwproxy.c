@@ -44,11 +44,6 @@ enum evmask {
 	EV_BIT_DNS_RESOLVED	= (0x0004ULL << 48ULL)
 };
 
-enum gwp_substate {
-	STATE_RECV	= (0x0 << 12ULL),
-	STATE_SEND	= (0x1 << 12ULL)
-};
-
 enum gwp_state {
 	/* not in socks5 mode */
 	NO_SOCKS5		= 0x0,
@@ -1126,7 +1121,6 @@ static int accept_greeting(struct pair_conn *pc, struct gwp_ctx *pctx)
 auth_method_found:
 	pc->preferred_method = preferred_auth;
 	a->len = 0;
-	pc->state |= STATE_SEND;
 
 	return 0;
 }
@@ -1519,8 +1513,6 @@ static int req_userpwd(struct pair_conn *pc, struct auth_creds *creds)
 	pr_dbg("releasing creds_lock\n");
 	pthread_rwlock_unlock(&creds->creds_lock);
 
-	pc->state |= STATE_SEND;
-
 	return 0;
 }
 
@@ -1568,27 +1560,25 @@ static int rep_userpwd(struct gwp_conn *c, char *reply_buf)
 * @param pctx Pointer to application data.
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_userpwd(struct pair_conn *pc, struct gwp_ctx *pctx)
+static int handle_userpwd(struct epoll_event *ev, struct pair_conn *pc, struct gwp_ctx *pctx)
 {
 	char reply_buf[2];
 	int ret;
 
-	if (!(pc->state & STATE_SEND)) {
+	if (ev->events & EPOLLIN) {
 		ret = req_userpwd(pc, &pctx->creds);
 		if (ret < 0)
 			return ret;
 	}
 
-	if ((pc->state & STATE_SEND)) {
-		reply_buf[0] = 0x1;
-		reply_buf[1] = pc->is_authenticated;
-		ret = rep_userpwd(&pc->client, reply_buf);
-		if (ret < 0)
-			return ret;
+	reply_buf[0] = 0x1;
+	reply_buf[1] = pc->is_authenticated;
+	ret = rep_userpwd(&pc->client, reply_buf);
+	if (ret < 0)
+		return ret;
 
-		if (reply_buf[1] == 0x1)
-			return -EXIT_FAILURE;
-	}
+	if (reply_buf[1] == 0x1)
+		return -EXIT_FAILURE;
 
 	return 0;
 }
@@ -1600,7 +1590,7 @@ static int handle_userpwd(struct pair_conn *pc, struct gwp_ctx *pctx)
 * @param gwp Pointer to the gwp_tctx struct (thread data).
 * @return zero on success, or a negative integer on failure.
 */
-static int handle_request(struct pair_conn *pc, struct gwp_tctx *gwp)
+static int handle_request(struct epoll_event *ev, struct pair_conn *pc, struct gwp_tctx *gwp)
 {
 	/* filled with target address to which the client connect. */
 	struct sockaddr_storage d;
@@ -1609,7 +1599,7 @@ static int handle_request(struct pair_conn *pc, struct gwp_tctx *gwp)
 	int ret, rlen = (sizeof(*c) + PORT_SZ) - a->len;
 	size_t fixed_len;
 
-	if (!(pc->state & STATE_SEND)) {
+	if (ev->events & EPOLLIN) {
 		ret = recv(a->sockfd, &a->buf[a->len], rlen, 0);
 		if (ret < 0) {
 			ret = errno;
@@ -1647,25 +1637,21 @@ static int handle_request(struct pair_conn *pc, struct gwp_tctx *gwp)
 			return -EXIT_FAILURE;
 		}
 		a->len = 0;
-
-		pc->state |= STATE_SEND;
 	}
 
-	if (pc->state & STATE_SEND) {
-		if (c->ver != SOCKS5_VER) {
-			pr_err("unsupported socks version.\n");
-			return -EXIT_FAILURE;
-		}
-
-		if (c->cmd != CONNECT) {
-			pr_err("unsupported command, yet.\n");
-			return -EXIT_FAILURE;
-		}
-
-		ret = handle_connect(pc, gwp, &d);
-		if (ret < 0)
-			return ret;
+	if (c->ver != SOCKS5_VER) {
+		pr_err("unsupported socks version.\n");
+		return -EXIT_FAILURE;
 	}
+
+	if (c->cmd != CONNECT) {
+		pr_err("unsupported command, yet.\n");
+		return -EXIT_FAILURE;
+	}
+
+	ret = handle_connect(pc, gwp, &d);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
@@ -1772,8 +1758,8 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 			goto exit_err;
 
 		pc->state = STATE_EXCHANGE;
-	} else if (pc->state & STATE_GREETING) {
-		if (!(pc->state & STATE_SEND)) {
+	} else if (pc->state == STATE_GREETING) {
+		if (ev->events & EPOLLIN) {
 			ret = accept_greeting(pc, tctx->pctx);
 			if (ret < 0) {
 				if (ret == -EAGAIN)
@@ -1782,13 +1768,11 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 			}
 		}
 
-		if (pc->state & STATE_SEND) {
-			ret = response_handshake(pc);
-			if (ret < 0) {
-				if (ret == -EAGAIN)
-					goto adjust_epoll;
-				goto exit_err;
-			}
+		ret = response_handshake(pc);
+		if (ret < 0) {
+			if (ret == -EAGAIN)
+				goto adjust_epoll;
+			goto exit_err;
 		}
 
 		if (pc->preferred_method == NO_AUTH)
@@ -1797,8 +1781,8 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 			pc->state = STATE_AUTH;
 	}
 
-	if (pc->state & STATE_AUTH) {
-		ret = handle_userpwd(pc, tctx->pctx);
+	if (pc->state == STATE_AUTH) {
+		ret = handle_userpwd(ev, pc, tctx->pctx);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				goto adjust_epoll;
@@ -1808,8 +1792,8 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 		pc->state = STATE_REQUEST;
 	}
 
-	if (pc->state & STATE_REQUEST) {
-		ret = handle_request(pc, tctx);
+	if (pc->state == STATE_REQUEST) {
+		ret = handle_request(ev, pc, tctx);
 		if (ret < 0) {
 			if (ret == -EAGAIN)
 				goto adjust_epoll;
@@ -1819,7 +1803,7 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 		pc->state = STATE_EXCHANGE;
 	}
 
-	if (pc->state & STATE_EXCHANGE) {
+	if (pc->state == STATE_EXCHANGE) {
 		ret = exchange_data(ev, a, b);
 		if (ret < 0)
 			goto exit_err;
