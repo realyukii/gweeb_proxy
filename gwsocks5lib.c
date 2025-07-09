@@ -429,14 +429,57 @@ retry:
 	return r;
 }
 
-int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr,
+int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 				uint8_t rep_code, void *rep_buf, unsigned *rep_len)
 {
-	(void)conn;
-	(void)addr;
-	(void)rep_code;
-	(void)rep_buf;
-	(void)rep_len;
+	struct socks5_reply *rep = rep_buf;
+	unsigned required_len;
+	uint8_t dlen;
+
+	required_len = 4;
+	if (*rep_len < required_len)
+		return -ENOBUFS;
+
+	rep->ver = 0x5;
+	rep->rsv = 0x0;
+	rep->rep_code = rep_code;
+	rep->bnd_addr.type = sa->type;
+	switch (sa->type) {
+	case SOCKS5_IPv4:
+		required_len += 4 + 2;
+		if (*rep_len < required_len) {
+			*rep_len = required_len;
+			return -ENOBUFS;
+		}
+		memcpy(rep->bnd_addr.addr.ipv4, sa->addr.ipv4, 4);
+		memcpy((void *)(rep->bnd_addr.addr.ipv4 + 4), &sa->port, 2);
+		break;
+	case SOCKS5_DOMAIN:
+		dlen = sa->addr.domain.len;
+		required_len += 1 + dlen + 2;
+		if (*rep_len < required_len) {
+			*rep_len = required_len;
+			return -ENOBUFS;
+		}
+		rep->bnd_addr.addr.domain.len = dlen;
+		memcpy(rep->bnd_addr.addr.domain.name, sa->addr.domain.name, dlen);
+		memcpy((void *)(rep->bnd_addr.addr.domain.name + dlen), &sa->port, 2);
+		break;
+	case SOCKS5_IPv6:
+		required_len += 16 + 2;
+		if (*rep_len < required_len) {
+			*rep_len = required_len;
+			return -ENOBUFS;
+		}
+		memcpy(rep->bnd_addr.addr.ipv6, sa->addr.ipv6, 16);
+		memcpy((void *)(rep->bnd_addr.addr.ipv6 + 16), &sa->port, 2);
+		break;
+
+	default:
+		return -EINVAL;
+	}
+	conn->state = SOCKS5_FORWARDING;
+	*rep_len = required_len;
 
 	return 0;
 }
@@ -599,7 +642,7 @@ static void socks5_test_ipv6_noauth(void)
 
 	struct socks5_addr saddr = {
 		.type = 0x4,
-		.port = 5081,
+		.port = htons(5081),
 		.addr.ipv6 = {
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
@@ -611,12 +654,12 @@ static void socks5_test_ipv6_noauth(void)
 	socks5_handle_cmd_connect(conn, &saddr, 0, out_buf, &olen);
 	assert(olen == REPLY_REQ_IPV6_LEN);
 
-	assert(out_buf[2] == 0x5);				// VER
-	assert(out_buf[3] == 0x0);				// REP success
-	assert(out_buf[4] == 0x0);				// RSV
-	assert(out_buf[5] == 0x4);				// ATYP IPv6
-	assert(!memcmp(&out_buf[6], saddr.addr.ipv6, 16));	// BND ADDR ::1
-	assert(!memcmp(&out_buf[22], "\x13\xd9", 2));		// BND PORT 5081
+	assert(out_buf[0] == 0x5);				// VER
+	assert(out_buf[1] == 0x0);				// REP success
+	assert(out_buf[2] == 0x0);				// RSV
+	assert(out_buf[3] == 0x4);				// ATYP IPv6
+	assert(!memcmp(&out_buf[4], saddr.addr.ipv6, 16));	// BND ADDR ::1
+	assert(!memcmp(&out_buf[20], "\x13\xd9", 2));		// BND PORT 5081
 
 	socks5_free_conn(conn);
 	socks5_free_ctx(ctx);
