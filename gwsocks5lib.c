@@ -41,13 +41,14 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 	afd = open(ctx->creds.auth_file, O_RDONLY);
 	if (afd < 0) {
 		pr_err("failed to load %s file\n", ctx->creds.auth_file);
-		return -EXIT_FAILURE;
+		return -errno;
 	}
 
 	ctx->creds.userpwd_buf = NULL;
 	ctx->creds.userpwd_l.arr = NULL;
 	ret = parse_auth_file(afd, &ctx->creds.userpwd_l, &ctx->creds.userpwd_buf);
 	if (ret < 0) {
+		ret = -EINVAL;
 		pr_err("failed to parse %s file\n", ctx->creds.auth_file);
 		goto exit_close_filefd;
 	}
@@ -58,7 +59,7 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 	return 0;
 exit_close_filefd:
 	close(afd);
-	return -EXIT_FAILURE;
+	return ret;
 }
 
 static int socks5_prepare_hotreload(struct socks5_ctx *ctx)
@@ -120,7 +121,7 @@ static int socks5_init_creds(struct socks5_ctx *ctx, const char *auth_file)
 	int ret;
 	ret = socks5_load_creds_file(ctx, auth_file);
 	if (ret < 0)
-		return -EXIT_FAILURE;
+		return ret;
 
 	ret = socks5_prepare_hotreload(ctx);
 	return ret;
@@ -367,7 +368,7 @@ int socks5_init(struct socks5_ctx **ctx, struct socks5_cfg *p)
 	if (p->auth_file) {
 		r = socks5_init_creds(c, p->auth_file);
 		if (r < 0)
-			return -EXIT_FAILURE;
+			return r;
 	} else
 		c->creds.auth_file = NULL;
 
@@ -466,7 +467,7 @@ static void socks5_test_creds_file_not_found(void)
 	};
 	struct socks5_ctx *ctx;
 	r = socks5_init(&ctx, &param);
-	assert(r);
+	assert(r == -ENOENT);
 
 	PRTEST_OK();
 }
@@ -479,7 +480,7 @@ static void socks5_test_invalid_creds_format(void)
 	};
 	struct socks5_ctx *ctx;
 	r = socks5_init(&ctx, &param);
-	assert(r);
+	assert(r == -EINVAL);
 
 	PRTEST_OK();
 }
