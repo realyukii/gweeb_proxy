@@ -1,10 +1,9 @@
+#define _GNU_SOURCE
 #include <sys/epoll.h>
 #include <sys/inotify.h>
 #include <stdio.h>
 #include <stdbool.h>
-#ifndef __USE_POSIX
-#define __USE_POSIX
-#endif
+#include <errno.h>
 #include <signal.h>
 #include "linux.h"
 
@@ -43,22 +42,25 @@ int main(void)
 	buf = NULL;
 	l.arr = NULL;
 	l.nr_entry = 0;
-	while (true) {
+	prevbuf = NULL;
+	while (!stop) {
 		ret = epoll_wait(epfd, &ev, 1, -1);
-		if (stop) {
-			fprintf(
-				stderr,
-				"interrupt signal received, "
-				"exiting the program...\n"
+		if (ret < 0) {
+			ret = errno;
+			if (ret == EINTR)
+				continue;
+			pr_err(
+				"failed to wait on epoll: %s\n",
+				strerror(ret)
 			);
 			break;
-			
 		}
 
-		read(ifd, iev, sizeof(iev));
+		read(ifd, &iev, sizeof(iev));
 		printf("\e[1;1H\e[2J");
 		printf(
-			"File changed %ld times, re-read the file content:\n",
+			"File changed %ld times since program started, "
+			"re-read the file content...\n",
 			++counter
 		);
 
@@ -68,9 +70,7 @@ int main(void)
 		}
 
 		ret = parse_auth_file(authfd, &l, &buf);
-		lseek(authfd, 0, SEEK_SET);
-
-		if (!ret) {
+		if (!ret && prevbuf) {
 			free(l.prev_arr);
 			free(prevbuf);
 		}
