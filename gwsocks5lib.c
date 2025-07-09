@@ -289,14 +289,16 @@ static int socks5_handle_request(struct data_args *args)
 		return -EINVAL;
 	}
 
-	exp_len += 2;
 	atyp = in->dst_addr.type;
 	switch (atyp) {
 	case SOCKS5_IPv4:
 		exp_len += 4;
 		break;
 	case SOCKS5_DOMAIN:
-		exp_len += 256;
+		exp_len += 1;
+		if (*args->in_len < exp_len)
+			return -EAGAIN;
+		exp_len += in->dst_addr.addr.domain.len;
 		break;
 	case SOCKS5_IPv6:
 		exp_len += 16;
@@ -305,6 +307,7 @@ static int socks5_handle_request(struct data_args *args)
 		set_err_reply(out, SOCKS5_ADDR_TYPE_NOT_SUPPORTED);
 		return -EINVAL;
 	}
+	exp_len += 2;
 
 	if (*args->in_len < exp_len) {
 		*args->in_len = exp_len;
