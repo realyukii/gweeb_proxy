@@ -651,7 +651,8 @@ static void socks5_test_ipv6_noauth(void)
 		}
 	};
 	olen = sizeof(out_buf);
-	socks5_handle_cmd_connect(conn, &saddr, 0, out_buf, &olen);
+	r = socks5_handle_cmd_connect(conn, &saddr, 0, out_buf, &olen);
+	assert(!r);
 	assert(olen == REPLY_REQ_IPV6_LEN);
 
 	assert(out_buf[0] == 0x5);				// VER
