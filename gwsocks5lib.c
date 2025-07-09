@@ -5,6 +5,7 @@
 #define PRTEST_OK() pr_info("Test passed: %s\n", __FUNCTION__)
 #define HANDSHAKE_LEN 2
 #define REPLY_REQ_IPV6_LEN (1 + 1 + 1 + 1 + 16 + 2)
+#define MAX_USERPWD_PKT (1 + 1 + 255 + 1 + 255)
 
 static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 {
@@ -114,6 +115,190 @@ static int socks5_init_creds(struct socks5_ctx *ctx, const char *auth_file)
 	// socks5_prepare_hotreload(ctx);
 }
 
+static int socks5_handle_greeting(struct socks5_conn *conn, const unsigned char *in,
+				unsigned *in_len, struct socks5_handshake *out, unsigned *out_len)
+{
+	uint8_t chosen_method;
+	const uint8_t *ptr;
+	unsigned exp_len;
+	bool acceptable;
+
+	if (*out_len < 2) {
+		*out_len = 2;
+		return -ENOBUFS;
+	}
+
+	exp_len = 2;
+	if (*in_len < exp_len) {
+		*in_len = exp_len;
+		return -EAGAIN;
+	}
+	
+	if (in[0] != 0x5)
+		return -EINVAL;
+	
+	if (in[1] == 0x0)
+		return -EINVAL;
+
+	exp_len += in[1];
+	if (*in_len < exp_len) {
+		*in_len = exp_len;
+		return -EAGAIN;
+	}
+
+	chosen_method = conn->ctx->creds.auth_file ? 0x2 : 0x0;
+	acceptable = false;
+	ptr = &in[2];
+	for (size_t i = 0; i < in[1]; i++) {
+		if (ptr[i] == chosen_method) {
+			acceptable = true;
+			break;
+		}
+	}
+
+	out->ver = 0x5;
+	out->chosen_method = acceptable ? chosen_method : 0xFF;
+	conn->state = chosen_method == 0x2 ? SOCKS5_AUTH : SOCKS5_REQUEST;
+
+	return 0;
+}
+
+static int socks5_handle_auth(struct socks5_conn *conn, const struct socks5_userpwd *in,
+				unsigned *in_len, char *out, unsigned *out_len)
+{
+	struct userpwd_pair *p;
+	const char *username, *password;
+	bool is_authenticated;
+	uint8_t *plen;
+	unsigned exp_len = 2;
+	int i, ret;
+
+	if (*out_len < 2) {
+		*out_len = 2;
+		return -ENOBUFS;
+	}
+
+	if (*in_len < exp_len)
+		return -EAGAIN;
+
+	// if (in->ver != 1) {
+	// 	return -EINVAL;
+	// }
+
+	exp_len += in->ulen + 1;
+	if (*in_len < exp_len)
+		return -EAGAIN;
+
+	username = in->rest_bytes;
+	plen = (void *)&in->rest_bytes[in->ulen];
+
+	exp_len += *plen;
+	if (*in_len < exp_len)
+		return -EAGAIN;
+
+	password = (void *)(plen + 1);
+
+	is_authenticated = 0x1;
+	for (i = 0; i < conn->ctx->creds.userpwd_l.nr_entry; i++) {
+		p = &conn->ctx->creds.userpwd_l.arr[i];
+
+		if (in->ulen != p->ulen || *plen != p->plen)
+			continue;
+
+		ret = memcmp(username, p->username, in->ulen);
+		if (ret)
+			continue;
+
+		ret = memcmp(password, p->password, *plen);
+		if (ret)
+			continue;
+
+		is_authenticated = 0x0;
+		break;
+	}
+
+	out[0] = 0x1;
+	out[1] = is_authenticated;
+
+	return 0;
+}
+
+static void set_err_reply(struct socks5_reply *out, uint8_t rep_code)
+{
+	uint16_t port = 0;
+
+	out->ver = 0x5;
+	out->rep_code = rep_code;
+	out->rsv = 0x0;
+	out->bnd_addr.type = SOCKS5_IPv4;
+	memset(out->bnd_addr.addr.ipv4, 0, 4);
+	memcpy((void *)(out->bnd_addr.addr.ipv4 + 4), &port, 2);
+}
+
+static int socks5_handle_request(struct socks5_conn *conn, const struct socks5_request *in,
+				unsigned *in_len, struct socks5_reply *out, unsigned *out_len)
+{
+	uint8_t atyp;
+	enum socks5_state state;
+	unsigned exp_len = 4, required_len = 4 + 4 + 2;
+
+	if (*out_len < required_len) {
+		*out_len = required_len;
+		return -ENOBUFS;
+	}
+
+	if (*in_len < exp_len) {
+		*in_len = exp_len;
+		return -EAGAIN;
+	}
+
+	if (in->ver != 0x5) {
+		set_err_reply(out, SOCKS5_GENERAL_FAILURE);
+		return -EINVAL;
+	}
+
+	switch (in->cmd) {
+	case SOCKS5_CMD_CONNECT:
+		state = SOCKS5_CONNECT;
+		break;
+
+	/*
+	* TODO(reyuki): implement other command:
+	*/
+	case SOCKS5_CMD_BIND:
+	case SOCKS5_CMD_UDP_ASSOCIATE:
+	default:
+		set_err_reply(out, SOCKS5_CMD_NOT_SUPPORTED);
+		return -EINVAL;
+	}
+
+	exp_len += 2;
+	atyp = in->dst_addr.type;
+	switch (atyp) {
+	case SOCKS5_IPv4:
+		exp_len += 4;
+		break;
+	case SOCKS5_DOMAIN:
+		exp_len += 256;
+		break;
+	case SOCKS5_IPv6:
+		exp_len += 16;
+		break;
+	default:
+		set_err_reply(out, SOCKS5_ADDR_TYPE_NOT_SUPPORTED);
+		return -EINVAL;
+	}
+
+	if (*in_len < exp_len) {
+		*in_len = exp_len;
+		return -EAGAIN;
+	}
+
+	conn->state = state;
+
+	return 0;
+}
+
 int socks5_init(struct socks5_ctx **ctx, struct socks5_cfg *p)
 {
 	int r;
@@ -149,14 +334,26 @@ struct socks5_conn *socks5_alloc_conn(struct socks5_ctx *ctx)
 }
 
 int socks5_process_data(struct socks5_conn *conn, const void *in, unsigned *in_len,
-			const void *out, unsigned *out_len)
+			void *out, unsigned *out_len)
 {
-	(void)conn;
-	(void)in;
-	(void)in_len;
-	(void)out;
-	(void)out_len;
-	return 0;
+	int r;
+
+	switch (conn->state) {
+	case SOCKS5_GREETING:
+		r = socks5_handle_greeting(conn, in, in_len, out, out_len);
+		break;
+	case SOCKS5_AUTH:
+		r = socks5_handle_auth(conn, in, in_len, out, out_len);
+		break;
+	case SOCKS5_REQUEST:
+		r = socks5_handle_request(conn, in, in_len, out, out_len);
+		break;
+	default:
+		abort();
+		break;
+	}
+
+	return r;
 }
 
 int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr,
@@ -326,7 +523,7 @@ static void socks5_test_ipv6_noauth(void)
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
 	assert(!r);
-	assert(conn->state == SOCKS5_CMD_CONNECT);
+	assert(conn->state == SOCKS5_CONNECT);
 
 	/* .. pretend perform connect syscall ... */
 

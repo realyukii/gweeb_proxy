@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -16,7 +17,7 @@
 #define MAX_DOMAIN_LEN 255
 #define MAX_METHODS 255
 
-enum socks5_reply_code {
+enum socks5_rep_code {
 	SOCKS5_SUCCEEDED,
 	SOCKS5_GENERAL_FAILURE,
 	SOCKS5_CONN_NOT_ALLOWED,
@@ -28,10 +29,20 @@ enum socks5_reply_code {
 	SOCKS5_ADDR_TYPE_NOT_SUPPORTED
 };
 
+enum socks5_atyp {
+	SOCKS5_IPv4 = 1,
+	SOCKS5_DOMAIN = 3,
+	SOCKS5_IPv6 = 4
+};
+
 enum socks5_state {
 	SOCKS5_GREETING,
 	SOCKS5_AUTH,
 	SOCKS5_REQUEST,
+	SOCKS5_CONNECT
+};
+
+enum socks5_cmd {
 	SOCKS5_CMD_CONNECT,
 	SOCKS5_CMD_BIND,
 	SOCKS5_CMD_UDP_ASSOCIATE
@@ -74,10 +85,14 @@ struct socks5_greeting {
 	uint8_t methods[MAX_METHODS];
 };
 
+struct socks5_handshake {
+	uint8_t ver;
+	uint8_t chosen_method;
+};
+
 struct socks5_addr {
 	/* see the available type in enum addr_type */
 	uint8_t type;
-	uint16_t port;
 	union {
 		uint8_t ipv4[4];
 		struct {
@@ -86,7 +101,8 @@ struct socks5_addr {
 		} domain;
 		uint8_t ipv6[16];
 	} addr;
-};
+	uint16_t port;
+} __attribute__((packed));
 
 struct socks5_request {
 	uint8_t ver;
@@ -99,9 +115,9 @@ struct socks5_request {
 	*/
 };
 
-struct socks5_connect_reply {
+struct socks5_reply {
 	uint8_t ver;
-	uint8_t status;
+	uint8_t rep_code;
 	uint8_t rsv;
 	struct socks5_addr bnd_addr;
 	/*
@@ -166,7 +182,7 @@ void socks5_free_conn(struct socks5_conn *conn);
 * @return zero on success, or a negative integer on failure.
 */
 int socks5_process_data(struct socks5_conn *conn,
-			const void *in, unsigned *in_len, const void *out, unsigned *out_len);
+			const void *in, unsigned *in_len, void *out, unsigned *out_len);
 
 /*
 * Craft response to CONNECT request with given address and reply code.
