@@ -14,8 +14,20 @@ struct data_args {
 	void *out;
 	unsigned *out_len;
 	unsigned total_advance;
+	unsigned written_out;
 };
 
+// static void append_outbuf(struct data_args *args)
+// {
+// }
+
+static void advance_inbuf(struct data_args *args, unsigned len)
+{
+	assert(len <= *args->in_len);
+	args->in += len;
+	*args->in_len -= len;
+	args->total_advance += len;
+}
 
 static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 {
@@ -129,12 +141,12 @@ static int socks5_handle_greeting(struct data_args *args)
 {
 	uint8_t chosen_method;
 	const uint8_t *ptr;
-	unsigned exp_len;
+	unsigned exp_len, required_len = 2;
 	bool acceptable;
 	const unsigned char *in = args->in;
 	struct socks5_handshake *out = args->out;
 
-	if (*args->out_len < 2) {
+	if (*args->out_len < required_len) {
 		*args->out_len = 2;
 		return -ENOBUFS;
 	}
@@ -156,7 +168,7 @@ static int socks5_handle_greeting(struct data_args *args)
 		*args->in_len = exp_len;
 		return -EAGAIN;
 	}
-	*args->in_len = exp_len;
+	advance_inbuf(args, exp_len);
 
 	chosen_method = args->conn->ctx->creds.auth_file ? 0x2 : 0x0;
 	acceptable = false;
@@ -170,8 +182,11 @@ static int socks5_handle_greeting(struct data_args *args)
 
 	out->ver = 0x5;
 	out->chosen_method = acceptable ? chosen_method : 0xFF;
+	args->written_out += required_len;
+	args->out += required_len;
+	*args->out_len -= required_len;
+
 	args->conn->state = chosen_method == 0x2 ? SOCKS5_AUTH : SOCKS5_REQUEST;
-	*args->out_len = 2;
 
 	return 0;
 }
@@ -184,11 +199,11 @@ static int socks5_handle_auth(struct data_args *args)
 	char *out = args->out;
 	bool is_authenticated;
 	uint8_t *plen;
-	unsigned exp_len = 2;
+	unsigned exp_len = 2, required_len = 2;
 	int i, ret;
 
-	if (*args->out_len < 2) {
-		*args->out_len = 2;
+	if (*args->out_len < required_len) {
+		*args->out_len = required_len;
 		return -ENOBUFS;
 	}
 
@@ -210,7 +225,7 @@ static int socks5_handle_auth(struct data_args *args)
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
-	*args->in_len = exp_len;
+	advance_inbuf(args, exp_len);
 
 	password = (void *)(plen + 1);
 
@@ -235,6 +250,9 @@ static int socks5_handle_auth(struct data_args *args)
 
 	out[0] = 0x1;
 	out[1] = is_authenticated;
+	args->written_out += required_len;
+	args->out += required_len;
+	*args->out_len -= required_len;
 
 	return 0;
 }
@@ -271,6 +289,9 @@ static int socks5_handle_request(struct data_args *args)
 
 	if (in->ver != 0x5) {
 		set_err_reply(out, SOCKS5_GENERAL_FAILURE);
+		args->written_out += required_len;
+		args->out += required_len;
+		*args->out_len -= required_len;
 		return -EINVAL;
 	}
 
@@ -286,6 +307,9 @@ static int socks5_handle_request(struct data_args *args)
 	case SOCKS5_CMD_UDP_ASSOCIATE:
 	default:
 		set_err_reply(out, SOCKS5_CMD_NOT_SUPPORTED);
+		args->written_out += required_len;
+		args->out += required_len;
+		*args->out_len -= required_len;
 		return -EINVAL;
 	}
 
@@ -305,6 +329,9 @@ static int socks5_handle_request(struct data_args *args)
 		break;
 	default:
 		set_err_reply(out, SOCKS5_ADDR_TYPE_NOT_SUPPORTED);
+		args->written_out += required_len;
+		args->out += required_len;
+		*args->out_len -= required_len;
 		return -EINVAL;
 	}
 	exp_len += 2;
@@ -314,7 +341,7 @@ static int socks5_handle_request(struct data_args *args)
 		return -EAGAIN;
 	}
 
-	*args->in_len = exp_len;
+	advance_inbuf(args, exp_len);
 
 	args->conn->state = state;
 
@@ -364,10 +391,12 @@ int socks5_process_data(struct socks5_conn *conn, const void *in, unsigned *in_l
 		.in_len = in_len,
 		.out = out,
 		.out_len = out_len,
-		.total_advance = 0
+		.total_advance = 0,
+		.written_out = 0
 	};
 	int r;
 
+retry:
 	switch (conn->state) {
 	case SOCKS5_GREETING:
 		r = socks5_handle_greeting(&args);
@@ -382,6 +411,12 @@ int socks5_process_data(struct socks5_conn *conn, const void *in, unsigned *in_l
 		abort();
 		break;
 	}
+
+	if (!r && *args.in_len > 0)
+		goto retry;
+
+	*in_len = args.total_advance;
+	*out_len = args.written_out;
 
 	return r;
 }
@@ -582,6 +617,39 @@ static void socks5_test_ipv6_noauth(void)
 	PRTEST_OK();
 }
 
+static void socks5_test_two_state_at_once(void)
+{
+	int r;
+	unsigned plen, olen;
+	char out_buf[1024];
+	const uint8_t payload[] = {
+		0x5, 0x1, 0x0,		// VER, NMETHODS, METHOD NO AUTH
+		0x5, 0x1, 0x0, 0x4, 	// VER, CONNECT CMD, RSV, IPv6 ATYP
+		0x0, 0x0, 0x0, 0x0,
+		0x0, 0x0, 0x0, 0x0,
+		0x0, 0x0, 0x0, 0x0,
+		0x0, 0x0, 0x0, 0x1,	// address ::1
+		0x1f, 0x91		// port 8081
+	};
+	struct socks5_conn *conn;
+	struct socks5_ctx *ctx;
+
+	socks5_do_init_ctx_noauth(&ctx);
+	socks5_do_alloc_conn(ctx, conn);
+
+	plen = sizeof(payload);
+	olen = sizeof(out_buf);
+	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
+	assert(!r);
+	assert(plen == sizeof(payload));
+	assert(conn->state == SOCKS5_CONNECT);
+
+	socks5_free_conn(conn);
+	socks5_free_ctx(ctx);
+
+	PRTEST_OK();
+}
+
 static void socks5_run_tests()
 {
 	/* test case for improper usage of library */
@@ -590,6 +658,7 @@ static void socks5_run_tests()
 	/* test case for malformed payload */
 	socks5_test_invalid_cmd();
 	socks5_test_invalid_addr_type();
+	socks5_test_two_state_at_once();
 	socks5_test_ipv6_noauth();
 	pr_info("All tests passed!\n");
 }
