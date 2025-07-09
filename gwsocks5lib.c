@@ -630,7 +630,7 @@ static void socks5_test_two_state_at_once(void)
 	char out_buf[1024];
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0,		// VER, NMETHODS, METHOD NO AUTH
-		0x5, 0x1, 0x0, 0x4, 	// VER, CONNECT CMD, RSV, IPv6 ATYP
+		0x5, 0x1, 0x0, 0x2, 	// VER, CONNECT CMD, RSV, invalid ATYP
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x0,
@@ -646,9 +646,9 @@ static void socks5_test_two_state_at_once(void)
 	plen = sizeof(payload);
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
-	assert(!r);
-	assert(plen == sizeof(payload));
-	assert(conn->state == SOCKS5_CONNECT);
+	assert(r == -EINVAL);
+	assert(olen == 12);
+	assert(conn->state == SOCKS5_REQUEST);
 
 	socks5_free_conn(conn);
 	socks5_free_ctx(ctx);
