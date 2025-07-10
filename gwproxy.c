@@ -133,6 +133,32 @@ exit_close_sockfd:
 	return -ret;
 }
 
+static int start_tcp_serv(struct gwp_tctx *ctx)
+{
+	int ret;
+	struct epoll_event ev;
+
+	ret = 0;
+	while (true) {
+		ret = epoll_wait(ctx->epfd, &ev, 1, -1);
+		if (ret < 0) {
+			ret = errno;
+			if (ret == EINTR)
+				continue;
+			pr_err(
+				"an error occured on epoll_wait call: %s\n",
+				strerror(ret)
+			);
+			break;
+		}
+
+		ret = accept4(ev.data.fd, NULL, NULL, SOCK_NONBLOCK);
+		pr_info("accepted.\n");
+	}
+
+	return ret;
+}
+
 static void init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
 {
 	tctx->pctx = pctx;
@@ -282,6 +308,10 @@ int main(int argc, char *argv[])
 	init_pctx(&ctx, &args);
 	init_tctx(&tctx, &ctx);
 	ret = prepare_tcp_serv(&tctx);
+	if (ret < 0)
+		return ret;
+	
+	ret = start_tcp_serv(&tctx);
 
-	return ret;
+	return EXIT_SUCCESS;
 }
