@@ -190,8 +190,6 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 		ev_bit = GET_EV_BIT(ev.data.u64);
 		switch (ev_bit) {
 		case GWP_STOP:
-			uint64_t evbuf;
-			read(ctx->pctx->stopfd, &evbuf, sizeof(evbuf));
 			break;
 		case GWP_ACCEPT:
 			ret = accept4(ctx->tcpfd, NULL, NULL, SOCK_NONBLOCK);
