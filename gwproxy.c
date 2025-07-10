@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include "linux.h"
@@ -16,7 +17,11 @@
 #define DEFAULT_TIMEOUT_SEC 8
 #define DEFAULT_PREALLOC_CONN 100
 
-#define pr_menu() 					\
+#define ALL_EV_BITS (GWP_STOP | GWP_ACCEPT)
+#define GET_EV_BIT(X) ((X) & ALL_EV_BITS)
+#define CLEAR_EV_BIT(X) ((X) & ~ALL_EV_BITS)
+
+#define pr_menu()					\
 do {							\
 printf(							\
 	usage,						\
@@ -40,6 +45,11 @@ static const char usage[] =
 "-n\tnumber of pre-allocated connection pointer per-thread (default: %d session)\n"
 "-h\tShow this help message and exit\n";
 
+enum gwp_ev_bit {
+	GWP_STOP	= (0x1ULL << 48ULL),
+	GWP_ACCEPT	= (0x2ULL << 48ULL)
+};
+
 struct gwp_pctx *gctx;
 
 struct commandline_args {
@@ -58,6 +68,7 @@ struct commandline_args {
 struct gwp_pctx {
 	struct commandline_args *args;
 	struct gwp_tctx *tctx;
+	int stopfd;
 	volatile bool stop;
 };
 
@@ -123,13 +134,25 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 
 	ctx->epfd = ret;
 
-	ev.data.fd = ctx->tcpfd;
+	ev.data.u64 = GWP_ACCEPT;
 	ev.events = EPOLLIN;
 	ret = epoll_ctl(ret, EPOLL_CTL_ADD, ctx->tcpfd, &ev);
 	if (ret < 0) {
 		ret = errno;
 		pr_err(
-			"failed to register file descriptor to epoll: %s\n",
+			"failed to register tcp file descriptor to epoll: %s\n",
+			strerror(ret)
+		);
+		goto exit_close_epfd;
+	}
+
+	ev.data.u64 = GWP_STOP;
+	ev.events = EPOLLIN;
+	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->pctx->stopfd, &ev);
+	if (ret < 0) {
+		ret = errno;
+		pr_err(
+			"failed to register event file descriptor to epoll: %s\n",
 			strerror(ret)
 		);
 		goto exit_close_epfd;
@@ -147,6 +170,7 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 {
 	int ret;
 	struct epoll_event ev;
+	uint64_t ev_bit;
 
 	pr_info("start serving...\n");
 	ret = 0;
@@ -163,8 +187,20 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 			break;
 		}
 
-		ret = accept4(ev.data.fd, NULL, NULL, SOCK_NONBLOCK);
-		pr_info("accepted.\n");
+		ev_bit = GET_EV_BIT(ev.data.u64);
+		switch (ev_bit) {
+		case GWP_STOP:
+			uint64_t evbuf;
+			read(ctx->pctx->stopfd, &evbuf, sizeof(evbuf));
+			break;
+		case GWP_ACCEPT:
+			ret = accept4(ctx->tcpfd, NULL, NULL, SOCK_NONBLOCK);
+			pr_info("accepted.\n");
+			break;
+		
+		default:
+			abort();
+		}
 	}
 
 	pr_info("closing TCP socket file descriptor\n");
@@ -184,10 +220,18 @@ static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 {
 	int ret;
 
-	pctx->args = args;
+	ret = eventfd(0, EFD_NONBLOCK);
+	if (ret < 0) {
+		ret = errno;
+		pr_err("failed to create eventfd: %s\n", strerror(ret));
+		return -ret;
+	}
+	pctx->stopfd = ret;
 	pctx->stop = false;
+	pctx->args = args;
 	pctx->tctx = malloc(pctx->args->server_thread_nr * sizeof(*pctx->tctx));
 	if (!pctx->tctx) {
+		close(pctx->stopfd);
 		ret = errno;
 		pr_err("failed to allocate threads data: %s\n", strerror(ret));
 		return -ret;
@@ -238,6 +282,8 @@ static void join_threads(struct gwp_pctx *ctx)
 
 	pr_info("deallocate pointer to threads data: %p\n", ctx->tctx);
 	free(ctx->tctx);
+	pr_info("closing stop file descriptor (eventfd): %d\n", ctx->stopfd);
+	close(ctx->stopfd);
 }
 
 /*
@@ -369,6 +415,7 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 
 static void signal_handler(int code)
 {
+	uint64_t val;
 	switch (code) {
 	case SIGTERM:
 		pr_info("Program stopped by SIGTERM\n");
@@ -379,6 +426,8 @@ static void signal_handler(int code)
 	}
 
 	gctx->stop = true;
+	val = 1;
+	write(gctx->stopfd, &val, sizeof(val));
 }
 
 int main(int argc, char *argv[])
