@@ -20,7 +20,7 @@ Key Features of The Program:
 - non blocking and I/O multiplexing for handling concurrent connection with epoll.
 - maximum performance with parallel execution by utilizing multi-threading support with pthread API.
 - signal handler, to perform graceful exit
-- resolve FQDN on-the-fly with glibc's getaddrinfo function (still have performance issue on batch call to getaddrinfo, on progress to fix it)
+- resolve FQDN asynchronously, on-the-fly with glibc's getaddrinfo function
 - handle currently-identified edge/corner cases:
 	* short recv: fewer bytes partially received than requested
 	* short send: fewer bytes partially sent than requested
@@ -34,7 +34,7 @@ Key Features of The Program:
 	* on simple mode: specifying remote address and remote port for target is required
 
 Features in my Wish list:
-- a switch on cmdline option that allow to pick epoll or io uring (zero copy?!)
+- a switch on cmdline option that allow to pick epoll or io uring (with benefit of zero copy?!)
 - controllable client and target (recv/send) buffer size, convenient for testing performance.
 - built-in DNS cache
 - connect race for when domain name is provided
