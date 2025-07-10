@@ -684,61 +684,6 @@ exit_err:
 }
 
 /*
-* Extract data returned by epoll_wait
-* on particular event in particular socket file descriptor.
-*
-* @param ev Pointer to epoll event.
-* @param pc caller-variable to initialize.
-* @param from the socket that trigger epoll event;
-* however, it is not the case for EV_BIT_TIMER.
-* @param to the peer.
-* @return zero on success, or a negative integer on failure.
-*/
-static int extract_data(struct epoll_event *ev, struct pair_conn **pc,
-		struct gwp_conn **from, struct gwp_conn **to)
-{
-	uint64_t ev_bit = GET_EV_BIT(ev->data.u64);
-
-	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
-	*pc = ev->data.ptr;
-
-	switch (ev_bit) {
-	case EV_BIT_TIMER:
-		/*
-		* failed to establish connection from the client to the target
-		* at specified time interval;
-		* the order of assignment itself doesn't matter technically,
-		* but this comment was made to emphasize "what's going on"
-		* for the sake of readability.
-		*/
-		*from = &(*pc)->client;
-		*to = &(*pc)->target;
-		pr_info(
-			"timed out, terminating the session for %s\n",
-			(*from)->addrstr
-		);
-		return -ETIMEDOUT;
-	case EV_BIT_CLIENT:
-		pr_info("receiving data from client\n");
-		*from = &(*pc)->client;
-		*to = &(*pc)->target;
-		break;
-
-	case EV_BIT_TARGET:
-		pr_info("receiving data from target\n");
-		*from = &(*pc)->target;
-		*to = &(*pc)->client;
-		break;
-
-	case EV_BIT_DNS_RESOLVED:
-		// TODO: refactor codebase
-		break;
-	}
-
-	return 0;
-}
-
-/*
 * Handle incoming and outgoing data.
 *
 * remark:
@@ -1728,9 +1673,34 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 	struct pair_conn *pc;
 	struct gwp_conn *a, *b;
 
-	ret = extract_data(ev, &pc, &a, &b);
-	if (ret < 0)
+	uint64_t ev_bit = GET_EV_BIT(ev->data.u64);
+
+	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
+	pc = ev->data.ptr;
+
+	switch (ev_bit) {
+	case EV_BIT_TIMER:
+		pr_info(
+			"timed out, terminating the session for %s\n",
+			pc->client.addrstr
+		);
 		goto exit_err;
+	case EV_BIT_CLIENT:
+		pr_info("receiving data from client\n");
+		a = &pc->client;
+		b = &pc->target;
+		break;
+
+	case EV_BIT_TARGET:
+		pr_info("receiving data from target\n");
+		a = &pc->target;
+		b = &pc->client;
+		break;
+
+	case EV_BIT_DNS_RESOLVED:
+		// TODO: refactor codebase
+		break;
+	}
 
 	if (!pc->is_connected && pc->target.sockfd != -1) {
 		ret = is_sock_connected(pc->target.sockfd);
