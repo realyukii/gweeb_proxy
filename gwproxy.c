@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+
 #include "linux.h"
 #include "general.h"
 
@@ -31,7 +32,7 @@ static const char usage[] =
 "-t\tIP address and port of the target server (ignored in socks5 mode)\n"
 "\n"
 "advanced option:\n"
-"-T\tnumber of thread (default: %d)\n"
+"-T\tnumber of tcp server thread (default: %d)\n"
 "-w\twait time for timeout, set to zero for no timeout (default: %d seconds)\n"
 "-n\tnumber of pre-allocated connection pointer per-thread (default: %d session)\n"
 "-h\tShow this help message and exit\n";
@@ -48,15 +49,33 @@ struct commandline_args {
 	struct sockaddr_storage dst_addr_st;
 };
 
+/* program configuration and data */
+struct gwp_pctx {
+	struct commandline_args *args;
+};
+
+/* TCP server thread-specific data */
+struct gwp_tctx {
+	int epfd;
+	int tcpfd;
+	pthread_t thandle;
+	struct gwp_pctx *pctx;
+};
+
+static void init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
+{
+	pctx->args = args;
+}
+
 /*
 * Handle and initialize command-line arguments.
 *
 * The function initialize the following configuration:
 * - wait time out in seconds
 * - server address to be bound
-* - target address to connect (in conventional tcp proxy mode)
+* - target address to connect (in simple tcp proxy mode)
 * - auth file (in socks5 proxy mode)
-* - control thread number
+* - control number of tcp server thread
 * - size of pre-allocated pointer for connection
 *
 * @param argc Total argument passed.
@@ -171,17 +190,19 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 	}
 
 	return 0;
-pr_menu_exit:
 }
 
 int main(int argc, char *argv[])
 {
 	int ret;
 	struct commandline_args args;
+	struct gwp_pctx ctx;
 
 	ret = handle_cmdline(argc, argv, &args);
 	if (ret < 0)
 		return ret;
+	
+	init_pctx(&ctx, &args);
 
 	return 0;
 }
