@@ -18,6 +18,7 @@
 #define DEFAULT_THREAD_NR 4
 #define DEFAULT_TIMEOUT_SEC 8
 #define DEFAULT_PREALLOC_CONN 100
+#define DEFAULT_BUFF_SZ 1024
 
 #define ALL_EV_BITS (GWP_STOP | GWP_ACCEPT | GWP_CLIENT)
 #define GET_EV_BIT(X) ((X) & ALL_EV_BITS)
@@ -28,11 +29,13 @@ do {							\
 printf(							\
 	usage,						\
 	DEFAULT_THREAD_NR, DEFAULT_TIMEOUT_SEC,		\
-	DEFAULT_PREALLOC_CONN				\
+	DEFAULT_PREALLOC_CONN, DEFAULT_BUFF_SZ,		\
+	DEFAULT_BUFF_SZ, DEFAULT_BUFF_SZ, DEFAULT_BUFF_SZ, \
+	DEFAULT_BUFF_SZ, DEFAULT_BUFF_SZ		\
 );							\
 } while (0)
 
-static const char opts[] = "hw:b:t:T:f:sn:";
+static const char opts[] = "hw:b:t:T:f:sn:g:j:k:l:p:y:";
 static const char usage[] =
 "usage: ./gwproxy [options]\n"
 "main option:\n"
@@ -45,6 +48,12 @@ static const char usage[] =
 "-T\tnumber of tcp server thread (default: %d)\n"
 "-w\twait time for timeout, set to zero for no timeout (default: %d seconds)\n"
 "-n\tnumber of pre-allocated connection pointer per-thread (default: %d session)\n"
+"-g\tclient buffer size of both recv and send (default: %d bytes)\n"
+"-j\tclient buffer size of recv (default: %d bytes)\n"
+"-l\tclient buffer size of send (default: %d bytes)\n"
+"-y\ttarget buffer size of both recv and send (default: %d bytes)\n"
+"-k\ttarget buffer size of recv (default: %d bytes)\n"
+"-p\ttarget buffer size of send (default: %d bytes)\n"
 "-h\tShow this help message and exit\n";
 
 enum gwp_ev_bit {
@@ -58,6 +67,10 @@ struct gwp_pctx *gctx;
 struct gwp_conn {
 	int sockfd;
 	char addrstr[ADDRSTR_SZ];
+	char *recvbuf;
+	size_t recvlen;
+	char *sendbuf;
+	size_t sendlen;
 };
 
 struct gwp_pair_conn {
@@ -78,6 +91,10 @@ struct commandline_args {
 	int connptr_nr;
 	size_t server_thread_nr;
 	size_t timeout;
+	size_t t_recv_sz;
+	size_t t_send_sz;
+	size_t c_recv_sz;
+	size_t c_send_sz;
 	/* local address to be bound */
 	struct sockaddr_storage src_addr_st;
 	/* only used on simple TCP proxy mode */
@@ -201,29 +218,69 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	s = malloc(sizeof(struct gwp_pair_conn));
 	if (!s) {
 		pr_err("failed to allocate new session\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto exit_close_sockfd;
 	}
 
 	get_addrstr(in, s->client.addrstr);
 	pr_info("client %s on socket %d is accepted\n", s->client.addrstr, cfd);
 	s->client.sockfd = cfd;
 	s->idx = container->session_nr;
+	
+	s->client.recvbuf = malloc(ctx->pctx->args->c_recv_sz);
+	if (!s->client.recvbuf) {
+		ret = -ENOMEM;
+		goto exit_free_s;
+	}
+	s->client.recvlen = ctx->pctx->args->c_recv_sz;
+	s->client.sendbuf = malloc(ctx->pctx->args->c_send_sz);
+	if (!s->client.sendbuf) {
+		ret = -ENOMEM;
+		goto exit_free_c_recv;
+	}
+	s->client.sendlen = ctx->pctx->args->c_send_sz;
+	
+	s->target.recvbuf = malloc(ctx->pctx->args->t_recv_sz);
+	if (!s->target.recvbuf) {
+		ret = -ENOMEM;
+		goto exit_free_c_send;
+	}
+	s->target.recvlen = ctx->pctx->args->t_recv_sz;
+	s->target.sendbuf = malloc(ctx->pctx->args->t_send_sz);
+	if (!s->target.sendbuf) {
+		ret = -ENOMEM;
+		goto exit_free_t_recv;
+	}
+	s->target.sendlen = ctx->pctx->args->t_send_sz;
+
 	ev.data.u64 = 0;
 	ev.data.ptr = s;
 	ev.data.u64 |= GWP_CLIENT;
 	ev.events = EPOLLIN;
 	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, cfd, &ev);
 	if (ret < 0) {
-		free(s);
-		ret = errno;
-		pr_err("failed to register client to epoll: %s", strerror(ret));
-		return -ret;
+		ret = -errno;
+		pr_err("failed to register client to epoll: %s", strerror(-ret));
+		goto exit_free_t_send;
 	}
 
 	container->sessions[container->session_nr] = s;
 	container->session_nr++;
 
 	return 0;
+exit_free_t_send:
+	free(s->target.sendbuf);
+exit_free_t_recv:
+	free(s->target.recvbuf);
+exit_free_c_send:
+	free(s->client.sendbuf);
+exit_free_c_recv:
+	free(s->client.recvbuf);
+exit_free_s:
+	free(s);
+exit_close_sockfd:
+	close(cfd);
+	return ret;
 }
 
 static int accept_new_client(struct gwp_tctx *ctx)
@@ -257,21 +314,25 @@ static void process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 		accept_new_client(ctx);
 		break;
 	case GWP_CLIENT:
-		struct gwp_pair_conn *c = data;
+		struct gwp_pair_conn *pc = data;
 		int ret;
-		char buf[1];
-		ret = recv(c->client.sockfd, buf, 1, 0);
+		ret = recv(pc->client.sockfd, pc->client.recvbuf, pc->client.recvlen, 0);
 		if (!ret) {
 			pr_info(
 				"client %s disconnected, cleaning up its resources\n",
-				c->client.addrstr
+				pc->client.addrstr
 			);
 			ctx->container.session_nr--;
-			ctx->container.sessions[c->idx] = NULL;
+			ctx->container.sessions[pc->idx] = NULL;
 
-			close(c->client.sockfd);
-			free(c);
-		}
+			close(pc->client.sockfd);
+			free(pc->client.recvbuf);
+			free(pc->client.sendbuf);
+			free(pc->target.recvbuf);
+			free(pc->target.sendbuf);
+			free(pc);
+		} else
+			VT_HEXDUMP(pc->client.recvbuf, ret);
 		break;
 	
 	default:
@@ -289,6 +350,10 @@ static void cleanup_tctx(struct gwp_tctx *ctx)
 		if (pc) {
 			pr_info("disconnecting %s\n", pc->client.addrstr);
 			close(pc->client.sockfd);
+			free(pc->client.recvbuf);
+			free(pc->client.sendbuf);
+			free(pc->target.recvbuf);
+			free(pc->target.sendbuf);
 			free(pc);
 		}
 	}
@@ -440,8 +505,11 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 {
 	char c,
 	*bind_opt, *target_opt, *server_thread_opt,
-	*client_nr_opt, *wait_opt, *auth_file_opt;
-	int server_thread_nr, connptr_nr, timeout;
+	*client_nr_opt, *wait_opt, *auth_file_opt,
+	*c_both_sz_opt, *c_recv_sz_opt, *c_send_sz_opt,
+	*t_both_sz_opt, *t_recv_sz_opt, *t_send_sz_opt;
+	int server_thread_nr, connptr_nr, timeout,
+	c_both_sz, c_recv_sz, c_send_sz, t_both_sz, t_recv_sz, t_send_sz;
 	int ret;
 
 	if (argc == 1) {
@@ -454,7 +522,8 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 	memset(&args->src_addr_st, 0, sizeof(args->src_addr_st));
 
 	auth_file_opt = wait_opt = server_thread_opt = bind_opt = target_opt =
-	client_nr_opt = NULL;
+	client_nr_opt = c_both_sz_opt = c_recv_sz_opt = c_send_sz_opt =
+	t_both_sz_opt = t_recv_sz_opt = t_send_sz_opt = NULL;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 's':
@@ -478,6 +547,24 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 		case 'n':
 			client_nr_opt = optarg;
 			break;
+		case 'g':
+			c_both_sz_opt = optarg;
+			break;
+		case 'j':
+			c_recv_sz_opt = optarg;
+			break;
+		case 'l':
+			c_send_sz_opt = optarg;
+			break;
+		case 'y':
+			t_both_sz_opt = optarg;
+			break;
+		case 'k':
+			t_recv_sz_opt = optarg;
+			break;
+		case 'p':
+			t_send_sz_opt = optarg;
+			break;
 		case 'h':
 			pr_menu();
 			return -EXIT_FAILURE;
@@ -495,6 +582,44 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 	if (!bind_opt) {
 		pr_err("-b option is required\n");
 		return -EINVAL;
+	}
+
+	args->c_recv_sz = args->c_send_sz =
+	args->t_recv_sz = args->t_send_sz = DEFAULT_BUFF_SZ;
+	if (c_recv_sz_opt) {
+		c_recv_sz = atoi(c_both_sz_opt);
+		if (c_recv_sz > 0)
+			args->c_recv_sz = c_recv_sz;
+	}
+
+	if (c_send_sz_opt) {
+		c_send_sz = atoi(c_both_sz_opt);
+		if (c_send_sz > 0)
+			args->c_send_sz = c_send_sz;
+	}
+
+	if (c_both_sz_opt) {
+		c_both_sz = atoi(c_both_sz_opt);
+		if (c_both_sz > 0)
+			args->c_recv_sz = args->c_send_sz = c_both_sz;
+	}
+
+	if (t_recv_sz_opt) {
+		t_recv_sz = atoi(t_both_sz_opt);
+		if (t_recv_sz > 0)
+			args->t_recv_sz = t_recv_sz;
+	}
+
+	if (t_send_sz_opt) {
+		t_send_sz = atoi(t_both_sz_opt);
+		if (t_send_sz > 0)
+			args->t_send_sz = t_send_sz;
+	}
+
+	if (t_both_sz_opt) {
+		t_both_sz = atoi(t_both_sz_opt);
+		if (t_both_sz > 0)
+			args->t_recv_sz = args->t_send_sz = t_both_sz;
 	}
 
 	if (auth_file_opt)
