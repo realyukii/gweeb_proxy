@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,8 @@ static const char usage[] =
 "-n\tnumber of pre-allocated connection pointer per-thread (default: %d session)\n"
 "-h\tShow this help message and exit\n";
 
+struct gwp_pctx *gctx;
+
 struct commandline_args {
 	bool socks5_mode;
 	char *auth_file;
@@ -53,6 +56,7 @@ struct commandline_args {
 /* program configuration and data */
 struct gwp_pctx {
 	struct commandline_args *args;
+	volatile bool stop;
 };
 
 /* TCP server thread-specific data */
@@ -139,7 +143,7 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 	struct epoll_event ev;
 
 	ret = 0;
-	while (true) {
+	while (!ctx->pctx->stop) {
 		ret = epoll_wait(ctx->epfd, &ev, 1, -1);
 		if (ret < 0) {
 			ret = errno;
@@ -156,6 +160,10 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 		pr_info("accepted.\n");
 	}
 
+	pr_info("closing TCP socket file descriptor\n");
+	close(ctx->tcpfd);
+	pr_info("closing epoll file descriptor\n");
+	close(ctx->epfd);
 	return ret;
 }
 
@@ -167,6 +175,7 @@ static void init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
 static void init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 {
 	pctx->args = args;
+	pctx->stop = false;
 }
 
 /*
@@ -294,12 +303,29 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 	return 0;
 }
 
+static void signal_handler(int code)
+{
+	switch (code) {
+	case SIGTERM:
+		pr_info("Program stopped by SIGTERM\n");
+		break;
+	case SIGINT:
+		pr_info("Program stopped by SIGINT\n");
+		break;
+	}
+
+	gctx->stop = true;
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
 	struct commandline_args args;
 	struct gwp_pctx ctx;
 	struct gwp_tctx tctx;
+	struct sigaction sa = {
+		.sa_handler = signal_handler
+	};
 
 	ret = handle_cmdline(argc, argv, &args);
 	if (ret < 0)
@@ -310,8 +336,18 @@ int main(int argc, char *argv[])
 	ret = prepare_tcp_serv(&tctx);
 	if (ret < 0)
 		return ret;
+
+	gctx = &ctx;
+	ret |= sigaction(SIGTERM, &sa, NULL);
+	ret |= sigaction(SIGINT, &sa, NULL);
+	if (ret < 0) {
+		pr_err("failed to install signal handler\n");
+		return ret;
+	}
 	
 	ret = start_tcp_serv(&tctx);
+
+	pr_info("all system resources were freed\n");
 
 	return EXIT_SUCCESS;
 }
