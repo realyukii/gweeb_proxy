@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/epoll.h>
 #include <unistd.h>
 
 #include "linux.h"
@@ -61,6 +62,81 @@ struct gwp_tctx {
 	pthread_t thandle;
 	struct gwp_pctx *pctx;
 };
+
+static int prepare_tcp_serv(struct gwp_tctx *ctx)
+{
+	int ret;
+	struct commandline_args *args = ctx->pctx->args;
+	struct epoll_event ev;
+
+	ret = socket(args->src_addr_st.ss_family, SOCK_STREAM, 0);
+	if (ret < 0) {
+		ret = errno;
+		pr_err(
+			"failed to create tcp socket file descriptor: %s\n",
+			strerror(ret)
+		);
+		return ret;
+	}
+
+	ctx->tcpfd = ret;
+
+	ret = bind(ret, (struct sockaddr *)&args->src_addr_st, sizeof(args->src_addr_st));
+	if (ret < 0) {
+		ret = errno;
+		pr_err(
+			"failed to bind tcp socket file descriptor: %s\n",
+			strerror(ret)
+		);
+		goto exit_close_sockfd;
+	}
+
+	ret = listen(ctx->tcpfd, SOMAXCONN);
+	if (ret < 0) {
+		ret = errno;
+		pr_err(
+			"failed to listen on socket %d: %s\n", ctx->tcpfd,
+			strerror(ret)
+		);
+		goto exit_close_sockfd;
+	}
+
+	ret = epoll_create(1);
+	if (ret < 0) {
+		ret = errno;
+		pr_err(
+			"failed to create epoll file descriptor: %s\n",
+			strerror(ret)
+		);
+		goto exit_close_sockfd;
+	}
+
+	ctx->epfd = ret;
+
+	ev.data.fd = ctx->tcpfd;
+	ev.events = EPOLLIN;
+	ret = epoll_ctl(ret, EPOLL_CTL_ADD, ctx->tcpfd, &ev);
+	if (ret < 0) {
+		ret = errno;
+		pr_err(
+			"failed to register file descriptor to epoll: %s\n",
+			strerror(ret)
+		);
+		goto exit_close_epfd;
+	}
+
+	return 0;
+exit_close_epfd:
+	close(ctx->epfd);
+exit_close_sockfd:
+	close(ctx->tcpfd);
+	return -ret;
+}
+
+static void init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
+{
+	tctx->pctx = pctx;
+}
 
 static void init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 {
@@ -197,12 +273,15 @@ int main(int argc, char *argv[])
 	int ret;
 	struct commandline_args args;
 	struct gwp_pctx ctx;
+	struct gwp_tctx tctx;
 
 	ret = handle_cmdline(argc, argv, &args);
 	if (ret < 0)
 		return ret;
-	
-	init_pctx(&ctx, &args);
 
-	return 0;
+	init_pctx(&ctx, &args);
+	init_tctx(&tctx, &ctx);
+	ret = prepare_tcp_serv(&tctx);
+
+	return ret;
 }
