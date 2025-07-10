@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -56,6 +57,7 @@ struct commandline_args {
 /* program configuration and data */
 struct gwp_pctx {
 	struct commandline_args *args;
+	struct gwp_tctx *tctx;
 	volatile bool stop;
 };
 
@@ -72,6 +74,7 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 	int ret;
 	struct commandline_args *args = ctx->pctx->args;
 	struct epoll_event ev;
+	uint64_t val;
 
 	ret = socket(args->src_addr_st.ss_family, SOCK_STREAM, 0);
 	if (ret < 0) {
@@ -83,6 +86,9 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 		return ret;
 	}
 
+	val = 1;
+	setsockopt(ret, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+	setsockopt(ret, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
 	ctx->tcpfd = ret;
 
 	ret = bind(ret, (struct sockaddr *)&args->src_addr_st, sizeof(args->src_addr_st));
@@ -142,6 +148,7 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 	int ret;
 	struct epoll_event ev;
 
+	pr_info("start serving...\n");
 	ret = 0;
 	while (!ctx->pctx->stop) {
 		ret = epoll_wait(ctx->epfd, &ev, 1, -1);
@@ -167,15 +174,70 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 	return ret;
 }
 
-static void init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
+static int init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
 {
 	tctx->pctx = pctx;
+	return prepare_tcp_serv(tctx);
 }
 
-static void init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
+static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 {
+	int ret;
+
 	pctx->args = args;
 	pctx->stop = false;
+	pctx->tctx = malloc(pctx->args->server_thread_nr * sizeof(*pctx->tctx));
+	if (!pctx->tctx) {
+		ret = errno;
+		pr_err("failed to allocate threads data: %s\n", strerror(ret));
+		return -ret;
+	}
+
+	return 0;
+}
+
+static void *tcp_serv_thread(void *args)
+{
+	intptr_t ret;
+	struct gwp_tctx *ctx = args;
+
+	ret = start_tcp_serv(ctx);
+	return (void *)ret;
+}
+
+static int spawn_threads(struct gwp_pctx *ctx)
+{
+	int ret;
+	size_t i, thread_nr = ctx->args->server_thread_nr;
+
+	for (i = 0; i < thread_nr; i++) {
+		ret = init_tctx(&ctx->tctx[i], ctx);
+		if (ret < 0)
+			return ret;
+	}
+
+	for (i = 0; i < thread_nr; i++) {
+		if (i == 0)
+			continue;
+		pthread_create(&ctx->tctx[i].thandle, NULL, tcp_serv_thread, &ctx->tctx[i]);
+	}
+
+	return start_tcp_serv(ctx->tctx);
+}
+
+static void join_threads(struct gwp_pctx *ctx)
+{
+	intptr_t retval;
+	size_t i, thread_nr = ctx->args->server_thread_nr;
+
+	for (i = 0; i < thread_nr; i++) {
+		if (i == 0)
+			continue;
+		pthread_join(ctx->tctx[i].thandle, (void *)&retval);
+	}
+
+	pr_info("deallocate pointer to threads data: %p\n", ctx->tctx);
+	free(ctx->tctx);
 }
 
 /*
@@ -269,8 +331,10 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 
 	if (server_thread_opt) {
 		server_thread_nr = atoi(server_thread_opt);
-		if (server_thread_nr <= 0)
-			server_thread_nr = DEFAULT_THREAD_NR;
+		if (server_thread_nr <= 0) {
+			pr_err("thread number can't be zero or negative\n");
+			return -EINVAL;
+		}
 	} else
 		server_thread_nr = DEFAULT_THREAD_NR;
 
@@ -322,7 +386,6 @@ int main(int argc, char *argv[])
 	int ret;
 	struct commandline_args args;
 	struct gwp_pctx ctx;
-	struct gwp_tctx tctx;
 	struct sigaction sa = {
 		.sa_handler = signal_handler
 	};
@@ -331,9 +394,7 @@ int main(int argc, char *argv[])
 	if (ret < 0)
 		return ret;
 
-	init_pctx(&ctx, &args);
-	init_tctx(&tctx, &ctx);
-	ret = prepare_tcp_serv(&tctx);
+	ret = init_pctx(&ctx, &args);
 	if (ret < 0)
 		return ret;
 
@@ -344,8 +405,12 @@ int main(int argc, char *argv[])
 		pr_err("failed to install signal handler\n");
 		return ret;
 	}
-	
-	ret = start_tcp_serv(&tctx);
+
+	ret = spawn_threads(&ctx);
+	if (ret < 0)
+		return ret;
+
+	join_threads(&ctx);
 
 	pr_info("all system resources were freed\n");
 
