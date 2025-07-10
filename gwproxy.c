@@ -299,6 +299,33 @@ static int accept_new_client(struct gwp_tctx *ctx)
 	return alloc_new_session(ctx, (struct sockaddr *)&in6, ret);
 }
 
+static void cleanup_pc(struct gwp_pair_conn *pc)
+{
+	close(pc->client.sockfd);
+	free(pc->client.recvbuf);
+	free(pc->client.sendbuf);
+	free(pc->target.recvbuf);
+	free(pc->target.sendbuf);
+	free(pc);
+}
+
+static void process_client(struct gwp_tctx *ctx, void *data)
+{
+	struct gwp_pair_conn *pc = data;
+	int ret;
+	ret = recv(pc->client.sockfd, pc->client.recvbuf, pc->client.recvlen, 0);
+	if (!ret) {
+		pr_info(
+			"client %s disconnected, cleaning up its resources\n",
+			pc->client.addrstr
+		);
+		ctx->container.session_nr--;
+		ctx->container.sessions[pc->idx] = NULL;
+		cleanup_pc(pc);
+	} else
+		VT_HEXDUMP(pc->client.recvbuf, ret);
+}
+
 static void process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 {
 	uint64_t ev_bit;
@@ -314,25 +341,7 @@ static void process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 		accept_new_client(ctx);
 		break;
 	case GWP_CLIENT:
-		struct gwp_pair_conn *pc = data;
-		int ret;
-		ret = recv(pc->client.sockfd, pc->client.recvbuf, pc->client.recvlen, 0);
-		if (!ret) {
-			pr_info(
-				"client %s disconnected, cleaning up its resources\n",
-				pc->client.addrstr
-			);
-			ctx->container.session_nr--;
-			ctx->container.sessions[pc->idx] = NULL;
-
-			close(pc->client.sockfd);
-			free(pc->client.recvbuf);
-			free(pc->client.sendbuf);
-			free(pc->target.recvbuf);
-			free(pc->target.sendbuf);
-			free(pc);
-		} else
-			VT_HEXDUMP(pc->client.recvbuf, ret);
+		process_client(ctx, data);
 		break;
 	
 	default:
@@ -349,12 +358,7 @@ static void cleanup_tctx(struct gwp_tctx *ctx)
 		pc = ctx->container.sessions[i];
 		if (pc) {
 			pr_info("disconnecting %s\n", pc->client.addrstr);
-			close(pc->client.sockfd);
-			free(pc->client.recvbuf);
-			free(pc->client.sendbuf);
-			free(pc->target.recvbuf);
-			free(pc->target.sendbuf);
-			free(pc);
+			cleanup_pc(pc);
 		}
 	}
 
