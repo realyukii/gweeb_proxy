@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/resource.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -439,6 +440,16 @@ static void signal_handler(int code)
 	write(gctx->stopfd, &val, sizeof(val));
 }
 
+static int setfdlimit(void)
+{
+	struct rlimit file_limit;
+
+	getrlimit(RLIMIT_NOFILE, &file_limit);
+	file_limit.rlim_cur = file_limit.rlim_max;
+	setrlimit(RLIMIT_NOFILE, &file_limit);
+	return errno;
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
@@ -462,6 +473,12 @@ int main(int argc, char *argv[])
 	if (ret < 0) {
 		pr_err("failed to install signal handler\n");
 		return ret;
+	}
+
+	ret = setfdlimit();
+	if (ret < 0) {
+		pr_err("failed to setrlimit: %s\n", strerror(ret));
+		return -ret;
 	}
 
 	ret = spawn_threads(&ctx);
