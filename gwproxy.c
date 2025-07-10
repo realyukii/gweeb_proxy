@@ -166,11 +166,31 @@ exit_close_sockfd:
 	return -ret;
 }
 
+static void process_events(struct gwp_tctx *ctx, struct epoll_event *ev)
+{
+	int ret;
+	uint64_t ev_bit;
+
+	ev_bit = GET_EV_BIT(ev->data.u64);
+	switch (ev_bit) {
+	case GWP_STOP:
+		break;
+	case GWP_ACCEPT:
+		ret = accept4(ctx->tcpfd, NULL, NULL, SOCK_NONBLOCK);
+		if (ret < 0)
+			break;
+		pr_info("accepted.\n");
+		break;
+	
+	default:
+		abort();
+	}
+}
+
 static int start_tcp_serv(struct gwp_tctx *ctx)
 {
 	int ret;
 	struct epoll_event ev;
-	uint64_t ev_bit;
 
 	pr_info("start serving...\n");
 	ret = 0;
@@ -187,18 +207,7 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 			break;
 		}
 
-		ev_bit = GET_EV_BIT(ev.data.u64);
-		switch (ev_bit) {
-		case GWP_STOP:
-			break;
-		case GWP_ACCEPT:
-			ret = accept4(ctx->tcpfd, NULL, NULL, SOCK_NONBLOCK);
-			pr_info("accepted.\n");
-			break;
-		
-		default:
-			abort();
-		}
+		process_events(ctx, &ev);
 	}
 
 	pr_info("closing TCP socket file descriptor\n");
