@@ -54,9 +54,7 @@ enum gwp_state {
 	/* client request. */
 	STATE_REQUEST		= 0x4,
 	/* exchange the data between client and destination */
-	STATE_EXCHANGE		= 0x8,
-	/* dns query request is completed */
-	STATE_DNS_RESOLV	= 0x16
+	STATE_EXCHANGE		= 0x8
 };
 
 enum auth_type {
@@ -425,6 +423,7 @@ static struct dns_req *init_req(struct gwp_tctx *ctx, struct pair_conn *pc,
 	}
 
 	r->pc = pc;
+	pc->r = r;
 	r->in.sin6_family = AF_UNSPEC;
 	r->in.sin6_port = *(uint16_t *)(domainname + domainname_sz);
 	r->finishfd = eventfd(0, EFD_NONBLOCK);
@@ -586,6 +585,7 @@ static int set_target(struct gwp_conn *tc, struct sockaddr_storage *sockaddr)
 		pr_err("failed to create target socket: %s\n", strerror(errno));
 		return -EXIT_FAILURE;
 	}
+	pr_info("prepare tcp socket to connect to target: %d\n", tsock);
 
 	set_sockattr(tsock);
 	size_addr = sockaddr->ss_family == AF_INET ? 
@@ -1268,8 +1268,9 @@ static int parse_request(struct gwp_tctx *ctx,
 			pthread_cond_signal(&ctx->pctx->dns_cond);
 			pr_dbg("releasing dns_lock\n");
 			pthread_mutex_unlock(&ctx->pctx->dns_lock);
+			epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, a->sockfd, NULL);
+			return -EAGAIN;
 		}
-		pc->state = STATE_DNS_RESOLV;
 		break;
 	case IPv6:
 		expected_len = fixed_len + ipv6_sz;
@@ -1698,7 +1699,27 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 		break;
 
 	case EV_BIT_DNS_RESOLVED:
-		// TODO: refactor codebase
+		uint64_t evbuf;
+		a = &pc->client;
+		b = &pc->target;
+		ret = read(pc->r->finishfd, &evbuf, sizeof(evbuf));
+		if (ret < 0) {
+			pr_err("failed to read buffer from evfd\n");
+			return -EXIT_FAILURE;
+		}
+		if (evbuf == 0)
+			return 0;
+		// for testing purposes, always assume dns resolution always succeded
+		a->len = 0;
+		handle_connect(pc, tctx, (struct sockaddr_storage *)&pc->r->in);
+		close(pc->r->finishfd);
+		free(pc->r);
+		if (ret < 0)
+			goto exit_err;
+		register_events(a->sockfd, tctx->epfd, EPOLLIN, pc, EV_BIT_CLIENT);
+		close(pc->r->finishfd);
+		// free(pc->r);
+		pc->state = STATE_EXCHANGE;
 		break;
 	}
 
@@ -1709,17 +1730,6 @@ static int process_tcp(struct epoll_event *ev, struct gwp_tctx *tctx)
 			pc->timerfd = -1;
 			pc->is_connected = true;
 		}
-	}
-
-	if (pc->state == STATE_DNS_RESOLV) {
-		// for testing purposes, always assume dns resolution always succeded
-		ret = prepare_exchange(tctx, pc, (struct sockaddr_storage *)&pc->r->in);
-		close(pc->r->finishfd);
-		free(pc->r);
-		if (ret < 0)
-			goto exit_err;
-
-		pc->state = STATE_EXCHANGE;
 	}
 
 	if (pc->state == NO_SOCKS5) {
