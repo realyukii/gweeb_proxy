@@ -61,6 +61,7 @@ struct gwp_conn {
 };
 
 struct gwp_pair_conn {
+	size_t idx;
 	struct gwp_conn client;
 	struct gwp_conn target;
 };
@@ -193,7 +194,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	struct gwp_pair_conn *s;
 	struct epoll_event ev;
 
-	if (container->session_nr > container->capacity) {
+	if (container->session_nr >= container->capacity) {
 		// realloc container...
 	}
 
@@ -202,22 +203,25 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 		pr_err("failed to allocate new session\n");
 		return -ENOMEM;
 	}
-	container->sessions[container->session_nr] = s;
-	container->session_nr++;
 
 	get_addrstr(in, s->client.addrstr);
 	pr_info("client %s on socket %d is accepted\n", s->client.addrstr, cfd);
 	s->client.sockfd = cfd;
+	s->idx = container->session_nr;
 	ev.data.u64 = 0;
 	ev.data.ptr = s;
 	ev.data.u64 |= GWP_CLIENT;
 	ev.events = EPOLLIN;
 	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, cfd, &ev);
 	if (ret < 0) {
+		free(s);
 		ret = errno;
 		pr_err("failed to register client to epoll: %s", strerror(ret));
 		return -ret;
 	}
+
+	container->sessions[container->session_nr] = s;
+	container->session_nr++;
 
 	return 0;
 }
@@ -262,6 +266,9 @@ static void process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 				"client %s disconnected, cleaning up its resources\n",
 				c->client.addrstr
 			);
+			ctx->container.session_nr--;
+			ctx->container.sessions[c->idx] = NULL;
+
 			close(c->client.sockfd);
 			free(c);
 		}
@@ -270,6 +277,28 @@ static void process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 	default:
 		abort();
 	}
+}
+
+static void cleanup_tctx(struct gwp_tctx *ctx)
+{
+	struct gwp_pair_conn *pc;
+
+	pr_info("unfreed resource of session: %d\n", ctx->container.session_nr);
+	for (size_t i = 0; i < ctx->container.session_nr; i++) {
+		pc = ctx->container.sessions[i];
+		if (pc) {
+			pr_info("disconnecting %s\n", pc->client.addrstr);
+			close(pc->client.sockfd);
+			free(pc);
+		}
+	}
+
+	pr_info("closing TCP socket file descriptor: %d\n", ctx->tcpfd);
+	close(ctx->tcpfd);
+	pr_info("closing epoll file descriptor: %d\n", ctx->epfd);
+	close(ctx->epfd);
+	pr_info("deallocate sessions ptr: %p\n", ctx->container.sessions);
+	free(ctx->container.sessions);
 }
 
 static int start_tcp_serv(struct gwp_tctx *ctx)
@@ -296,12 +325,7 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 			process_event(ctx, &evs[i]);
 	}
 
-	pr_info("closing TCP socket file descriptor: %d\n", ctx->tcpfd);
-	close(ctx->tcpfd);
-	pr_info("closing epoll file descriptor: %d\n", ctx->epfd);
-	close(ctx->epfd);
-	pr_info("deallocate sessions ptr: %p\n", ctx->container.sessions);
-	free(ctx->container.sessions);
+	cleanup_tctx(ctx);
 	return ret;
 }
 
@@ -309,7 +333,7 @@ static int init_container(struct gwp_session_container *container, size_t defaul
 {
 	container->capacity = default_nr;
 	container->session_nr = 0;
-	container->sessions = malloc(default_nr * sizeof(container->sessions));
+	container->sessions = calloc(default_nr, sizeof(container->sessions));
 	if (!container->sessions)
 		return -ENOMEM;
 
