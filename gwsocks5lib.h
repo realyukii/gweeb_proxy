@@ -13,6 +13,7 @@
 #include <sys/inotify.h>
 
 #include "linux.h"
+#include "general.h"
 
 #define MAX_DOMAIN_LEN 255
 #define MAX_METHODS 255
@@ -197,4 +198,4 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr
 * @return zoro on success, or a negative integer on failure
 * (you can ignore if you want, it will restore previous value).
 */
-static int socks5_reload_creds_file(struct socks5_ctx *ctx);
+int socks5_reload_creds_file(struct socks5_ctx *ctx);
