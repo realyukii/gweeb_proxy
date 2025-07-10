@@ -19,7 +19,7 @@
 #define DEFAULT_TIMEOUT_SEC 8
 #define DEFAULT_PREALLOC_CONN 100
 
-#define ALL_EV_BITS (GWP_STOP | GWP_ACCEPT)
+#define ALL_EV_BITS (GWP_STOP | GWP_ACCEPT | GWP_CLIENT)
 #define GET_EV_BIT(X) ((X) & ALL_EV_BITS)
 #define CLEAR_EV_BIT(X) ((X) & ~ALL_EV_BITS)
 
@@ -49,10 +49,27 @@ static const char usage[] =
 
 enum gwp_ev_bit {
 	GWP_STOP	= (0x1ULL << 48ULL),
-	GWP_ACCEPT	= (0x2ULL << 48ULL)
+	GWP_ACCEPT	= (0x2ULL << 48ULL),
+	GWP_CLIENT	= (0x3ULL << 48ULL)
 };
 
 struct gwp_pctx *gctx;
+
+struct gwp_conn {
+	int sockfd;
+	char addrstr[ADDRSTR_SZ];
+};
+
+struct gwp_pair_conn {
+	struct gwp_conn client;
+	struct gwp_conn target;
+};
+
+struct gwp_session_container {
+	size_t session_nr;
+	size_t capacity;
+	struct gwp_pair_conn **sessions;
+};
 
 struct commandline_args {
 	bool socks5_mode;
@@ -80,6 +97,7 @@ struct gwp_tctx {
 	int tcpfd;
 	pthread_t thandle;
 	struct gwp_pctx *pctx;
+	struct gwp_session_container container;
 };
 
 static int prepare_tcp_serv(struct gwp_tctx *ctx)
@@ -168,20 +186,85 @@ exit_close_sockfd:
 	return -ret;
 }
 
-static void process_events(struct gwp_tctx *ctx, struct epoll_event *ev)
+static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 {
 	int ret;
+	struct gwp_session_container *container = &ctx->container;
+	struct gwp_pair_conn *s;
+	struct epoll_event ev;
+
+	if (container->session_nr > container->capacity) {
+		// realloc container...
+	}
+
+	s = malloc(sizeof(struct gwp_pair_conn));
+	if (!s) {
+		pr_err("failed to allocate new session\n");
+		return -ENOMEM;
+	}
+	container->sessions[container->session_nr] = s;
+	container->session_nr++;
+
+	get_addrstr(in, s->client.addrstr);
+	pr_info("client %s on socket %d is accepted\n", s->client.addrstr, cfd);
+	s->client.sockfd = cfd;
+	ev.data.u64 = 0;
+	ev.data.ptr = s;
+	ev.data.u64 |= GWP_CLIENT;
+	ev.events = EPOLLIN;
+	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, cfd, &ev);
+	if (ret < 0) {
+		ret = errno;
+		pr_err("failed to register client to epoll: %s", strerror(ret));
+		return -ret;
+	}
+
+	return 0;
+}
+
+static int accept_new_client(struct gwp_tctx *ctx)
+{
+	int ret;
+	struct sockaddr_in6 in6;
+	socklen_t in6_sz = sizeof(in6);
+
+	ret = accept4(ctx->tcpfd, &in6, &in6_sz, SOCK_NONBLOCK);
+	if (ret < 0) {
+		ret = errno;
+		pr_err("failed to accept new client: %s\n", strerror(ret));
+		return -ret;
+	}
+
+	return alloc_new_session(ctx, (struct sockaddr *)&in6, ret);
+}
+
+static void process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
+{
 	uint64_t ev_bit;
+	void *data;
 	
 	ev_bit = GET_EV_BIT(ev->data.u64);
+	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
+	data = ev->data.ptr;
 	switch (ev_bit) {
 	case GWP_STOP:
 		break;
 	case GWP_ACCEPT:
-		ret = accept4(ctx->tcpfd, NULL, NULL, SOCK_NONBLOCK);
-		if (ret < 0)
-			break;
-		pr_info("accepted.\n");
+		accept_new_client(ctx);
+		break;
+	case GWP_CLIENT:
+		struct gwp_pair_conn *c = data;
+		int ret;
+		char buf[1];
+		ret = recv(c->client.sockfd, buf, 1, 0);
+		if (!ret) {
+			pr_info(
+				"client %s disconnected, cleaning up its resources\n",
+				c->client.addrstr
+			);
+			close(c->client.sockfd);
+			free(c);
+		}
 		break;
 	
 	default:
@@ -210,19 +293,36 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 		}
 
 		for (i = 0; i < ret; i++)
-			process_events(ctx, &evs[i]);
+			process_event(ctx, &evs[i]);
 	}
 
-	pr_info("closing TCP socket file descriptor\n");
+	pr_info("closing TCP socket file descriptor: %d\n", ctx->tcpfd);
 	close(ctx->tcpfd);
-	pr_info("closing epoll file descriptor\n");
+	pr_info("closing epoll file descriptor: %d\n", ctx->epfd);
 	close(ctx->epfd);
+	pr_info("deallocate sessions ptr: %p\n", ctx->container.sessions);
+	free(ctx->container.sessions);
 	return ret;
+}
+
+static int init_container(struct gwp_session_container *container, size_t default_nr)
+{
+	container->capacity = default_nr;
+	container->session_nr = 0;
+	container->sessions = malloc(default_nr * sizeof(container->sessions));
+	if (!container->sessions)
+		return -ENOMEM;
+
+	return 0;
 }
 
 static int init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
 {
+	int ret;
 	tctx->pctx = pctx;
+	ret = init_container(&tctx->container, pctx->args->connptr_nr);
+	if (ret < 0)
+		return -ENOMEM;
 	return prepare_tcp_serv(tctx);
 }
 
@@ -239,7 +339,7 @@ static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 	pctx->stopfd = ret;
 	pctx->stop = false;
 	pctx->args = args;
-	pctx->tctx = malloc(pctx->args->server_thread_nr * sizeof(*pctx->tctx));
+	pctx->tctx = malloc(args->server_thread_nr * sizeof(*pctx->tctx));
 	if (!pctx->tctx) {
 		close(pctx->stopfd);
 		ret = errno;
