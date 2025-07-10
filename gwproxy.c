@@ -13,6 +13,7 @@
 #include "linux.h"
 #include "general.h"
 
+#define DEFAULT_EPOLL_EV 512
 #define DEFAULT_THREAD_NR 4
 #define DEFAULT_TIMEOUT_SEC 8
 #define DEFAULT_PREALLOC_CONN 100
@@ -170,7 +171,7 @@ static void process_events(struct gwp_tctx *ctx, struct epoll_event *ev)
 {
 	int ret;
 	uint64_t ev_bit;
-
+	
 	ev_bit = GET_EV_BIT(ev->data.u64);
 	switch (ev_bit) {
 	case GWP_STOP:
@@ -189,13 +190,13 @@ static void process_events(struct gwp_tctx *ctx, struct epoll_event *ev)
 
 static int start_tcp_serv(struct gwp_tctx *ctx)
 {
-	int ret;
-	struct epoll_event ev;
+	int i, ret;
+	struct epoll_event evs[DEFAULT_EPOLL_EV];
 
 	pr_info("start serving...\n");
 	ret = 0;
 	while (!ctx->pctx->stop) {
-		ret = epoll_wait(ctx->epfd, &ev, 1, -1);
+		ret = epoll_wait(ctx->epfd, evs, DEFAULT_EPOLL_EV, -1);
 		if (ret < 0) {
 			ret = errno;
 			if (ret == EINTR)
@@ -207,7 +208,8 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 			break;
 		}
 
-		process_events(ctx, &ev);
+		for (i = 0; i < ret; i++)
+			process_events(ctx, &evs[i]);
 	}
 
 	pr_info("closing TCP socket file descriptor\n");
