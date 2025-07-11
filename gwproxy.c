@@ -218,6 +218,61 @@ exit_close_sockfd:
 	return -ret;
 }
 
+int realloc_container(struct gwp_session_container *c)
+{
+	int expand_sz = c->capacity * 2;
+	void *ptr = realloc(c->sessions, expand_sz * sizeof(c->sessions));
+	if (!ptr)
+		return -ENOMEM;
+
+	c->sessions = ptr;
+	memset(&c->sessions[c->capacity], 0, c->capacity * sizeof(c->sessions));
+	c->capacity = expand_sz;
+
+	return 0;
+}
+
+int alloc_recv_send_buff(struct gwp_tctx *ctx, struct gwp_pair_conn *s)
+{
+	struct commandline_args *args = ctx->pctx->args;
+	struct gwp_conn *c, *t;
+
+	c = &s->client;
+	t = &s->target;
+	c->recvbuf = malloc(args->c_recv_sz);
+	if (!c->recvbuf)
+		return -ENOMEM;
+
+	c->recvlen = args->c_recv_sz;
+
+	c->sendbuf = malloc(args->c_send_sz);
+	if (!c->sendbuf)
+		goto exit_free_c_recv;
+
+	c->sendlen = args->c_send_sz;
+
+	t->recvbuf = malloc(args->t_recv_sz);
+	if (!t->recvbuf)
+		goto exit_free_c_send;
+
+	t->recvlen = args->t_recv_sz;
+
+	t->sendbuf = malloc(args->t_send_sz);
+	if (!t->sendbuf)
+		goto exit_free_t_recv;
+
+	t->sendlen = args->t_send_sz;
+
+	return 0;
+exit_free_t_recv:
+	free(t->recvbuf);
+exit_free_c_send:
+	free(c->sendbuf);
+exit_free_c_recv:
+	free(c->recvbuf);
+	return -ENOMEM;
+}
+
 static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 {
 	int ret;
@@ -226,7 +281,9 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	struct epoll_event ev;
 
 	if (container->session_nr >= container->capacity) {
-		// realloc container...
+		ret = realloc_container(&ctx->container);
+		if (ret)
+			return ret;
 	}
 
 	s = malloc(sizeof(struct gwp_pair_conn));
@@ -240,32 +297,10 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	pr_info("client %s on socket %d is accepted\n", s->client.addrstr, cfd);
 	s->client.sockfd = cfd;
 	s->idx = container->session_nr;
-	
-	s->client.recvbuf = malloc(ctx->pctx->args->c_recv_sz);
-	if (!s->client.recvbuf) {
-		ret = -ENOMEM;
+
+	ret = alloc_recv_send_buff(ctx, s);
+	if (ret)
 		goto exit_free_s;
-	}
-	s->client.recvlen = ctx->pctx->args->c_recv_sz;
-	s->client.sendbuf = malloc(ctx->pctx->args->c_send_sz);
-	if (!s->client.sendbuf) {
-		ret = -ENOMEM;
-		goto exit_free_c_recv;
-	}
-	s->client.sendlen = ctx->pctx->args->c_send_sz;
-	
-	s->target.recvbuf = malloc(ctx->pctx->args->t_recv_sz);
-	if (!s->target.recvbuf) {
-		ret = -ENOMEM;
-		goto exit_free_c_send;
-	}
-	s->target.recvlen = ctx->pctx->args->t_recv_sz;
-	s->target.sendbuf = malloc(ctx->pctx->args->t_send_sz);
-	if (!s->target.sendbuf) {
-		ret = -ENOMEM;
-		goto exit_free_t_recv;
-	}
-	s->target.sendlen = ctx->pctx->args->t_send_sz;
 
 	ev.data.u64 = 0;
 	ev.data.ptr = s;
@@ -275,20 +310,17 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	if (ret < 0) {
 		ret = -errno;
 		pr_err("failed to register client to epoll: %s", strerror(-ret));
-		goto exit_free_t_send;
+		goto exit_free_recv_send_buff;
 	}
 
 	container->sessions[container->session_nr] = s;
 	container->session_nr++;
 
 	return 0;
-exit_free_t_send:
+exit_free_recv_send_buff:
 	free(s->target.sendbuf);
-exit_free_t_recv:
 	free(s->target.recvbuf);
-exit_free_c_send:
 	free(s->client.sendbuf);
-exit_free_c_recv:
 	free(s->client.recvbuf);
 exit_free_s:
 	free(s);
