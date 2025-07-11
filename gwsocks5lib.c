@@ -492,6 +492,8 @@ static void socks5_test_invalid_creds_format(void)
 	PRTEST_OK();
 }
 
+#ifdef RUNTEST
+
 #define socks5_do_init_ctx_noauth(CTX)				\
 do {								\
 	struct socks5_cfg param = {				\
@@ -770,3 +772,5 @@ int main()
 
 	return 0;
 }
+
+#endif

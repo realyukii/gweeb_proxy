@@ -48,6 +48,7 @@ test_dns_serv: $(TARGET4)
 	$< -b [::]:6969 -t 1
 stress_test: $(TARGET5)
 	$< -n google.com -s [::1]:6969
+test_gwsocks5lib: CFLAGS += -DRUNTEST
 test_gwsocks5lib: $(TARGET6)
 	$<
 
