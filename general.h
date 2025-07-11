@@ -18,86 +18,8 @@
 
 #if ENABLE_LOG
 
-/*
-* credit: https://gist.github.com/ammarfaizi2/e88a21171358b5092a3df412eeb80b2f
-*/
-
 #ifndef VT_HEXDUMP_H
 #define VT_HEXDUMP_H
-
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
-
-#define CHDOT(C) (((32 <= (C)) && ((C) <= 126)) ? (C) : '.')
-
-void vt_hexdump(const void *p, size_t size,
-		const char *file, int line, const char *func) {
-	const unsigned char *ptr = p;
-	static const char fmt[] =
-	"============ VT_HEXDUMP ============\n"
-	"File\t\t: %s:%d\n"
-	"Function\t: %s()\n"
-	"Address\t\t: 0x%016lx\n"
-	"Dump size\t: %ld bytes\n"
-	"\n"
-	"%s"
-	"=====================================\n";
-	size_t sz_perlines, tot_sz, last_sz, fixed_sz,
-	r, i, j, k = 0, l, off = 0;
-	char *tmp;
-	/* process 16 byte per-line, calculate the line number */
-	sz_perlines = size / 16;
-	/* remainder of multiple 16, if any */
-	r = size % 16;
-	/* size of last line */
-	last_sz = 
-	21 /* address prefix */
-	+ (3 * 16) /* hex-ascii digit padded with space */
-	+ 2 /* " |" */
-	+ r
-	+ 2; /* "|\n" */
-	/* fixed when r = 16 */
-	fixed_sz = 89;
-	tot_sz = (sz_perlines * fixed_sz) + last_sz;
-	tmp = malloc(tot_sz + 1);
-	if (!tmp)
-		goto out;
-	for (i = 0; i < ((size/16) + 1); i++) {
-		snprintf(
-			&tmp[off], 21 + 1,
-			"0x%016lx|  ", (uintptr_t)(ptr + i * 16)
-		);
-		off += 21;
-		l = k;
-		for (j = 0; (j < 16) && (k < size); j++, k++) {
-			snprintf(&tmp[off], 3 + 1, "%02x ", ptr[k]);
-			off += 3;
-		}		
-		while (j++ < 16) {
-			snprintf(&tmp[off], 3 + 1, "   ");
-			off += 3;
-		}		
-		snprintf(&tmp[off], 2 + 1, " |");
-		off += 2;
-		for (j = 0; (j < 16) && (l < size); j++, l++) {
-			snprintf(&tmp[off], 1 + 1, "%c", CHDOT(ptr[l]));
-			off += 1;
-		}
-		snprintf(&tmp[off], 2 + 1, "|\n");
-		off += 2;
-	}
-	fprintf(
-		stderr, fmt,
-		file, line,
-		func,
-		(uintptr_t)ptr,
-		(size),
-		tmp
-	);
-	free(tmp);
-out:
-}
 
 #define VT_HEXDUMP(PTR, SIZE)					\
 do {								\
@@ -134,3 +56,10 @@ void get_addrstr(struct sockaddr *saddr, char *bufptr);
 * @param c
 */
 bool is_ldh(char c);
+
+/*
+* Dump the memory content of given pointer and size
+* credit: https://gist.github.com/ammarfaizi2/e88a21171358b5092a3df412eeb80b2f
+*/
+void vt_hexdump(const void *p, size_t size,
+		const char *file, int line, const char *func);
