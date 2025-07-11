@@ -1,6 +1,6 @@
 BUILDDIR	:= build
 
-GWPROXYSRC	:= gwproxy.c linux.c general.c
+GWPROXYSRC	:= gwproxy.c gwsocks5lib.c linux.c general.c
 CONVERTERSRC	:= ip_converter.c general.c
 INOTIFYSRC	:= test_inotify.c linux.c
 DNSRESOLVSRC	:= dns_resolver.c general.c linux.c

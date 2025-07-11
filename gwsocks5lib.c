@@ -464,6 +464,8 @@ void socks5_free_conn(struct socks5_conn *c)
 	free(c);
 }
 
+#ifdef RUNTEST
+
 static void socks5_test_creds_file_not_found(void)
 {
 	int r;
@@ -491,8 +493,6 @@ static void socks5_test_invalid_creds_format(void)
 	socks5_free_ctx(ctx);
 	PRTEST_OK();
 }
-
-#ifdef RUNTEST
 
 #define socks5_do_init_ctx_noauth(CTX)				\
 do {								\

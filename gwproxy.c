@@ -13,6 +13,7 @@
 
 #include "linux.h"
 #include "general.h"
+#include "gwsocks5lib.h"
 
 #define DEFAULT_EPOLL_EV 512
 #define DEFAULT_THREAD_NR 4
@@ -114,6 +115,8 @@ struct buff_sz_opt {
 struct gwp_pctx {
 	struct commandline_args *args;
 	struct gwp_tctx *tctx;
+	struct socks5_ctx *socks5_ctx;
+	void (*func_handler)(struct gwp_tctx *ctx, void *data);
 	int stopfd;
 	volatile bool stop;
 };
@@ -358,12 +361,12 @@ static void process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 	case GWP_ACCEPT:
 		accept_new_client(ctx);
 		break;
-	case GWP_CLIENT:
-		process_client(ctx, data);
-		break;
-	
+	// case GWP_CLIENT:
+	// 	process_client(ctx, data);
+	// 	break;
+
 	default:
-		abort();
+		ctx->pctx->func_handler(ctx, data);
 	}
 }
 
@@ -416,6 +419,18 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 	return ret;
 }
 
+static void socks5_proxy_handler(struct gwp_tctx *ctx, void *data)
+{
+	pr_info("TCP proxy is running with socks5 protocol support\n");
+	process_client(ctx, data);
+}
+
+static void simple_proxy_handler(struct gwp_tctx *ctx, void *data)
+{
+	pr_info("TCP proxy is running with no protocol\n");
+	process_client(ctx, data);
+}
+
 static int init_container(struct gwp_session_container *container, size_t cap)
 {
 	container->capacity = cap;
@@ -440,6 +455,7 @@ static int init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
 static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 {
 	int ret;
+	struct socks5_cfg cfg;
 
 	ret = eventfd(0, EFD_NONBLOCK);
 	if (ret < 0) {
@@ -458,7 +474,15 @@ static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 		return -ret;
 	}
 
-	return 0;
+	ret = 0;
+	pctx->func_handler = simple_proxy_handler;
+	if (args->socks5_mode) {
+		cfg.auth_file = args->auth_file;
+		ret = socks5_init(&pctx->socks5_ctx, &cfg);
+		pctx->func_handler = socks5_proxy_handler;
+	}
+
+	return ret;
 }
 
 static void *tcp_serv_thread(void *args)
@@ -503,7 +527,16 @@ static void join_threads(struct gwp_pctx *ctx)
 			continue;
 		pthread_join(ctx->tctx[i].thandle, (void *)&retval);
 	}
+}
 
+static void cleanup_resources(struct gwp_pctx *ctx)
+{
+	join_threads(ctx);
+
+	if (ctx->args->socks5_mode) {
+		pr_info("de-initialize socks5 library\n");
+		socks5_free_ctx(ctx->socks5_ctx);
+	}
 	pr_info("deallocate pointer to threads data: %p\n", ctx->tctx);
 	free(ctx->tctx);
 	pr_info("closing stop file descriptor (eventfd): %d\n", ctx->stopfd);
@@ -748,7 +781,7 @@ int main(int argc, char *argv[])
 	if (ret < 0)
 		return ret;
 
-	join_threads(&ctx);
+	cleanup_resources(&ctx);
 
 	pr_info("all system resources were freed\n");
 
