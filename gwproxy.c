@@ -101,6 +101,15 @@ struct commandline_args {
 	struct sockaddr_storage dst_addr_st;
 };
 
+struct buff_sz_opt {
+	char *c_both_sz_opt;
+	char *c_recv_sz_opt;
+	char *c_send_sz_opt;
+	char *t_both_sz_opt;
+	char *t_recv_sz_opt;
+	char *t_send_sz_opt;
+};
+
 /* program configuration and data */
 struct gwp_pctx {
 	struct commandline_args *args;
@@ -489,6 +498,60 @@ static void join_threads(struct gwp_pctx *ctx)
 	close(ctx->stopfd);
 }
 
+static void set_buffer_sizes(struct commandline_args *args, struct buff_sz_opt *b)
+{
+	int c_both_sz, c_recv_sz, c_send_sz, t_both_sz, t_recv_sz, t_send_sz;
+
+	args->c_recv_sz = args->c_send_sz =
+	args->t_recv_sz = args->t_send_sz = DEFAULT_BUFF_SZ;
+	if (b->c_recv_sz_opt) {
+		c_recv_sz = atoi(b->c_recv_sz_opt);
+		if (c_recv_sz > 0)
+			args->c_recv_sz = c_recv_sz;
+	}
+
+	if (b->c_send_sz_opt) {
+		c_send_sz = atoi(b->c_send_sz_opt);
+		if (c_send_sz > 0)
+			args->c_send_sz = c_send_sz;
+	}
+
+	if (b->c_both_sz_opt) {
+		c_both_sz = atoi(b->c_both_sz_opt);
+		if (c_both_sz > 0)
+			args->c_recv_sz = args->c_send_sz = c_both_sz;
+	}
+
+	if (b->t_recv_sz_opt) {
+		t_recv_sz = atoi(b->t_both_sz_opt);
+		if (t_recv_sz > 0)
+			args->t_recv_sz = t_recv_sz;
+	}
+
+	if (b->t_send_sz_opt) {
+		t_send_sz = atoi(b->t_both_sz_opt);
+		if (t_send_sz > 0)
+			args->t_send_sz = t_send_sz;
+	}
+
+	if (b->t_both_sz_opt) {
+		t_both_sz = atoi(b->t_both_sz_opt);
+		if (t_both_sz > 0)
+			args->t_recv_sz = args->t_send_sz = t_both_sz;
+	}
+}
+
+static int set_intval(char *val, int defaultval)
+{
+	int ival;
+	if (val) {
+		ival = atoi(val);
+	} else
+		ival = defaultval;
+
+	return ival;
+}
+
 /*
 * Handle and initialize command-line arguments.
 *
@@ -509,11 +572,8 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 {
 	char c,
 	*bind_opt, *target_opt, *server_thread_opt,
-	*client_nr_opt, *wait_opt, *auth_file_opt,
-	*c_both_sz_opt, *c_recv_sz_opt, *c_send_sz_opt,
-	*t_both_sz_opt, *t_recv_sz_opt, *t_send_sz_opt;
-	int server_thread_nr, connptr_nr, timeout,
-	c_both_sz, c_recv_sz, c_send_sz, t_both_sz, t_recv_sz, t_send_sz;
+	*client_nr_opt, *wait_opt, *auth_file_opt;
+	struct buff_sz_opt b = {0};
 	int ret;
 
 	if (argc == 1) {
@@ -522,12 +582,9 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 	}
 
 	args->socks5_mode = false;
-	args->auth_file = NULL;
-	memset(&args->src_addr_st, 0, sizeof(args->src_addr_st));
 
-	auth_file_opt = wait_opt = server_thread_opt = bind_opt = target_opt =
-	client_nr_opt = c_both_sz_opt = c_recv_sz_opt = c_send_sz_opt =
-	t_both_sz_opt = t_recv_sz_opt = t_send_sz_opt = NULL;
+	auth_file_opt = wait_opt = server_thread_opt
+	= bind_opt = target_opt = client_nr_opt = NULL;
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 's':
@@ -552,22 +609,22 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 			client_nr_opt = optarg;
 			break;
 		case 'g':
-			c_both_sz_opt = optarg;
+			b.c_both_sz_opt = optarg;
 			break;
 		case 'j':
-			c_recv_sz_opt = optarg;
+			b.c_recv_sz_opt = optarg;
 			break;
 		case 'l':
-			c_send_sz_opt = optarg;
+			b.c_send_sz_opt = optarg;
 			break;
 		case 'y':
-			t_both_sz_opt = optarg;
+			b.t_both_sz_opt = optarg;
 			break;
 		case 'k':
-			t_recv_sz_opt = optarg;
+			b.t_recv_sz_opt = optarg;
 			break;
 		case 'p':
-			t_send_sz_opt = optarg;
+			b.t_send_sz_opt = optarg;
 			break;
 		case 'h':
 			pr_menu();
@@ -588,76 +645,17 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 		return -EINVAL;
 	}
 
-	args->c_recv_sz = args->c_send_sz =
-	args->t_recv_sz = args->t_send_sz = DEFAULT_BUFF_SZ;
-	if (c_recv_sz_opt) {
-		c_recv_sz = atoi(c_both_sz_opt);
-		if (c_recv_sz > 0)
-			args->c_recv_sz = c_recv_sz;
-	}
+	set_buffer_sizes(args, &b);
 
-	if (c_send_sz_opt) {
-		c_send_sz = atoi(c_both_sz_opt);
-		if (c_send_sz > 0)
-			args->c_send_sz = c_send_sz;
-	}
-
-	if (c_both_sz_opt) {
-		c_both_sz = atoi(c_both_sz_opt);
-		if (c_both_sz > 0)
-			args->c_recv_sz = args->c_send_sz = c_both_sz;
-	}
-
-	if (t_recv_sz_opt) {
-		t_recv_sz = atoi(t_both_sz_opt);
-		if (t_recv_sz > 0)
-			args->t_recv_sz = t_recv_sz;
-	}
-
-	if (t_send_sz_opt) {
-		t_send_sz = atoi(t_both_sz_opt);
-		if (t_send_sz > 0)
-			args->t_send_sz = t_send_sz;
-	}
-
-	if (t_both_sz_opt) {
-		t_both_sz = atoi(t_both_sz_opt);
-		if (t_both_sz > 0)
-			args->t_recv_sz = args->t_send_sz = t_both_sz;
-	}
-
+	args->auth_file = NULL;
 	if (auth_file_opt)
 		args->auth_file = auth_file_opt;
 
-	if (client_nr_opt) {
-		connptr_nr = atoi(client_nr_opt);
-		if (connptr_nr <= 0)
-			connptr_nr = DEFAULT_PREALLOC_CONN;
-	} else
-		connptr_nr = DEFAULT_PREALLOC_CONN;
+	args->connptr_nr = set_intval(client_nr_opt, DEFAULT_PREALLOC_CONN);
+	args->server_thread_nr = set_intval(server_thread_opt, DEFAULT_THREAD_NR);
+	args->timeout = set_intval(wait_opt, DEFAULT_TIMEOUT_SEC);
 
-	args->connptr_nr = connptr_nr;
-
-	if (server_thread_opt) {
-		server_thread_nr = atoi(server_thread_opt);
-		if (server_thread_nr <= 0) {
-			pr_err("thread number can't be zero or negative\n");
-			return -EINVAL;
-		}
-	} else
-		server_thread_nr = DEFAULT_THREAD_NR;
-
-	args->server_thread_nr = server_thread_nr;
-
-	if (wait_opt) {
-		timeout = atoi(wait_opt);
-		if (timeout < 0)
-			timeout = DEFAULT_TIMEOUT_SEC;
-	} else
-		timeout = DEFAULT_TIMEOUT_SEC;
-
-	args->timeout = timeout;
-
+	memset(&args->src_addr_st, 0, sizeof(args->src_addr_st));
 	ret = init_addr(bind_opt, &args->src_addr_st);
 	if (ret < 0) {
 		pr_err("invalid format for %s\n", bind_opt);
