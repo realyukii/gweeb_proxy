@@ -68,12 +68,11 @@ exit_close_filefd:
 
 static int socks5_prepare_hotreload(struct socks5_ctx *ctx)
 {
-	int ret, ifd, epfd;
-	struct epoll_event ev;
+	int ret;
 	struct socks5_creds *ac;
 
-	ifd = inotify_init1(IN_NONBLOCK);
-	if (ifd < 0) {
+	ret = inotify_init1(IN_NONBLOCK);
+	if (ret < 0) {
 		pr_err(
 			"failed to create inotify file descriptor: %s\n",
 			strerror(errno)
@@ -82,42 +81,18 @@ static int socks5_prepare_hotreload(struct socks5_ctx *ctx)
 	}
 
 	ac = &ctx->creds;
-	ret = inotify_add_watch(ifd, ac->auth_file, IN_CLOSE_WRITE);
+	ac->ifd = ret;
+	ret = inotify_add_watch(ret, ac->auth_file, IN_CLOSE_WRITE);
 	if (ret < 0) {
 		pr_err(
 			"failed to add file to inotify watch: %s\n",
 			strerror(errno)
 		);
-		goto exit_close_ifd;
+		close(ac->ifd);
+		return -EXIT_FAILURE;
 	}
-
-	epfd = epoll_create(1);
-	if (epfd < 0) {
-		pr_err(
-			"failed to create epoll file descriptor: %s\n",
-			strerror(errno)
-		);
-		goto exit_close_ifd;
-	}
-
-	ev.events = EPOLLIN;
-	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
-	if (ret < 0) {
-		pr_err(
-			"failed to add inotifyfd to epoll: %s\n",
-			strerror(errno)
-		);
-		goto exit_close_epfd;
-	}
-
-	ac->ifd = ifd;
 
 	return 0;
-exit_close_epfd:
-	close(epfd);
-exit_close_ifd:
-	close(ifd);
-	return -EXIT_FAILURE;
 }
 
 static int socks5_init_creds(struct socks5_ctx *ctx, const char *auth_file)
