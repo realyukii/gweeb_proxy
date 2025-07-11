@@ -149,7 +149,9 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 	setsockopt(ret, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
 	ctx->tcpfd = ret;
 
-	ret = bind(ret, (struct sockaddr *)&args->src_addr_st, sizeof(args->src_addr_st));
+	ret = bind(ret,
+		(struct sockaddr *)&args->src_addr_st, sizeof(args->src_addr_st)
+	);
 	if (ret < 0) {
 		ret = errno;
 		pr_err(
@@ -308,7 +310,7 @@ static int accept_new_client(struct gwp_tctx *ctx)
 	return alloc_new_session(ctx, (struct sockaddr *)&in6, ret);
 }
 
-static void cleanup_pc(struct gwp_pair_conn *pc)
+static void _cleanup_pc(struct gwp_pair_conn *pc)
 {
 	close(pc->client.sockfd);
 	free(pc->client.recvbuf);
@@ -318,20 +320,27 @@ static void cleanup_pc(struct gwp_pair_conn *pc)
 	free(pc);
 }
 
+static void cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
+{
+	pr_info(
+		"client %s disconnected, cleaning up its resources\n",
+		pc->client.addrstr
+	);
+
+	ctx->container.session_nr--;
+	ctx->container.sessions[pc->idx] = NULL;
+	_cleanup_pc(pc);
+}
+
 static void process_client(struct gwp_tctx *ctx, void *data)
 {
 	struct gwp_pair_conn *pc = data;
 	int ret;
+
 	ret = recv(pc->client.sockfd, pc->client.recvbuf, pc->client.recvlen, 0);
-	if (!ret) {
-		pr_info(
-			"client %s disconnected, cleaning up its resources\n",
-			pc->client.addrstr
-		);
-		ctx->container.session_nr--;
-		ctx->container.sessions[pc->idx] = NULL;
-		cleanup_pc(pc);
-	} else
+	if (!ret)
+		cleanup_pc(ctx, pc);
+	else
 		VT_HEXDUMP(pc->client.recvbuf, ret);
 }
 
@@ -367,7 +376,7 @@ static void cleanup_tctx(struct gwp_tctx *ctx)
 		pc = ctx->container.sessions[i];
 		if (pc) {
 			pr_info("disconnecting %s\n", pc->client.addrstr);
-			cleanup_pc(pc);
+			_cleanup_pc(pc);
 		}
 	}
 
@@ -407,11 +416,11 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 	return ret;
 }
 
-static int init_container(struct gwp_session_container *container, size_t default_nr)
+static int init_container(struct gwp_session_container *container, size_t cap)
 {
-	container->capacity = default_nr;
+	container->capacity = cap;
 	container->session_nr = 0;
-	container->sessions = calloc(default_nr, sizeof(container->sessions));
+	container->sessions = calloc(cap, sizeof(container->sessions));
 	if (!container->sessions)
 		return -ENOMEM;
 
@@ -475,7 +484,10 @@ static int spawn_threads(struct gwp_pctx *ctx)
 	for (i = 0; i < thread_nr; i++) {
 		if (i == 0)
 			continue;
-		pthread_create(&ctx->tctx[i].thandle, NULL, tcp_serv_thread, &ctx->tctx[i]);
+		pthread_create(
+			&ctx->tctx[i].thandle, NULL,
+			tcp_serv_thread, &ctx->tctx[i]
+		);
 	}
 
 	return start_tcp_serv(ctx->tctx);
