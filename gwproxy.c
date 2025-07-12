@@ -21,7 +21,7 @@
 #define DEFAULT_PREALLOC_CONN 100
 #define DEFAULT_BUFF_SZ 1024
 
-#define ALL_EV_BITS (GWP_STOP | GWP_ACCEPT | GWP_CLIENT)
+#define ALL_EV_BITS (GWP_EV_STOP | GWP_EV_ACCEPT | GWP_EV_CLIENT | GWP_EV_TARGET)
 #define GET_EV_BIT(X) ((X) & ALL_EV_BITS)
 #define CLEAR_EV_BIT(X) ((X) & ~ALL_EV_BITS)
 
@@ -58,9 +58,15 @@ static const char usage[] =
 "-h\tShow this help message and exit\n";
 
 enum gwp_ev_bit {
-	GWP_STOP	= (0x1ULL << 48ULL),
-	GWP_ACCEPT	= (0x2ULL << 48ULL),
-	GWP_CLIENT	= (0x3ULL << 48ULL)
+	GWP_EV_STOP	= (0x1ULL << 48ULL),
+	GWP_EV_ACCEPT	= (0x2ULL << 48ULL),
+	GWP_EV_CLIENT	= (0x3ULL << 48ULL),
+	GWP_EV_TARGET	= (0x4ULL << 48ULL)
+};
+
+enum {
+	GWP_STATE_INIT,
+	GWP_STATE_FORWARD
 };
 
 struct gwp_pctx *gctx;
@@ -69,15 +75,22 @@ struct gwp_conn {
 	int sockfd;
 	char addrstr[ADDRSTR_SZ];
 	char *recvbuf;
+	size_t recvoff;
 	size_t recvlen;
+	size_t recvcap;
 	char *sendbuf;
 	size_t sendlen;
+	size_t sendcap;
 };
 
 struct gwp_pair_conn {
 	size_t idx;
 	struct gwp_conn client;
 	struct gwp_conn target;
+	union {
+		uint32_t state;
+		struct socks5_conn conn_ctx;
+	};
 };
 
 struct gwp_session_container {
@@ -116,8 +129,9 @@ struct gwp_pctx {
 	struct commandline_args *args;
 	struct gwp_tctx *tctx;
 	struct socks5_ctx *socks5_ctx;
-	void (*func_handler)(struct gwp_tctx *ctx, void *data);
+	int (*func_handler)(struct gwp_tctx *ctx, void *data, uint64_t ev_bit, uint32_t ev);
 	int stopfd;
+	int default_state;
 	volatile bool stop;
 };
 
@@ -129,6 +143,199 @@ struct gwp_tctx {
 	struct gwp_pctx *pctx;
 	struct gwp_session_container container;
 };
+
+/*
+* Register events on socket file descriptor to the epoll's interest list.
+*
+* @param fd file descriptor to be registered.
+* @param epfd epoll file descriptor.
+* @param epmask epoll events.
+* @param ptr a pointer to be saved and returned once particular events is ready.
+* @param evmask used to identify the epoll event.
+*/
+static int register_events(int fd, int epfd, uint32_t epmask,
+				void *ptr, uint64_t evmask) {
+	struct epoll_event ev;
+	int ret;
+
+	ev.events = epmask;
+	ev.data.u64 = 0;
+	ev.data.ptr = ptr;
+	ev.data.u64 |= evmask;
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+	if (ret < 0) {
+		pr_err(
+			"failed to register event to epoll: %s\n",
+			strerror(errno)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	return 0;
+}
+
+static int set_target(struct gwp_conn *t, struct sockaddr_storage *sockaddr)
+{
+	socklen_t size_addr = sizeof(*sockaddr);
+	int ret, tsock;
+
+	tsock = socket(sockaddr->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	if (tsock < 0) {
+		pr_err(
+			"failed to create target socket: %s\n",
+			strerror(errno)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	pr_info("target tcp socket created: %d\n", tsock);
+
+	get_addrstr((struct sockaddr *)sockaddr, t->addrstr);
+	pr_info("attempting to connect to %s\n", t->addrstr);
+
+	ret = connect(tsock, (struct sockaddr *)sockaddr, size_addr);
+	if (ret < 0 && errno != EINPROGRESS) {
+		pr_err(
+			"failed to connect to address %s: %s\n",
+			t->addrstr, strerror(errno)
+		);
+		close(tsock);
+		return -EXIT_FAILURE;
+	}
+
+	t->sockfd = tsock;
+	return 0;
+}
+
+/*
+* Preparation before forwarding data.
+*
+* connecting to either the configured target supplied from cmdline args
+* or the specified target by client in socks5 mode.
+*
+* @param tctx Pointer to the gwp_tctx struct (thread data).
+* @param pc Pointer that need to be saved 
+* @param dst the address structure to which the client connects.
+* @return zero on success, or a negative integer on failure.
+*/
+static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
+			struct sockaddr_storage *dst)
+{
+	struct gwp_conn *t = &pc->target;
+
+	int ret = set_target(t, dst);
+	if (ret < 0)
+		return -EXIT_FAILURE;
+
+	ret = register_events(t->sockfd, tctx->epfd, EPOLLIN | EPOLLOUT, pc, GWP_EV_TARGET);
+	if (ret < 0)
+		return -EXIT_FAILURE;
+
+	return 0;
+}
+
+/*
+* Handle incoming and outgoing data.
+*
+* remark:
+* The caller must swap the argument passed into this function
+* if the event was EPOLLOUT, as we're going to send instead of receive.
+* this behavior is affected by/related to function extract_data.
+*
+* @param from The source of fetched data.
+* @param to The destination of data to be sent.
+* @return zero on success, or a negative integer on failure.
+*/
+static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
+{
+	ssize_t ret;
+	size_t rlen;
+
+	/* remaining space of the buffer */
+	rlen = from->recvcap - from->recvlen;
+	pr_info(
+		"receiving from %s with %ld bytes of free space\n",
+		from->addrstr, rlen
+	);
+	if (rlen > 0) {
+		ret = recv(
+			from->sockfd, &from->recvbuf[from->recvlen],
+			rlen, MSG_NOSIGNAL
+		);
+		if (ret < 0) {
+			ret = errno;
+			if (ret == EAGAIN || ret == EINTR) {
+				/*
+				* if buffer is not empty,
+				* send it to the destination
+				*/
+				if (from->recvlen)
+					goto try_send;
+				return 0;
+			}
+			pr_err(
+				"failed to recv from %s: %s\n",
+				from->addrstr, strerror(ret)
+			);
+			return -ret;
+		} else if (!ret) {
+			pr_info(
+				"EoF received on %s, "
+				"closing the connection. "
+				"terminating the session.\n",
+				from->addrstr
+			);
+			return -EXIT_FAILURE;
+		}
+		pr_dbg(
+			"%ld bytes were received from sockfd %d\n",
+			ret, from->sockfd
+		);
+		VT_HEXDUMP(&from->recvbuf[from->recvlen], ret);
+
+		from->recvlen += (size_t)ret;
+	}
+
+try_send:
+	pr_info(
+		"attempting to send %ld bytes to %s\n",
+		from->recvlen, to->addrstr
+	);
+	if (from->recvlen > 0) {
+		ret = send(
+			to->sockfd, &from->recvbuf[from->recvoff],
+			from->recvlen, MSG_NOSIGNAL
+		);
+		if (ret < 0) {
+			ret = errno;
+			if (ret == EAGAIN || ret == EINTR)
+				return 0;
+			pr_err(
+				"failed to send %ld bytes to %s: %s\n",
+				to->addrstr, strerror(ret)
+			);
+			return -ret;
+		} else if (!ret)
+			return -EXIT_FAILURE;
+
+		pr_dbg(
+			"%ld bytes were sent to %s\n",
+			ret, to->addrstr
+		);
+
+		from->recvlen -= ret;
+		from->recvoff += ret;
+		pr_info(
+			"remaining bytes on %s's recv buffer: %ld\n",
+			from->recvbuf, from->recvlen
+		);
+		if (!from->recvlen)
+			from->recvoff = 0;
+	}
+
+	return 0;
+}
+
 
 static int prepare_tcp_serv(struct gwp_tctx *ctx)
 {
@@ -186,7 +393,7 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 
 	ctx->epfd = ret;
 
-	ev.data.u64 = GWP_ACCEPT;
+	ev.data.u64 = GWP_EV_ACCEPT;
 	ev.events = EPOLLIN;
 	ret = epoll_ctl(ret, EPOLL_CTL_ADD, ctx->tcpfd, &ev);
 	if (ret < 0) {
@@ -198,7 +405,7 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 		goto exit_close_epfd;
 	}
 
-	ev.data.u64 = GWP_STOP;
+	ev.data.u64 = GWP_EV_STOP;
 	ev.events = EPOLLIN;
 	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->pctx->stopfd, &ev);
 	if (ret < 0) {
@@ -243,25 +450,31 @@ int alloc_recv_send_buff(struct gwp_tctx *ctx, struct gwp_pair_conn *s)
 	if (!c->recvbuf)
 		return -ENOMEM;
 
-	c->recvlen = args->c_recv_sz;
+	c->recvoff = 0;
+	c->recvlen = 0;
+	c->recvcap = args->c_recv_sz;
 
 	c->sendbuf = malloc(args->c_send_sz);
 	if (!c->sendbuf)
 		goto exit_free_c_recv;
 
-	c->sendlen = args->c_send_sz;
+	c->sendlen = 0;
+	c->sendcap = args->c_send_sz;
 
 	t->recvbuf = malloc(args->t_recv_sz);
 	if (!t->recvbuf)
 		goto exit_free_c_send;
 
-	t->recvlen = args->t_recv_sz;
+	t->recvoff = 0;
+	t->recvlen = 0;
+	t->recvcap = args->t_recv_sz;
 
 	t->sendbuf = malloc(args->t_send_sz);
 	if (!t->sendbuf)
 		goto exit_free_t_recv;
 
-	t->sendlen = args->t_send_sz;
+	t->sendlen = 0;
+	t->sendcap = args->t_send_sz;
 
 	return 0;
 exit_free_t_recv:
@@ -304,7 +517,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 
 	ev.data.u64 = 0;
 	ev.data.ptr = s;
-	ev.data.u64 |= GWP_CLIENT;
+	ev.data.u64 |= GWP_EV_CLIENT;
 	ev.events = EPOLLIN;
 	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, cfd, &ev);
 	if (ret < 0) {
@@ -312,6 +525,8 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 		pr_err("failed to register client to epoll: %s", strerror(-ret));
 		goto exit_free_recv_send_buff;
 	}
+
+	s->target.sockfd = -1;
 
 	container->sessions[container->session_nr] = s;
 	container->session_nr++;
@@ -347,6 +562,8 @@ static int accept_new_client(struct gwp_tctx *ctx)
 
 static void _cleanup_pc(struct gwp_pair_conn *pc)
 {
+	if (pc->target.sockfd != -1)
+		close(pc->target.sockfd);
 	close(pc->client.sockfd);
 	free(pc->client.recvbuf);
 	free(pc->client.sendbuf);
@@ -367,39 +584,36 @@ static void cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 	_cleanup_pc(pc);
 }
 
-static void process_client(struct gwp_tctx *ctx, void *data)
-{
-	struct gwp_pair_conn *pc = data;
-	int ret;
-
-	ret = recv(pc->client.sockfd, pc->client.recvbuf, pc->client.recvlen, 0);
-	if (!ret)
-		cleanup_pc(ctx, pc);
-	else
-		VT_HEXDUMP(pc->client.recvbuf, ret);
-}
-
-static void process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
+static int process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 {
 	uint64_t ev_bit;
 	void *data;
-	
+
+	// debugging epoll
+	pr_info("epoll event:\n");
+	VT_HEXDUMP(&ev->events, sizeof(uint32_t));
+	pr_info("epoll data:\n");
+	VT_HEXDUMP(&ev->data, sizeof(epoll_data_t));
+
 	ev_bit = GET_EV_BIT(ev->data.u64);
 	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
 	data = ev->data.ptr;
+	// debugging epoll
+	pr_dbg("ev bit:\n");
+	VT_HEXDUMP(&ev_bit, 8);
 	switch (ev_bit) {
-	case GWP_STOP:
+	case GWP_EV_STOP:
 		break;
-	case GWP_ACCEPT:
+	case GWP_EV_ACCEPT:
 		accept_new_client(ctx);
 		break;
-	// case GWP_CLIENT:
-	// 	process_client(ctx, data);
-	// 	break;
 
 	default:
-		ctx->pctx->func_handler(ctx, data);
+		if (ctx->pctx->func_handler(ctx, data, ev_bit, ev->events))
+			return -EAGAIN;
 	}
+
+	return 0;
 }
 
 static void cleanup_tctx(struct gwp_tctx *ctx)
@@ -425,14 +639,14 @@ static void cleanup_tctx(struct gwp_tctx *ctx)
 
 static int start_tcp_serv(struct gwp_tctx *ctx)
 {
-	int i, ret;
+	int i, ret, ready_nr;
 	struct epoll_event evs[DEFAULT_EPOLL_EV];
 
 	pr_info("start serving...\n");
 	ret = 0;
 	while (!ctx->pctx->stop) {
-		ret = epoll_wait(ctx->epfd, evs, DEFAULT_EPOLL_EV, -1);
-		if (ret < 0) {
+		ready_nr = epoll_wait(ctx->epfd, evs, DEFAULT_EPOLL_EV, -1);
+		if (ready_nr < 0) {
 			ret = errno;
 			if (ret == EINTR)
 				continue;
@@ -443,24 +657,111 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 			break;
 		}
 
-		for (i = 0; i < ret; i++)
-			process_event(ctx, &evs[i]);
+		// debugging epoll
+		pr_info("ready events: %d\n", ready_nr);
+
+		for (i = 0; i < ready_nr; i++) {
+			ret = process_event(ctx, &evs[i]);
+			if (ret)
+				break;
+		}
 	}
 
 	cleanup_tctx(ctx);
 	return ret;
 }
 
-static void socks5_proxy_handler(struct gwp_tctx *ctx, void *data)
+static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data, uint64_t ev_bit, uint32_t ev)
 {
-	pr_info("TCP proxy is running with socks5 protocol support\n");
-	process_client(ctx, data);
+	struct gwp_pair_conn *pc = data;
+	(void)ctx;
+	(void)ev_bit;
+	(void)ev;
+
+	switch (pc->conn_ctx.state) {
+	case SOCKS5_GREETING:
+		break;
+	case SOCKS5_AUTH:
+		break;
+	case SOCKS5_REQUEST:
+		break;
+	case SOCKS5_FORWARDING:
+		break;
+
+	default:
+		pr_dbg("aborted\n");
+		abort();
+	}
+
+	return 0;
 }
 
-static void simple_proxy_handler(struct gwp_tctx *ctx, void *data)
+static int handle_client(struct gwp_tctx *ctx, struct gwp_pair_conn *pc, uint32_t ev)
 {
-	pr_info("TCP proxy is running with no protocol\n");
-	process_client(ctx, data);
+	int ret;
+
+	switch (pc->state) {
+	case GWP_STATE_INIT:
+		ret = prepare_forward(ctx, pc, &ctx->pctx->args->dst_addr_st);
+		if (ret)
+			goto recall_epoll_wait;
+
+		pc->state = GWP_STATE_FORWARD;
+		break;
+	case GWP_STATE_FORWARD:
+		if (ev & EPOLLIN) {
+			ret = do_forwarding(&pc->client, &pc->target);
+			if (ret)
+				goto recall_epoll_wait;
+		}
+		if (ev & EPOLLOUT) {
+			ret = do_forwarding(&pc->target, &pc->client);
+			if (ret)
+				goto recall_epoll_wait;
+		}
+
+		break;
+	default:
+		pr_dbg("aborted\n");
+		abort();
+	}
+
+recall_epoll_wait:
+	cleanup_pc(ctx, pc);
+	return -EAGAIN;
+
+}
+
+static int simple_proxy_handler(struct gwp_tctx *ctx, void *data, uint64_t ev_bit, uint32_t ev)
+{
+	int ret;
+	struct gwp_pair_conn *pc = data;
+
+	switch (ev_bit) {
+	case GWP_EV_CLIENT:
+		ret = handle_client(ctx, pc, ev);
+		if (ret)
+			return -EAGAIN;
+		break;
+	case GWP_EV_TARGET:
+		if (ev & EPOLLIN)
+			ret = do_forwarding(&pc->target, &pc->client);
+		if (ev & EPOLLOUT)
+			ret = do_forwarding(&pc->client, &pc->target);
+
+		if (ret)
+			return -EAGAIN;
+		break;
+
+	default:
+		// debugging epoll
+		pr_dbg("ev bit:\n");
+		VT_HEXDUMP(&ev_bit, 8);
+		pr_dbg("aborted\n");
+		abort();
+	}
+
+	return 0;
 }
 
 static int init_container(struct gwp_session_container *container, size_t cap)
@@ -508,7 +809,9 @@ static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 
 	ret = 0;
 	pctx->func_handler = simple_proxy_handler;
+	pctx->default_state = GWP_STATE_INIT;
 	if (args->socks5_mode) {
+		pctx->default_state = SOCKS5_GREETING;
 		cfg.auth_file = args->auth_file;
 		ret = socks5_init(&pctx->socks5_ctx, &cfg);
 		pctx->func_handler = socks5_proxy_handler;
