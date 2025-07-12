@@ -81,6 +81,7 @@ struct gwp_conn {
 	char *sendbuf;
 	size_t sendlen;
 	size_t sendcap;
+	uint64_t epmask;
 };
 
 struct gwp_pair_conn {
@@ -207,6 +208,110 @@ static int set_target(struct gwp_conn *t, struct sockaddr_storage *sockaddr)
 	return 0;
 }
 
+static bool adjust_pollout(struct gwp_conn *src, struct gwp_conn *dst)
+{
+	bool epmask_changed = false;
+
+	/*
+	* set EPOLLOUT to epmask when there's remaining bytes in the src' buffer
+	* waiting to be sent, otherwise, unset it.
+	*/
+	if (src->recvlen > 0) {
+		if (!(dst->epmask & EPOLLOUT)) {
+			pr_info(
+				"set EPOLLOUT: %s's buffer is not fully drained"
+				"; continuing transfer to %s\n",
+				src->addrstr, dst->addrstr
+			);
+			dst->epmask |= EPOLLOUT;
+			epmask_changed = true;
+		}
+	} else {
+		if (dst->epmask & EPOLLOUT) {
+			pr_info(
+				"unset EPOLLOUT: buffer on %s is fully empty, "
+				"stopping transfer to %s\n",
+				src->addrstr, dst->addrstr
+			);
+			dst->epmask &= ~EPOLLOUT;
+			epmask_changed = true;
+		}
+	}
+
+	return epmask_changed;
+}
+
+static void adjust_pollin(struct gwp_conn *src, bool *epmask_changed)
+{
+	/*
+	* unset EPOLLIN from epmask when the src buffer is full,
+	* otherwise, set it.
+	*/
+	if (src->recvcap == src->recvlen) {
+		if (src->epmask & EPOLLIN) {
+			pr_info(
+				"unset EPOLLIN: %s's buffer is full "
+				"can't receive anymore\n", src->addrstr
+			);
+			src->epmask &= ~EPOLLIN;
+			*epmask_changed = true;
+		}
+	} else {
+		if (!(src->epmask & EPOLLIN)) {
+			pr_info(
+				"set EPOLLIN: %s's buffer still has space "
+				"to receive more data\n", src->addrstr
+			);
+			src->epmask |= EPOLLIN;
+			*epmask_changed = true;
+		}
+	}
+}
+
+static int adjust_events(int epfd, struct gwp_pair_conn *pc)
+{
+	int ret;
+	bool is_client_changed = false;
+	bool is_target_changed = false;
+	struct epoll_event ev;
+	struct gwp_conn *client = &pc->client, *target = &pc->target;
+
+	is_client_changed = adjust_pollout(target, client);
+	adjust_pollin(client, &is_client_changed);
+	if (target->sockfd != -1) {
+		is_target_changed = adjust_pollout(client, target);
+		adjust_pollin(target, &is_target_changed);
+	}
+
+	if (is_client_changed) {
+		ev.data.u64 = 0;
+		ev.data.ptr = pc;
+		ev.data.u64 |= GWP_EV_CLIENT;
+		ev.events = client->epmask;
+
+		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, client->sockfd, &ev);
+		if (ret < 0) {
+			pr_err("failed to modify event: %s\n", strerror(errno));
+			return -EXIT_FAILURE;
+		}
+	}
+
+	if (is_target_changed) {
+		ev.events = target->epmask;
+		ev.data.u64 = 0;
+		ev.data.ptr = pc;
+		ev.data.u64 |= GWP_EV_TARGET;
+
+		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, target->sockfd, &ev);
+		if (ret < 0) {
+			pr_err("failed to modify event: %s\n", strerror(errno));
+			return -EXIT_FAILURE;
+		}
+	}
+
+	return 0;
+}
+
 /*
 * Preparation before forwarding data.
 *
@@ -227,7 +332,7 @@ static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
-	ret = register_events(t->sockfd, tctx->epfd, EPOLLIN | EPOLLOUT, pc, GWP_EV_TARGET);
+	ret = register_events(t->sockfd, tctx->epfd, t->epmask, pc, GWP_EV_TARGET);
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
@@ -254,7 +359,7 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 	/* remaining space of the buffer */
 	rlen = from->recvcap - from->recvlen;
 	pr_info(
-		"receiving from %s with %ld bytes of free space\n",
+		"attempting to recv from %s with %ld bytes of free space\n",
 		from->addrstr, rlen
 	);
 	if (rlen > 0) {
@@ -285,11 +390,11 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 				"terminating the session.\n",
 				from->addrstr
 			);
-			return -EXIT_FAILURE;
+			return -EAGAIN;
 		}
 		pr_dbg(
-			"%ld bytes were received from sockfd %d\n",
-			ret, from->sockfd
+			"%ld bytes were received from %s\n",
+			ret, from->addrstr
 		);
 		VT_HEXDUMP(&from->recvbuf[from->recvlen], ret);
 
@@ -315,8 +420,7 @@ try_send:
 				to->addrstr, strerror(ret)
 			);
 			return -ret;
-		} else if (!ret)
-			return -EXIT_FAILURE;
+		}
 
 		pr_dbg(
 			"%ld bytes were sent to %s\n",
@@ -327,7 +431,7 @@ try_send:
 		from->recvoff += ret;
 		pr_info(
 			"remaining bytes on %s's recv buffer: %ld\n",
-			from->recvbuf, from->recvlen
+			from->addrstr, from->recvlen
 		);
 		if (!from->recvlen)
 			from->recvoff = 0;
@@ -341,7 +445,6 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 {
 	int ret;
 	struct commandline_args *args = ctx->pctx->args;
-	struct epoll_event ev;
 	uint64_t val;
 
 	ret = socket(args->src_addr_st.ss_family, SOCK_STREAM, 0);
@@ -393,9 +496,7 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 
 	ctx->epfd = ret;
 
-	ev.data.u64 = GWP_EV_ACCEPT;
-	ev.events = EPOLLIN;
-	ret = epoll_ctl(ret, EPOLL_CTL_ADD, ctx->tcpfd, &ev);
+	ret = register_events(ctx->tcpfd, ctx->epfd, EPOLLIN, NULL, GWP_EV_ACCEPT);
 	if (ret < 0) {
 		ret = errno;
 		pr_err(
@@ -405,9 +506,7 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 		goto exit_close_epfd;
 	}
 
-	ev.data.u64 = GWP_EV_STOP;
-	ev.events = EPOLLIN;
-	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->pctx->stopfd, &ev);
+	ret = register_events(ctx->pctx->stopfd, ctx->epfd, EPOLLIN, NULL, GWP_EV_STOP);
 	if (ret < 0) {
 		ret = errno;
 		pr_err(
@@ -515,17 +614,15 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	if (ret)
 		goto exit_free_s;
 
-	ev.data.u64 = 0;
-	ev.data.ptr = s;
-	ev.data.u64 |= GWP_EV_CLIENT;
-	ev.events = EPOLLIN;
-	ret = epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, cfd, &ev);
+	s->client.epmask = EPOLLIN;
+	ret = register_events(cfd, ctx->epfd, s->client.epmask, s, GWP_EV_CLIENT);
 	if (ret < 0) {
 		ret = -errno;
 		pr_err("failed to register client to epoll: %s", strerror(-ret));
 		goto exit_free_recv_send_buff;
 	}
 
+	s->target.epmask = EPOLLIN | EPOLLOUT;
 	s->target.sockfd = -1;
 
 	container->sessions[container->session_nr] = s;
@@ -590,17 +687,18 @@ static int process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 	void *data;
 
 	// debugging epoll
-	pr_info("epoll event:\n");
-	VT_HEXDUMP(&ev->events, sizeof(uint32_t));
-	pr_info("epoll data:\n");
-	VT_HEXDUMP(&ev->data, sizeof(epoll_data_t));
+	// pr_info("epoll event:\n");
+	// VT_HEXDUMP(&ev->events, sizeof(uint32_t));
+	// pr_info("epoll data:\n");
+	// VT_HEXDUMP(&ev->data, sizeof(epoll_data_t));
 
 	ev_bit = GET_EV_BIT(ev->data.u64);
+	// debugging epoll
+	// pr_dbg("ev bit:\n");
+	// VT_HEXDUMP(&ev_bit, 8);
+
 	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
 	data = ev->data.ptr;
-	// debugging epoll
-	pr_dbg("ev bit:\n");
-	VT_HEXDUMP(&ev_bit, 8);
 	switch (ev_bit) {
 	case GWP_EV_STOP:
 		break;
@@ -658,7 +756,7 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 		}
 
 		// debugging epoll
-		pr_info("ready events: %d\n", ready_nr);
+		// pr_info("ready events: %d\n", ready_nr);
 
 		for (i = 0; i < ready_nr; i++) {
 			ret = process_event(ctx, &evs[i]);
@@ -696,6 +794,29 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data, uint64_t ev_bi
 	return 0;
 }
 
+static int handle_target(struct gwp_tctx *ctx, struct gwp_pair_conn *pc, uint32_t ev)
+{
+	int ret;
+	if (ev & EPOLLIN) {
+		ret = do_forwarding(&pc->target, &pc->client);
+		if (ret)
+			goto recall_epoll_wait;
+	}
+
+	if (ev & EPOLLOUT) {
+		ret = do_forwarding(&pc->client, &pc->target);
+		if (ret)
+			goto recall_epoll_wait;
+	}
+
+	adjust_events(ctx->epfd, pc);
+
+	return 0;
+recall_epoll_wait:
+	cleanup_pc(ctx, pc);
+	return -EAGAIN;
+}
+
 static int handle_client(struct gwp_tctx *ctx, struct gwp_pair_conn *pc, uint32_t ev)
 {
 	int ret;
@@ -720,19 +841,23 @@ static int handle_client(struct gwp_tctx *ctx, struct gwp_pair_conn *pc, uint32_
 				goto recall_epoll_wait;
 		}
 
+		adjust_events(ctx->epfd, pc);
+
 		break;
 	default:
 		pr_dbg("aborted\n");
 		abort();
 	}
 
+	return 0;
 recall_epoll_wait:
 	cleanup_pc(ctx, pc);
 	return -EAGAIN;
 
 }
 
-static int simple_proxy_handler(struct gwp_tctx *ctx, void *data, uint64_t ev_bit, uint32_t ev)
+static int simple_proxy_handler(struct gwp_tctx *ctx, void *data,
+				uint64_t ev_bit, uint32_t ev)
 {
 	int ret;
 	struct gwp_pair_conn *pc = data;
@@ -744,19 +869,13 @@ static int simple_proxy_handler(struct gwp_tctx *ctx, void *data, uint64_t ev_bi
 			return -EAGAIN;
 		break;
 	case GWP_EV_TARGET:
-		if (ev & EPOLLIN)
-			ret = do_forwarding(&pc->target, &pc->client);
-		if (ev & EPOLLOUT)
-			ret = do_forwarding(&pc->client, &pc->target);
+		ret = handle_target(ctx, pc, ev);
 
 		if (ret)
 			return -EAGAIN;
 		break;
 
 	default:
-		// debugging epoll
-		pr_dbg("ev bit:\n");
-		VT_HEXDUMP(&ev_bit, 8);
 		pr_dbg("aborted\n");
 		abort();
 	}
