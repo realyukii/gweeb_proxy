@@ -182,13 +182,13 @@ void socks5_free_conn(struct socks5_conn *conn);
 * @return zero on success, or a negative integer on failure.
 */
 int socks5_process_data(struct socks5_conn *conn,
-			const void *in, unsigned *in_len, void *out, unsigned *out_len);
+			const void *in, size_t *in_len, void *out, size_t *out_len);
 
 /*
 * Craft response to CONNECT request with given address and reply code.
 */
 int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr,
-				uint8_t rep_code, void *replybuf, unsigned *replylen);
+				uint8_t rep_code, void *replybuf, size_t *replylen);
 
 /*
 * Reload username/password credential.

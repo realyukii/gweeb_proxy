@@ -10,21 +10,21 @@
 struct data_args {
 	struct socks5_conn *conn;
 	const void *in;
-	unsigned *in_len;
+	size_t *in_len;
 	void *out;
-	unsigned *out_len;
-	unsigned total_advance;
-	unsigned total_out;
+	size_t *out_len;
+	size_t total_advance;
+	size_t total_out;
 };
 
-static void append_outbuf(struct data_args *args, unsigned len)
+static void append_outbuf(struct data_args *args, size_t len)
 {
 	args->out += args->total_out;
 	args->total_out += len;
 	*args->out_len -= len;
 }
 
-static void advance_inbuf(struct data_args *args, unsigned len)
+static void advance_inbuf(struct data_args *args, size_t len)
 {
 	assert(len <= *args->in_len);
 	args->in += len;
@@ -110,7 +110,7 @@ static int socks5_handle_greeting(struct data_args *args)
 {
 	uint8_t chosen_method;
 	const uint8_t *ptr;
-	unsigned exp_len, required_len = 2;
+	size_t exp_len, required_len = 2;
 	bool acceptable;
 	const unsigned char *in = args->in;
 	struct socks5_handshake *out = args->out;
@@ -163,7 +163,7 @@ static int socks5_handle_auth(struct data_args *args)
 	char *out = args->out;
 	bool is_authenticated;
 	uint8_t *plen;
-	unsigned exp_len = 2, required_len = 2;
+	size_t exp_len = 2, required_len = 2;
 	int i, ret;
 
 	if (*args->in_len < exp_len)
@@ -237,7 +237,7 @@ static int socks5_handle_request(struct data_args *args)
 	struct socks5_reply *out = args->out;
 	const struct socks5_request *in = args->in;
 	enum socks5_state state;
-	unsigned exp_len = 4, required_len = 4 + 4 + 2;
+	size_t exp_len = 4, required_len = 4 + 4 + 2;
 
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
@@ -352,8 +352,8 @@ struct socks5_conn *socks5_alloc_conn(struct socks5_ctx *ctx)
 	return c;
 }
 
-int socks5_process_data(struct socks5_conn *conn, const void *in, unsigned *in_len,
-			void *out, unsigned *out_len)
+int socks5_process_data(struct socks5_conn *conn, const void *in, size_t *in_len,
+			void *out, size_t *out_len)
 {
 	struct data_args args = {
 		.conn = conn,
@@ -392,10 +392,10 @@ retry:
 }
 
 int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
-				uint8_t rep_code, void *rep_buf, unsigned *rep_len)
+				uint8_t rep_code, void *rep_buf, size_t *rep_len)
 {
 	struct socks5_reply *rep = rep_buf;
-	unsigned required_len;
+	size_t required_len;
 	uint8_t dlen;
 
 	required_len = 4;
@@ -518,7 +518,7 @@ do {											\
 		0x5, 0x1, 0x0,	/* VER, NMETHODS, NO AUTH METHOD */			\
 	};										\
 	char _out_buf[HANDSHAKE_LEN];							\
-	unsigned _plen, _olen;								\
+	size_t _plen, _olen;								\
 	_plen = sizeof(_payload_greeting);						\
 	_olen = sizeof(_out_buf);							\
 	_r = socks5_process_data(CONN, _payload_greeting, &_plen, _out_buf, &_olen);	\
@@ -533,7 +533,7 @@ do {											\
 static void socks5_test_invalid_cmd(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
 	char out_buf[1024];
@@ -557,7 +557,7 @@ static void socks5_test_invalid_cmd(void)
 static void socks5_test_invalid_addr_type(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
 	char out_buf[1024];
@@ -581,7 +581,7 @@ static void socks5_test_invalid_addr_type(void)
 static void socks5_test_ipv6_noauth(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	char out_buf[1024];
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0, 0x4, 	// VER, CONNECT CMD, RSV, IPv6 ATYP
@@ -637,7 +637,7 @@ static void socks5_test_ipv6_noauth(void)
 static void socks5_test_short_recv(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	char out_buf[1024];
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0,		// VER, NMETHODS, METHOD NO AUTH
@@ -722,7 +722,7 @@ static void socks5_test_short_recv(void)
 static void socks5_test_two_state_at_once(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	char out_buf[1024];
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0,		// VER, NMETHODS, METHOD NO AUTH
