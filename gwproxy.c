@@ -578,6 +578,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	int ret;
 	struct gwp_session_container *container = &ctx->container;
 	struct gwp_pair_conn *s;
+	struct commandline_args *args = ctx->pctx->args;
 
 	if (container->session_nr >= container->capacity) {
 		ret = realloc_container(&ctx->container);
@@ -611,6 +612,12 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 
 	s->target.epmask = EPOLLIN | EPOLLOUT;
 	s->target.sockfd = -1;
+
+	if (!args->socks5_mode) {
+		ret = prepare_forward(ctx, s, &args->dst_addr_st);
+		if (ret)
+			goto exit_free_recv_send_buff;
+	}
 
 	container->sessions[container->session_nr] = s;
 	container->session_nr++;
@@ -800,54 +807,26 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 	return 0;
 }
 
-static int sp_handle_client(struct gwp_tctx *ctx)
-{
-	int ret;
-	struct gwp_conn *a, *b;
-	struct gwp_pair_conn *pc = ctx->pc;
-	struct commandline_args *args = ctx->pctx->args;
-
-	if (pc->target.sockfd == -1) {
-		ret = prepare_forward(ctx, pc, &args->dst_addr_st);
-		if (ret)
-			return ret;
-	}
-
-	a = &ctx->pc->client;
-	b = &ctx->pc->target;
-	ret = sp_forward(ctx, a, b);
-	if (ret)
-		return ret;
-
-	return 0;
-
-}
-
-static int sp_handle_target(struct gwp_tctx *ctx)
-{
-	struct gwp_conn *a, *b;
-
-	a = &ctx->pc->target;
-	b = &ctx->pc->client;
-	return sp_forward(ctx, a, b);
-}
-
 static int sp_handler(struct gwp_tctx *ctx, void *data,
 				uint64_t ev_bit, uint32_t ev)
 {
 	int ret;
 	struct gwp_pair_conn *pc = data;
+	struct gwp_conn *a, *b;
 	ctx->pc = pc;
 	ctx->epev = ev;
 
+	a = &ctx->pc->client;
+	b = &ctx->pc->target;
+
 	switch (ev_bit) {
 	case GWP_EV_CLIENT:
-		ret = sp_handle_client(ctx);
+		ret = sp_forward(ctx, a, b);
 		if (ret)
 			goto recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
-		ret = sp_handle_target(ctx);
+		ret = sp_forward(ctx, b, a);
 		if (ret)
 			goto recall_epoll_wait;
 		break;
