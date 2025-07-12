@@ -40,6 +40,7 @@ $(TARGET4): $(OBJS4)
 $(TARGET5): $(OBJS5)
 $(TARGET6): $(OBJS6)
 
+# test without log: make CFLAGS="-DENABLE_LOG=false" -B test_conventional
 test_conventional: $(TARGET1)
 	$< -t [::1]:8081 -b [::1]:8080 -T 1
 test_socks5: $(TARGET1)
