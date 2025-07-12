@@ -83,7 +83,7 @@ struct gwp_pair_conn {
 	size_t idx;
 	struct gwp_conn client;
 	struct gwp_conn target;
-	struct socks5_conn conn_ctx;
+	struct socks5_conn *conn_ctx;
 };
 
 struct gwp_session_container {
@@ -613,7 +613,11 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	s->target.epmask = EPOLLIN;
 	s->target.sockfd = -1;
 
-	if (!args->socks5_mode) {
+	if (args->socks5_mode) {
+		s->conn_ctx = socks5_alloc_conn(ctx->pctx->socks5_ctx);
+		if (!s->conn_ctx)
+			goto exit_free_recv_send_buff;
+	} else {
 		ret = prepare_forward(ctx, s, &args->dst_addr_st);
 		if (ret)
 			goto exit_free_recv_send_buff;
@@ -651,10 +655,12 @@ static int accept_new_client(struct gwp_tctx *ctx)
 	return alloc_new_session(ctx, (struct sockaddr *)&in6, ret);
 }
 
-static void _cleanup_pc(struct gwp_pair_conn *pc)
+static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 {
 	if (pc->target.sockfd != -1)
 		close(pc->target.sockfd);
+	if (ctx->pctx->args->socks5_mode)
+		socks5_free_conn(pc->conn_ctx);
 	close(pc->client.sockfd);
 	free(pc->client.recvbuf);
 	free(pc->client.sendbuf);
@@ -672,7 +678,7 @@ static void cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 
 	ctx->container.session_nr--;
 	ctx->container.sessions[pc->idx] = NULL;
-	_cleanup_pc(pc);
+	_cleanup_pc(ctx, pc);
 }
 
 static int process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
@@ -717,7 +723,7 @@ static void cleanup_tctx(struct gwp_tctx *ctx)
 		pc = ctx->container.sessions[i];
 		if (pc) {
 			pr_info("disconnecting %s\n", pc->client.addrstr);
-			_cleanup_pc(pc);
+			_cleanup_pc(ctx, pc);
 		}
 	}
 
@@ -763,14 +769,15 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 	return ret;
 }
 
-static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data, uint64_t ev_bit, uint32_t ev)
+static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
+				uint64_t ev_bit, uint32_t ev)
 {
 	struct gwp_pair_conn *pc = data;
 	(void)ctx;
 	(void)ev_bit;
 	(void)ev;
 
-	switch (pc->conn_ctx.state) {
+	switch (pc->conn_ctx->state) {
 	case SOCKS5_GREETING:
 		break;
 	case SOCKS5_AUTH:
@@ -808,7 +815,7 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 }
 
 static int sp_handler(struct gwp_tctx *ctx, void *data,
-				uint64_t ev_bit, uint32_t ev)
+			uint64_t ev_bit, uint32_t ev)
 {
 	int ret;
 	struct gwp_pair_conn *pc = data;
