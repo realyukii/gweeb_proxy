@@ -610,7 +610,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 		goto exit_free_recv_send_buff;
 	}
 
-	s->target.epmask = EPOLLIN | EPOLLOUT;
+	s->target.epmask = EPOLLIN;
 	s->target.sockfd = -1;
 
 	if (!args->socks5_mode) {
