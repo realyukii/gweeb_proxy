@@ -331,11 +331,6 @@ static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
 /*
 * Handle incoming and outgoing data.
 *
-* remark:
-* The caller must swap the argument passed into this function
-* if the event was EPOLLOUT, as we're going to send instead of receive.
-* this behavior is affected by/related to function extract_data.
-*
 * @param from The source of fetched data.
 * @param to The destination of data to be sent.
 * @return zero on success, or a negative integer on failure.
@@ -769,30 +764,65 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 	return ret;
 }
 
+static int socks5_handle_client(struct gwp_tctx*ctx)
+{
+	struct socks5_conn *conn = ctx->pc->conn_ctx;
+	struct gwp_conn *a, *b;
+	int ret;
+
+	(void)b;
+
+	a = &ctx->pc->client;
+	b = &ctx->pc->target;
+
+	switch (conn->state) {
+	case SOCKS5_FORWARDING:
+		// ret = sp_forward(ctx, a, b);
+		// if (ret)
+		// 	return ret;
+		break;
+	case SOCKS5_CONNECT:
+		// ret = prepare_forward(ctx, ctx->pc, &conn);
+		// ret = socks5_handle_cmd_connect(conn, addr, );
+		break;
+
+	default:
+		ret = socks5_process_data(
+			conn,
+			a->recvbuf, &a->recvlen,
+			a->sendbuf, &a->sendlen
+		);
+	}
+
+	return ret;
+}
+
 static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 				uint64_t ev_bit, uint32_t ev)
 {
 	struct gwp_pair_conn *pc = data;
-	(void)ctx;
-	(void)ev_bit;
-	(void)ev;
+	int ret;
 
-	switch (pc->conn_ctx->state) {
-	case SOCKS5_GREETING:
-		break;
-	case SOCKS5_AUTH:
-		break;
-	case SOCKS5_REQUEST:
-		break;
-	case SOCKS5_FORWARDING:
-		break;
+	ctx->pc = pc;
+	ctx->epev = ev;
 
+	switch (ev_bit) {
+	case GWP_EV_CLIENT:
+		ret = socks5_handle_client(ctx);
+		if (ret)
+			goto recall_epoll_wait;
+		break;
+	case GWP_EV_TARGET:
+		break;
 	default:
 		pr_dbg("aborted\n");
 		abort();
 	}
 
 	return 0;
+recall_epoll_wait:
+	cleanup_pc(ctx, pc);
+	return -EAGAIN;
 }
 
 static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn *b)
@@ -817,9 +847,10 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 static int sp_handler(struct gwp_tctx *ctx, void *data,
 			uint64_t ev_bit, uint32_t ev)
 {
-	int ret;
 	struct gwp_pair_conn *pc = data;
 	struct gwp_conn *a, *b;
+	int ret;
+
 	ctx->pc = pc;
 	ctx->epev = ev;
 
