@@ -64,11 +64,6 @@ enum gwp_ev_bit {
 	GWP_EV_TARGET	= (0x4ULL << 48ULL)
 };
 
-enum {
-	GWP_STATE_INIT,
-	GWP_STATE_FORWARD
-};
-
 struct gwp_pctx *gctx;
 
 struct gwp_conn {
@@ -88,10 +83,7 @@ struct gwp_pair_conn {
 	size_t idx;
 	struct gwp_conn client;
 	struct gwp_conn target;
-	union {
-		uint32_t state;
-		struct socks5_conn conn_ctx;
-	};
+	struct socks5_conn conn_ctx;
 };
 
 struct gwp_session_container {
@@ -132,7 +124,6 @@ struct gwp_pctx {
 	struct socks5_ctx *socks5_ctx;
 	int (*func_handler)(struct gwp_tctx *ctx, void *data, uint64_t ev_bit, uint32_t ev);
 	int stopfd;
-	int default_state;
 	volatile bool stop;
 };
 
@@ -140,6 +131,8 @@ struct gwp_pctx {
 struct gwp_tctx {
 	int epfd;
 	int tcpfd;
+	uint32_t epev;
+	struct gwp_pair_conn *pc;
 	pthread_t thandle;
 	struct gwp_pctx *pctx;
 	struct gwp_session_container container;
@@ -435,7 +428,6 @@ try_send:
 
 	return 0;
 }
-
 
 static int prepare_tcp_serv(struct gwp_tctx *ctx)
 {
@@ -789,84 +781,55 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data, uint64_t ev_bi
 	return 0;
 }
 
-static int sp_handle_target(struct gwp_tctx *ctx, struct gwp_pair_conn *pc, uint32_t ev)
+static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn *b)
 {
 	int ret;
-	if (ev & EPOLLIN) {
-		ret = do_forwarding(&pc->target, &pc->client);
+	if (ctx->epev & EPOLLIN) {
+		ret = do_forwarding(a, b);
 		if (ret)
-			goto recall_epoll_wait;
+			return ret;
 	}
 
-	if (ev & EPOLLOUT) {
-		ret = do_forwarding(&pc->client, &pc->target);
+	if (ctx->epev & EPOLLOUT) {
+		ret = do_forwarding(b, a);
 		if (ret)
-			goto recall_epoll_wait;
+			return ret;
 	}
 
-	adjust_events(ctx->epfd, pc);
-
+	adjust_events(ctx->epfd, ctx->pc);
 	return 0;
-recall_epoll_wait:
-	cleanup_pc(ctx, pc);
-	return -EAGAIN;
 }
 
-static int sp_init(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
+static int sp_handle_client(struct gwp_tctx *ctx)
 {
 	int ret;
-	ret = prepare_forward(ctx, pc, &ctx->pctx->args->dst_addr_st);
+	struct gwp_conn *a, *b;
+	struct gwp_pair_conn *pc = ctx->pc;
+	struct commandline_args *args = ctx->pctx->args;
+
+	if (pc->target.sockfd == -1) {
+		ret = prepare_forward(ctx, pc, &args->dst_addr_st);
+		if (ret)
+			return ret;
+	}
+
+	a = &ctx->pc->client;
+	b = &ctx->pc->target;
+	ret = sp_forward(ctx, a, b);
 	if (ret)
 		return ret;
 
-	pc->state = GWP_STATE_FORWARD;
 	return 0;
+
 }
 
-static int sp_forward(struct gwp_tctx *ctx, struct gwp_pair_conn *pc, uint32_t ev)
+static int sp_handle_target(struct gwp_tctx *ctx)
 {
-	int ret;
-	if (ev & EPOLLIN) {
-		ret = do_forwarding(&pc->client, &pc->target);
-		if (ret)
-			return ret;
-	}
+	struct gwp_conn *a, *b;
 
-	if (ev & EPOLLOUT) {
-		ret = do_forwarding(&pc->target, &pc->client);
-		if (ret)
-			return ret;
-	}
-
-	adjust_events(ctx->epfd, pc);
-	return 0;
-}
-
-static int sp_handle_client(struct gwp_tctx *ctx, struct gwp_pair_conn *pc, uint32_t ev)
-{
-	int ret;
-
-	switch (pc->state) {
-	case GWP_STATE_INIT:
-		ret = sp_init(ctx, pc);
-		if (ret)
-			goto recall_epoll_wait;
-		break;
-	case GWP_STATE_FORWARD:
-		ret = sp_forward(ctx, pc, ev);
-		if (ret)
-			goto recall_epoll_wait;
-		break;
-	default:
-		pr_dbg("aborted\n");
-		abort();
-	}
-
-	return 0;
-recall_epoll_wait:
-	cleanup_pc(ctx, pc);
-	return -EAGAIN;
-
+	a = &ctx->pc->target;
+	b = &ctx->pc->client;
+	return sp_forward(ctx, a, b);
 }
 
 static int sp_handler(struct gwp_tctx *ctx, void *data,
@@ -874,17 +837,19 @@ static int sp_handler(struct gwp_tctx *ctx, void *data,
 {
 	int ret;
 	struct gwp_pair_conn *pc = data;
+	ctx->pc = pc;
+	ctx->epev = ev;
 
 	switch (ev_bit) {
 	case GWP_EV_CLIENT:
-		ret = sp_handle_client(ctx, pc, ev);
+		ret = sp_handle_client(ctx);
 		if (ret)
-			return -EAGAIN;
+			goto recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
-		ret = sp_handle_target(ctx, pc, ev);
+		ret = sp_handle_target(ctx);
 		if (ret)
-			return -EAGAIN;
+			goto recall_epoll_wait;
 		break;
 	default:
 		pr_dbg("aborted\n");
@@ -892,6 +857,9 @@ static int sp_handler(struct gwp_tctx *ctx, void *data,
 	}
 
 	return 0;
+recall_epoll_wait:
+	cleanup_pc(ctx, pc);
+	return -EAGAIN;
 }
 
 static int init_container(struct gwp_session_container *container, size_t cap)
@@ -939,9 +907,7 @@ static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 
 	ret = 0;
 	pctx->func_handler = sp_handler;
-	pctx->default_state = GWP_STATE_INIT;
 	if (args->socks5_mode) {
-		pctx->default_state = SOCKS5_GREETING;
 		cfg.auth_file = args->auth_file;
 		ret = socks5_init(&pctx->socks5_ctx, &cfg);
 		pctx->func_handler = socks5_proxy_handler;
