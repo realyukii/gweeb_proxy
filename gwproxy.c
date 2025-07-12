@@ -328,6 +328,60 @@ static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
 	return 0;
 }
 
+static int do_recv(struct gwp_conn *from, int len)
+{
+	int ret;
+
+	ret = recv(
+		from->sockfd, &from->recvbuf[from->recvlen],
+		len, MSG_NOSIGNAL
+	);
+	if (ret < 0) {
+		ret = errno;
+		if (ret == EAGAIN || ret == EINTR)
+			return 0;
+
+		pr_err(
+			"failed to recv from %s: %s\n",
+			from->addrstr, strerror(ret)
+		);
+		return -ret;
+	} else if (!ret) {
+		pr_info(
+			"EoF received on %s, "
+			"closing the connection. "
+			"terminating the session.\n",
+			from->addrstr
+		);
+		return -EAGAIN;
+	}
+
+	pr_info(
+		"%ld bytes were received from %s\n",
+		ret, from->addrstr
+	);
+	VT_HEXDUMP(&from->recvbuf[from->recvlen], ret);
+
+	from->recvlen += (size_t)ret;
+
+	return 0;
+}
+
+static int do_send(int sockfd, char *buf, size_t len)
+{
+	int ret;
+
+	ret = send(sockfd, buf, len, MSG_NOSIGNAL);
+	if (ret < 0) {
+		ret = errno;
+		if (ret == EAGAIN || ret == EINTR)
+			return 0;
+		return -ret;
+	}
+
+	return ret;
+}
+
 /*
 * Handle incoming and outgoing data.
 *
@@ -347,66 +401,26 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 		from->addrstr, rlen
 	);
 	if (rlen > 0) {
-		ret = recv(
-			from->sockfd, &from->recvbuf[from->recvlen],
-			rlen, MSG_NOSIGNAL
-		);
-		if (ret < 0) {
-			ret = errno;
-			if (ret == EAGAIN || ret == EINTR) {
-				/*
-				* if buffer is not empty,
-				* send it to the destination
-				*/
-				if (from->recvlen)
-					goto try_send;
-				return 0;
-			}
-			pr_err(
-				"failed to recv from %s: %s\n",
-				from->addrstr, strerror(ret)
-			);
-			return -ret;
-		} else if (!ret) {
-			pr_info(
-				"EoF received on %s, "
-				"closing the connection. "
-				"terminating the session.\n",
-				from->addrstr
-			);
-			return -EAGAIN;
-		}
-		pr_dbg(
-			"%ld bytes were received from %s\n",
-			ret, from->addrstr
-		);
-		VT_HEXDUMP(&from->recvbuf[from->recvlen], ret);
-
-		from->recvlen += (size_t)ret;
+		ret = do_recv(from, rlen);
+		if (ret)
+			return ret;
 	}
 
-try_send:
 	pr_info(
 		"attempting to send %ld bytes to %s\n",
 		from->recvlen, to->addrstr
 	);
 	if (from->recvlen > 0) {
-		ret = send(
-			to->sockfd, &from->recvbuf[from->recvoff],
-			from->recvlen, MSG_NOSIGNAL
-		);
+		ret = do_send(to->sockfd, &from->recvbuf[from->recvoff], from->recvlen);
 		if (ret < 0) {
-			ret = errno;
-			if (ret == EAGAIN || ret == EINTR)
-				return 0;
 			pr_err(
 				"failed to send %ld bytes to %s: %s\n",
 				to->addrstr, strerror(ret)
 			);
-			return -ret;
+			return ret;
 		}
 
-		pr_dbg(
+		pr_info(
 			"%ld bytes were sent to %s\n",
 			ret, to->addrstr
 		);
