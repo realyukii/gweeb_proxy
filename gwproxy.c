@@ -180,7 +180,6 @@ static int mod_events(int fd, int epfd, uint32_t epmask,
 
 static int set_target(struct gwp_conn *t, struct sockaddr_storage *sockaddr)
 {
-	socklen_t size_addr = sizeof(*sockaddr);
 	int ret, tsock;
 
 	tsock = socket(sockaddr->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -197,7 +196,7 @@ static int set_target(struct gwp_conn *t, struct sockaddr_storage *sockaddr)
 	get_addrstr((struct sockaddr *)sockaddr, t->addrstr);
 	pr_info("attempting to connect to %s\n", t->addrstr);
 
-	ret = connect(tsock, (struct sockaddr *)sockaddr, size_addr);
+	ret = connect(tsock, (struct sockaddr *)sockaddr, sizeof(*sockaddr));
 	if (ret < 0 && errno != EINPROGRESS) {
 		pr_err(
 			"failed to connect to address %s: %s\n",
@@ -273,10 +272,15 @@ static void adjust_pollin(struct gwp_conn *src, bool *epmask_changed)
 
 static void adjust_events(int epfd, struct gwp_pair_conn *pc)
 {
+	struct gwp_conn *client, *target;
+	bool is_client_changed;
+	bool is_target_changed;
 	int ret;
-	bool is_client_changed = false;
-	bool is_target_changed = false;
-	struct gwp_conn *client = &pc->client, *target = &pc->target;
+
+	is_client_changed = false;
+	is_target_changed = false;
+	target = &pc->target;
+	client = &pc->client;
 
 	is_client_changed = adjust_pollout(target, client);
 	adjust_pollin(client, &is_client_changed);
@@ -442,10 +446,11 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 
 static int prepare_tcp_serv(struct gwp_tctx *ctx)
 {
-	int ret;
-	struct commandline_args *args = ctx->pctx->args;
+	struct commandline_args *args;
 	uint64_t val;
+	int ret;
 
+	args = ctx->pctx->args;
 	ret = socket(args->src_addr_st.ss_family, SOCK_STREAM, 0);
 	if (ret < 0) {
 		ret = errno;
@@ -539,9 +544,10 @@ int realloc_container(struct gwp_session_container *c)
 
 int alloc_recv_send_buff(struct gwp_tctx *ctx, struct gwp_pair_conn *s)
 {
-	struct commandline_args *args = ctx->pctx->args;
+	struct commandline_args *args;
 	struct gwp_conn *c, *t;
 
+	args = ctx->pctx->args;
 	c = &s->client;
 	t = &s->target;
 	c->recvbuf = malloc(args->c_recv_sz);
@@ -586,11 +592,13 @@ exit_free_c_recv:
 
 static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 {
-	int ret;
-	struct gwp_session_container *container = &ctx->container;
+	struct gwp_session_container *container;
+	struct commandline_args *args;
 	struct gwp_pair_conn *s;
-	struct commandline_args *args = ctx->pctx->args;
+	int ret;
 
+	container = &ctx->container;
+	args = ctx->pctx->args;
 	if (container->session_nr >= container->capacity) {
 		ret = realloc_container(&ctx->container);
 		if (ret)
@@ -652,10 +660,11 @@ exit_close_sockfd:
 
 static int accept_new_client(struct gwp_tctx *ctx)
 {
-	int ret;
 	struct sockaddr_in6 in6;
-	socklen_t in6_sz = sizeof(in6);
+	socklen_t in6_sz;
+	int ret;
 
+	in6_sz = sizeof(in6);
 	ret = accept4(ctx->tcpfd, &in6, &in6_sz, SOCK_NONBLOCK);
 	if (ret < 0) {
 		ret = errno;
@@ -748,8 +757,8 @@ static void cleanup_tctx(struct gwp_tctx *ctx)
 
 static int start_tcp_serv(struct gwp_tctx *ctx)
 {
-	int i, ret, ready_nr;
 	struct epoll_event evs[DEFAULT_EPOLL_EV];
+	int i, ret, ready_nr;
 
 	pr_info("start serving...\n");
 	ret = 0;
@@ -784,10 +793,11 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 
 static int socks5_handle_target(struct gwp_tctx* ctx)
 {
-	struct socks5_conn *conn = ctx->pc->conn_ctx;
+	struct socks5_conn *conn;
 	struct gwp_conn *a, *b;
 	int ret;
 
+	conn = ctx->pc->conn_ctx;
 	a = &ctx->pc->target;
 	b = &ctx->pc->client;
 
@@ -807,14 +817,15 @@ static int socks5_handle_target(struct gwp_tctx* ctx)
 
 static int socks5_handle_connect(struct gwp_tctx* ctx)
 {
-	struct socks5_conn *conn = ctx->pc->conn_ctx;
 	struct sockaddr_storage addr;
-	size_t aslen;
+	struct socks5_conn *conn;
 	struct socks5_request *r;
 	struct gwp_conn *a, *b;
 	struct socks5_addr sa;
+	size_t aslen;
 	int ret;
 
+	conn = ctx->pc->conn_ctx;
 	a = &ctx->pc->client;
 	b = &ctx->pc->target;
 
@@ -848,11 +859,12 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 
 static int socks5_handle_default(struct gwp_tctx* ctx)
 {
-	struct socks5_conn *conn = ctx->pc->conn_ctx;
 	size_t rlen, aslen, arlen;
+	struct socks5_conn *conn;
 	struct gwp_conn *a;
 	int ret;
 
+	conn = ctx->pc->conn_ctx;
 	a = &ctx->pc->client;
 
 	rlen = a->recvcap - a->recvlen;
@@ -899,10 +911,11 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 
 static int socks5_handle_client(struct gwp_tctx* ctx)
 {
-	struct socks5_conn *conn = ctx->pc->conn_ctx;
+	struct socks5_conn *conn;
 	struct gwp_conn *a, *b;
 	int ret;
 
+	conn = ctx->pc->conn_ctx;
 	a = &ctx->pc->client;
 	b = &ctx->pc->target;
 
@@ -973,11 +986,10 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 static int sp_handler(struct gwp_tctx *ctx, void *data,
 			uint64_t ev_bit, uint32_t ev)
 {
-	struct gwp_pair_conn *pc = data;
 	struct gwp_conn *a, *b;
 	int ret;
 
-	ctx->pc = pc;
+	ctx->pc = data;
 	ctx->epev = ev;
 
 	a = &ctx->pc->client;
@@ -1001,7 +1013,7 @@ static int sp_handler(struct gwp_tctx *ctx, void *data,
 
 	return 0;
 terminate_and_recall_epoll_wait:
-	cleanup_pc(ctx, pc);
+	cleanup_pc(ctx, data);
 	return -EAGAIN;
 }
 
@@ -1028,8 +1040,8 @@ static int init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
 
 static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 {
-	int ret;
 	struct socks5_cfg cfg;
+	int ret;
 
 	ret = eventfd(0, EFD_NONBLOCK);
 	if (ret < 0) {
@@ -1062,17 +1074,17 @@ static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 static void *tcp_serv_thread(void *args)
 {
 	intptr_t ret;
-	struct gwp_tctx *ctx = args;
 
-	ret = start_tcp_serv(ctx);
+	ret = start_tcp_serv(args);
 	return (void *)ret;
 }
 
 static int spawn_threads(struct gwp_pctx *ctx)
 {
+	size_t i, thread_nr;
 	int ret;
-	size_t i, thread_nr = ctx->args->server_thread_nr;
 
+	thread_nr = ctx->args->server_thread_nr;
 	for (i = 0; i < thread_nr; i++) {
 		ret = init_tctx(&ctx->tctx[i], ctx);
 		if (ret < 0)
@@ -1093,9 +1105,10 @@ static int spawn_threads(struct gwp_pctx *ctx)
 
 static void join_threads(struct gwp_pctx *ctx)
 {
+	size_t i, thread_nr;
 	intptr_t retval;
-	size_t i, thread_nr = ctx->args->server_thread_nr;
 
+	thread_nr = ctx->args->server_thread_nr;
 	for (i = 0; i < thread_nr; i++) {
 		if (i == 0)
 			continue;
@@ -1189,21 +1202,22 @@ static int set_intval(char *val, int defaultval)
 */
 static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 {
-	char c,
-	*bind_opt, *target_opt, *server_thread_opt,
-	*client_nr_opt, *wait_opt, *auth_file_opt;
-	struct buff_sz_opt b = {0};
+	char *server_thread_opt, *client_nr_opt, *wait_opt;
+	char *bind_opt, *target_opt;
+	struct buff_sz_opt b;
+	char *auth_file_opt;
 	int ret;
+	char c;
 
 	if (argc == 1) {
 		pr_menu();
 		return -EXIT_FAILURE;
 	}
 
+	client_nr_opt = wait_opt = server_thread_opt = NULL;
+	auth_file_opt = bind_opt = target_opt= NULL;
 	args->socks5_mode = false;
-
-	auth_file_opt = wait_opt = server_thread_opt
-	= bind_opt = target_opt = client_nr_opt = NULL;
+	memset(&b, 0, sizeof(b));
 	while ((c = getopt(argc, argv, opts)) != -1) {
 		switch (c) {
 		case 's':
@@ -1322,12 +1336,12 @@ static int setfdlimit(void)
 
 int main(int argc, char *argv[])
 {
-	int ret;
 	struct commandline_args args;
 	struct gwp_pctx ctx;
 	struct sigaction sa = {
 		.sa_handler = signal_handler
 	};
+	int ret;
 
 	ret = handle_cmdline(argc, argv, &args);
 	if (ret < 0)
