@@ -782,6 +782,7 @@ static int socks5_handle_client(struct gwp_tctx*ctx)
 {
 	struct socks5_conn *conn = ctx->pc->conn_ctx;
 	struct gwp_conn *a, *b;
+	size_t rlen, aslen, arlen;
 	int ret;
 
 	(void)b;
@@ -801,11 +802,37 @@ static int socks5_handle_client(struct gwp_tctx*ctx)
 		break;
 
 	default:
+		rlen = a->recvcap - a->recvlen;
+		pr_info(
+			"attempting to recv from %s "
+			"with %ld bytes of free space\n",
+			a->addrstr, rlen
+		);
+		ret = do_recv(a, rlen);
+		if (ret)
+			return ret;
+
+		aslen = a->sendcap;
+		arlen = a->recvlen - a->recvoff;
 		ret = socks5_process_data(
 			conn,
-			a->recvbuf, &a->recvlen,
-			a->sendbuf, &a->sendlen
+			&a->recvbuf[a->recvoff], &arlen,
+			a->sendbuf, &aslen
 		);
+		a->recvoff += arlen;
+		a->recvlen -= arlen;
+		if (!a->recvlen)
+			a->recvoff = 0;
+		
+		ret = do_send(a->sockfd, a->sendbuf, aslen);
+		if (ret < 0) {
+			pr_err(
+				"failed to send %ld bytes to %s: %s\n",
+				a->addrstr, strerror(ret)
+			);
+			return ret;
+		}
+		ret = 0;
 	}
 
 	return ret;
