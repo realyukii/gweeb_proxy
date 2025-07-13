@@ -933,12 +933,12 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	case GWP_EV_CLIENT:
 		ret = socks5_handle_client(ctx);
 		if (ret)
-			goto recall_epoll_wait;
+			goto terminate_and_recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
 		ret = socks5_handle_target(ctx);
 		if (ret)
-			goto recall_epoll_wait;
+			goto terminate_and_recall_epoll_wait;
 		break;
 	default:
 		pr_dbg("aborted\n");
@@ -946,7 +946,7 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	}
 
 	return 0;
-recall_epoll_wait:
+terminate_and_recall_epoll_wait:
 	cleanup_pc(ctx, pc);
 	return -EAGAIN;
 }
@@ -987,12 +987,12 @@ static int sp_handler(struct gwp_tctx *ctx, void *data,
 	case GWP_EV_CLIENT:
 		ret = sp_forward(ctx, a, b);
 		if (ret)
-			goto recall_epoll_wait;
+			goto terminate_and_recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
 		ret = sp_forward(ctx, b, a);
 		if (ret)
-			goto recall_epoll_wait;
+			goto terminate_and_recall_epoll_wait;
 		break;
 	default:
 		pr_dbg("aborted\n");
@@ -1000,7 +1000,7 @@ static int sp_handler(struct gwp_tctx *ctx, void *data,
 	}
 
 	return 0;
-recall_epoll_wait:
+terminate_and_recall_epoll_wait:
 	cleanup_pc(ctx, pc);
 	return -EAGAIN;
 }
