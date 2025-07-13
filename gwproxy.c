@@ -838,7 +838,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 		if (ret)
 			return ret;
 
-		ret = socks5_handle_cmd_connect(
+		ret = socks5_craft_connect_reply(
 			conn, &sa, SOCKS5_SUCCEEDED, a->sendbuf, &aslen
 		);
 		if (ret)

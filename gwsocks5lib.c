@@ -401,7 +401,7 @@ retry:
 	return r;
 }
 
-int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
+int socks5_craft_connect_reply(struct socks5_conn *conn, struct socks5_addr *sa,
 				uint8_t rep_code, void *rep_buf, size_t *rep_len)
 {
 	struct socks5_reply *rep = rep_buf;
@@ -647,7 +647,7 @@ static void socks5_test_ipv6_noauth(void)
 		}
 	};
 	olen = sizeof(out_buf);
-	r = socks5_handle_cmd_connect(conn, &saddr, 0, out_buf, &olen);
+	r = socks5_craft_connect_reply(conn, &saddr, 0, out_buf, &olen);
 	assert(!r);
 	assert(olen == REPLY_REQ_IPV6_LEN);
 
@@ -739,7 +739,7 @@ static void socks5_test_short_recv(void)
 		}
 	};
 	olen = sizeof(out_buf);
-	r = socks5_handle_cmd_connect(conn, &saddr, 0, out_buf, &olen);
+	r = socks5_craft_connect_reply(conn, &saddr, 0, out_buf, &olen);
 	assert(!r);
 	assert(conn->state == SOCKS5_FORWARDING);
 

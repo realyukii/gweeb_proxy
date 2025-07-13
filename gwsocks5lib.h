@@ -183,7 +183,7 @@ int socks5_process_data(struct socks5_conn *conn,
 /*
 * Craft response to CONNECT request with given address and reply code.
 */
-int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr,
+int socks5_craft_connect_reply(struct socks5_conn *conn, struct socks5_addr *addr,
 				uint8_t rep_code, void *replybuf, size_t *replylen);
 
 /*
