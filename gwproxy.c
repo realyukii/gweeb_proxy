@@ -138,6 +138,27 @@ struct gwp_tctx {
 	struct gwp_session_container container;
 };
 
+static int custom_epoll_ctl(int fd, int epfd, uint32_t epmask,
+				void *ptr, uint64_t evmask, int op) {
+	struct epoll_event ev;
+	int ret;
+
+	ev.events = epmask;
+	ev.data.u64 = 0;
+	ev.data.ptr = ptr;
+	ev.data.u64 |= evmask;
+	ret = epoll_ctl(epfd, op, fd, &ev);
+	if (ret < 0) {
+		pr_err(
+			"failed to register event to epoll: %s\n",
+			strerror(errno)
+		);
+		return -EXIT_FAILURE;
+	}
+
+	return 0;
+}
+
 /*
 * Register events on socket file descriptor to the epoll's interest list.
 *
@@ -149,23 +170,12 @@ struct gwp_tctx {
 */
 static int register_events(int fd, int epfd, uint32_t epmask,
 				void *ptr, uint64_t evmask) {
-	struct epoll_event ev;
-	int ret;
+	return custom_epoll_ctl(fd, epfd, epmask, ptr, evmask, EPOLL_CTL_ADD);
+}
 
-	ev.events = epmask;
-	ev.data.u64 = 0;
-	ev.data.ptr = ptr;
-	ev.data.u64 |= evmask;
-	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
-	if (ret < 0) {
-		pr_err(
-			"failed to register event to epoll: %s\n",
-			strerror(errno)
-		);
-		return -EXIT_FAILURE;
-	}
-
-	return 0;
+static int mod_events(int fd, int epfd, uint32_t epmask,
+				void *ptr, uint64_t evmask) {
+	return custom_epoll_ctl(fd, epfd, epmask, ptr, evmask, EPOLL_CTL_MOD);
 }
 
 static int set_target(struct gwp_conn *t, struct sockaddr_storage *sockaddr)
@@ -266,7 +276,6 @@ static void adjust_events(int epfd, struct gwp_pair_conn *pc)
 	int ret;
 	bool is_client_changed = false;
 	bool is_target_changed = false;
-	struct epoll_event ev;
 	struct gwp_conn *client = &pc->client, *target = &pc->target;
 
 	is_client_changed = adjust_pollout(target, client);
@@ -277,27 +286,19 @@ static void adjust_events(int epfd, struct gwp_pair_conn *pc)
 	}
 
 	if (is_client_changed) {
-		ev.data.u64 = 0;
-		ev.data.ptr = pc;
-		ev.data.u64 |= GWP_EV_CLIENT;
-		ev.events = client->epmask;
-
-		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, client->sockfd, &ev);
-		if (ret < 0) {
+		ret = mod_events(
+			client->sockfd, epfd, client->epmask, pc, GWP_EV_CLIENT
+		);
+		if (ret < 0)
 			pr_warn("failed to modify event: %s\n", strerror(errno));
-		}
 	}
 
 	if (is_target_changed) {
-		ev.events = target->epmask;
-		ev.data.u64 = 0;
-		ev.data.ptr = pc;
-		ev.data.u64 |= GWP_EV_TARGET;
-
-		ret = epoll_ctl(epfd, EPOLL_CTL_MOD, target->sockfd, &ev);
-		if (ret < 0) {
+		ret = mod_events(
+			target->sockfd, epfd, target->epmask, pc, GWP_EV_TARGET
+		);
+		if (ret < 0)
 			pr_warn("failed to modify event: %s\n", strerror(errno));
-		}
 	}
 }
 
