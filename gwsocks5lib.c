@@ -228,7 +228,7 @@ static void set_err_reply(struct socks5_reply *out, uint8_t rep_code)
 	out->rsv = 0x0;
 	out->bnd_addr.type = SOCKS5_IPv4;
 	memset(out->bnd_addr.addr.ipv4, 0, 4);
-	memcpy((void *)(out->bnd_addr.addr.ipv4 + 4), &port, 2);
+	memcpy(out->bnd_addr.addr.ipv4 + 4, &port, 2);
 }
 
 static int socks5_handle_request(struct data_args *args)
@@ -395,6 +395,7 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 				uint8_t rep_code, void *rep_buf, size_t *rep_len)
 {
 	struct socks5_reply *rep = rep_buf;
+	union saddr *addr = &rep->bnd_addr.addr;
 	size_t required_len;
 	uint8_t dlen;
 
@@ -413,8 +414,8 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 			*rep_len = required_len;
 			return -ENOBUFS;
 		}
-		memcpy(rep->bnd_addr.addr.ipv4, sa->addr.ipv4, 4);
-		memcpy((void *)(rep->bnd_addr.addr.ipv4 + 4), &sa->port, 2);
+		memcpy(addr->ipv4, sa->addr.ipv4, 4);
+		memcpy(addr->ipv4 + 4, &sa->port, 2);
 		break;
 	case SOCKS5_DOMAIN:
 		dlen = sa->addr.domain.len;
@@ -423,9 +424,9 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 			*rep_len = required_len;
 			return -ENOBUFS;
 		}
-		rep->bnd_addr.addr.domain.len = dlen;
-		memcpy(rep->bnd_addr.addr.domain.name, sa->addr.domain.name, dlen);
-		memcpy((void *)(rep->bnd_addr.addr.domain.name + dlen), &sa->port, 2);
+		addr->domain.len = dlen;
+		memcpy(addr->domain.name, sa->addr.domain.name, dlen);
+		memcpy(addr->domain.name + dlen, &sa->port, 2);
 		break;
 	case SOCKS5_IPv6:
 		required_len += 16 + 2;
@@ -433,8 +434,8 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 			*rep_len = required_len;
 			return -ENOBUFS;
 		}
-		memcpy(rep->bnd_addr.addr.ipv6, sa->addr.ipv6, 16);
-		memcpy((void *)(rep->bnd_addr.addr.ipv6 + 16), &sa->port, 2);
+		memcpy(addr->ipv6, sa->addr.ipv6, 16);
+		memcpy(addr->ipv6 + 16, &sa->port, 2);
 		break;
 
 	default:
