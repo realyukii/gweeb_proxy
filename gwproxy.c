@@ -411,7 +411,7 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 	);
 	if (rlen > 0) {
 		ret = do_recv(from, rlen);
-		if (ret)
+		if (ret && ret != -EAGAIN)
 			return ret;
 	}
 
