@@ -779,12 +779,30 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 	return ret;
 }
 
-static int socks5_handle_client(struct gwp_tctx*ctx)
+static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn *b);
+
+static int socks5_handle_target(struct gwp_tctx* ctx)
 {
 	struct socks5_conn *conn = ctx->pc->conn_ctx;
 	struct gwp_conn *a, *b;
-	size_t rlen, aslen, arlen;
 	int ret;
+
+	a = &ctx->pc->target;
+	b = &ctx->pc->client;
+
+	switch (conn->state) {
+	case SOCKS5_FORWARDING:
+		ret = sp_forward(ctx, a, b);
+		if (ret)
+			return ret;
+		break;
+	default:
+		pr_dbg("aborted\n");
+		abort();
+	}
+
+	return 0;
+}
 
 static int socks5_handle_client(struct gwp_tctx* ctx)
 {
@@ -801,9 +819,9 @@ static int socks5_handle_client(struct gwp_tctx* ctx)
 
 	switch (conn->state) {
 	case SOCKS5_FORWARDING:
-		// ret = sp_forward(ctx, a, b);
-		// if (ret)
-		// 	return ret;
+		ret = sp_forward(ctx, a, b);
+		if (ret)
+			return ret;
 		break;
 	case SOCKS5_CONNECT:
 		r = (void *)a->recvbuf;
@@ -894,6 +912,9 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 			goto recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
+		ret = socks5_handle_target(ctx);
+		if (ret)
+			goto recall_epoll_wait;
 		break;
 	default:
 		pr_dbg("aborted\n");
