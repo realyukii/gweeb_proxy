@@ -347,7 +347,7 @@ static int do_recv(struct gwp_conn *from, int len)
 	if (ret < 0) {
 		ret = errno;
 		if (ret == EAGAIN || ret == EINTR)
-			return 0;
+			return -EAGAIN;
 
 		pr_err(
 			"failed to recv from %s: %s\n",
@@ -361,7 +361,7 @@ static int do_recv(struct gwp_conn *from, int len)
 			"terminating the session.\n",
 			from->addrstr
 		);
-		return -EAGAIN;
+		return DISCONNECTED;
 	}
 
 	pr_info(
@@ -383,7 +383,7 @@ static int do_send(int sockfd, char *buf, size_t len)
 	if (ret < 0) {
 		ret = errno;
 		if (ret == EAGAIN || ret == EINTR)
-			return 0;
+			return -EAGAIN;
 		return -ret;
 	}
 	VT_HEXDUMP(buf, len);
@@ -957,12 +957,12 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	switch (ev_bit) {
 	case GWP_EV_CLIENT:
 		ret = socks5_handle_client(ctx);
-		if (ret)
+		if (ret && ret != -EAGAIN)
 			goto terminate_and_recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
 		ret = socks5_handle_target(ctx);
-		if (ret)
+		if (ret && ret != -EAGAIN)
 			goto terminate_and_recall_epoll_wait;
 		break;
 	default:
