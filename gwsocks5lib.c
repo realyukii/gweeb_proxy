@@ -416,7 +416,7 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 			return -ENOBUFS;
 		}
 		memcpy(addr->ipv4, sa->addr.ipv4, 4);
-		memcpy(addr->ipv4 + 4, &sa->port, 2);
+		memcpy(addr->ipv4 + 4, sa->addr.ipv4 + 4, 2);
 		break;
 	case SOCKS5_DOMAIN:
 		dlen = sa->addr.domain.len;
@@ -427,7 +427,7 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 		}
 		addr->domain.len = dlen;
 		memcpy(addr->domain.name, sa->addr.domain.name, dlen);
-		memcpy(addr->domain.name + dlen, &sa->port, 2);
+		memcpy(addr->domain.name + dlen, sa->addr.domain.name + dlen, 2);
 		break;
 	case SOCKS5_IPv6:
 		required_len += 16 + 2;
@@ -436,7 +436,7 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 			return -ENOBUFS;
 		}
 		memcpy(addr->ipv6, sa->addr.ipv6, 16);
-		memcpy(addr->ipv6 + 16, &sa->port, 2);
+		memcpy(addr->ipv6 + 16, sa->addr.ipv6 + 16, 2);
 		break;
 
 	default:
@@ -610,12 +610,12 @@ static void socks5_test_ipv6_noauth(void)
 
 	struct socks5_addr saddr = {
 		.type = 0x4,
-		.port = htons(5081),
 		.addr.ipv6 = {
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
-			0x0, 0x0, 0x0, 0x1
+			0x0, 0x0, 0x0, 0x1,
+			0x1d, 0xd9
 		}
 	};
 	olen = sizeof(out_buf);
@@ -702,12 +702,12 @@ static void socks5_test_short_recv(void)
 
 	struct socks5_addr saddr = {
 		.type = 0x4,
-		.port = htons(5081),
 		.addr.ipv6 = {
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
-			0x0, 0x0, 0x0, 0x1
+			0x0, 0x0, 0x0, 0x1,
+			0x1d, 0xd9
 		}
 	};
 	olen = sizeof(out_buf);
