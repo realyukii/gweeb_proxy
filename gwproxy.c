@@ -379,6 +379,7 @@ static int do_send(int sockfd, char *buf, size_t len)
 			return 0;
 		return -ret;
 	}
+	VT_HEXDUMP(buf, len);
 
 	return ret;
 }
@@ -804,11 +805,11 @@ static int socks5_handle_target(struct gwp_tctx* ctx)
 	return 0;
 }
 
-static int socks5_handle_client(struct gwp_tctx* ctx)
+static int socks5_handle_connect(struct gwp_tctx* ctx)
 {
 	struct socks5_conn *conn = ctx->pc->conn_ctx;
 	struct sockaddr_storage addr;
-	size_t rlen, aslen, arlen;
+	size_t aslen;
 	struct socks5_request *r;
 	struct gwp_conn *a, *b;
 	struct socks5_addr sa;
@@ -817,40 +818,51 @@ static int socks5_handle_client(struct gwp_tctx* ctx)
 	a = &ctx->pc->client;
 	b = &ctx->pc->target;
 
+	r = (void *)a->recvbuf;
+	aslen = a->sendcap - a->sendlen;
+	if (b->sockfd == -1) {
+		memcpy(&sa, &r->dst_addr, sizeof(sa));
+		socks5_convert_addr(&r->dst_addr, &addr);
+		ret = prepare_forward(ctx, ctx->pc, &addr);
+		if (ret)
+			return ret;
+
+		ret = socks5_handle_cmd_connect(
+			conn, &sa, SOCKS5_SUCCEEDED, a->sendbuf, &aslen
+		);
+		if (ret)
+			return ret;
+	}
+
+	ret = do_send(a->sockfd, a->sendbuf, aslen);
+	if (ret < 0) {
+		pr_err(
+			"failed to send %ld bytes to %s: %s\n",
+			a->addrstr, strerror(ret)
+		);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int socks5_handle_client(struct gwp_tctx* ctx)
+{
+	struct socks5_conn *conn = ctx->pc->conn_ctx;
+	size_t rlen, aslen, arlen;
+	struct gwp_conn *a, *b;
+	int ret;
+
+	a = &ctx->pc->client;
+	b = &ctx->pc->target;
+
 	switch (conn->state) {
 	case SOCKS5_FORWARDING:
 		ret = sp_forward(ctx, a, b);
-		if (ret)
-			return ret;
 		break;
 	case SOCKS5_CONNECT:
-		r = (void *)a->recvbuf;
-		aslen = a->sendcap - a->sendlen;
-		if (b->sockfd == -1) {
-			memcpy(&sa, &r->dst_addr, sizeof(sa));
-			socks5_convert_addr(&r->dst_addr, &addr);
-			ret = prepare_forward(ctx, ctx->pc, &addr);
-			if (ret)
-				return ret;
-
-			ret = socks5_handle_cmd_connect(
-				conn, &sa, SOCKS5_SUCCEEDED, a->sendbuf, &aslen
-			);
-			if (ret)
-				return ret;
-		}
-
-		ret = do_send(a->sockfd, a->sendbuf, aslen);
-		if (ret < 0) {
-			pr_err(
-				"failed to send %ld bytes to %s: %s\n",
-				a->addrstr, strerror(ret)
-			);
-			return ret;
-		}
-		ret = 0;
+		ret = socks5_handle_connect(ctx);
 		break;
-
 	default:
 		rlen = a->recvcap - a->recvlen;
 		pr_info(
