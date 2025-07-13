@@ -109,10 +109,6 @@ struct socks5_request {
 	uint8_t cmd;
 	uint8_t rsv;
 	struct socks5_addr dst_addr;
-	/*
-	* since addr member of struct dst_addr use union,
-	* the destination port is not specified explicitly as a struct member.
-	*/
 };
 
 struct socks5_reply {
