@@ -215,6 +215,7 @@ static int socks5_handle_auth(struct data_args *args)
 	out[0] = 0x1;
 	out[1] = is_authenticated;
 	append_outbuf(args, required_len);
+	args->conn->state = SOCKS5_REQUEST;
 
 	return 0;
 }
