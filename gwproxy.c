@@ -21,6 +21,8 @@
 #define DEFAULT_PREALLOC_CONN 100
 #define DEFAULT_BUFF_SZ 1024
 
+#define DISCONNECTED -1
+
 #define ALL_EV_BITS (GWP_EV_STOP | GWP_EV_ACCEPT | GWP_EV_CLIENT | GWP_EV_TARGET)
 #define GET_EV_BIT(X) ((X) & ALL_EV_BITS)
 #define CLEAR_EV_BIT(X) ((X) & ~ALL_EV_BITS)
@@ -74,6 +76,7 @@ struct gwp_conn {
 	size_t recvlen;
 	size_t recvcap;
 	char *sendbuf;
+	size_t sendoff;
 	size_t sendlen;
 	size_t sendcap;
 	uint64_t epmask;
@@ -562,6 +565,7 @@ int alloc_recv_send_buff(struct gwp_tctx *ctx, struct gwp_pair_conn *s)
 	if (!c->sendbuf)
 		goto exit_free_c_recv;
 
+	c->sendoff = 0;
 	c->sendlen = 0;
 	c->sendcap = args->c_send_sz;
 
@@ -577,6 +581,7 @@ int alloc_recv_send_buff(struct gwp_tctx *ctx, struct gwp_pair_conn *s)
 	if (!t->sendbuf)
 		goto exit_free_t_recv;
 
+	c->sendoff = 0;
 	t->sendlen = 0;
 	t->sendcap = args->t_send_sz;
 
@@ -829,23 +834,25 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	a = &ctx->pc->client;
 	b = &ctx->pc->target;
 
-	r = (void *)a->recvbuf;
-	aslen = a->sendcap - a->sendlen;
-	if (b->sockfd == -1) {
+	if (b->sockfd == DISCONNECTED) {
+		r = (void *)a->recvbuf;
 		memcpy(&sa, &r->dst_addr, sizeof(sa));
 		socks5_convert_addr(&r->dst_addr, &addr);
 		ret = prepare_forward(ctx, ctx->pc, &addr);
 		if (ret)
 			return ret;
 
+		aslen = a->sendcap;
 		ret = socks5_craft_connect_reply(
 			conn, &sa, SOCKS5_SUCCEEDED, a->sendbuf, &aslen
 		);
 		if (ret)
 			return ret;
+
+		a->sendlen = aslen;
 	}
 
-	ret = do_send(a->sockfd, a->sendbuf, aslen);
+	ret = do_send(a->sockfd, &a->sendbuf[a->sendoff], a->sendlen);
 	if (ret < 0) {
 		pr_err(
 			"failed to send %ld bytes to %s: %s\n",
@@ -853,6 +860,11 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 		);
 		return ret;
 	}
+	a->sendoff += ret;
+	a->sendlen -= ret;
+
+	if (!a->sendlen)
+		a->sendoff = 0;
 
 	return 0;
 }
