@@ -93,7 +93,7 @@ struct socks5_handshake {
 struct socks5_addr {
 	/* see the available type in enum addr_type */
 	uint8_t type;
-	union {
+	union saddr {
 		uint8_t ipv4[4];
 		struct {
 			uint8_t len;
@@ -195,3 +195,5 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr
 * (you can ignore if you want, it will restore previous value).
 */
 int socks5_reload_creds_file(struct socks5_ctx *ctx);
+
+void socks5_convert_addr(struct socks5_addr *sa, struct sockaddr_storage *ss);

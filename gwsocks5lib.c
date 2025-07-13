@@ -237,6 +237,7 @@ static int socks5_handle_request(struct data_args *args)
 	uint8_t atyp;
 	struct socks5_reply *out = args->out;
 	const struct socks5_request *in = args->in;
+	// struct socks5_addr *sa = args->out;
 	enum socks5_state state;
 	size_t exp_len = 4, required_len = 4 + 4 + 2;
 
@@ -293,6 +294,14 @@ static int socks5_handle_request(struct data_args *args)
 
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
+
+	// required_len = sizeof(*sa);
+	// if (*args->out_len < required_len) {
+	// 	args->total_out = required_len;
+	// 	return -ENOBUFS;
+	// }
+	// memcpy(sa, &in->dst_addr, required_len);
+	// append_outbuf(args, required_len);
 
 	advance_inbuf(args, exp_len);
 
@@ -446,6 +455,25 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 	*rep_len = required_len;
 
 	return 0;
+}
+
+void socks5_convert_addr(struct socks5_addr *sa, struct sockaddr_storage *ss)
+{
+	struct sockaddr_in *in = (struct sockaddr_in *)ss;
+	struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)ss;
+
+	switch (sa->type) {
+	case SOCKS5_IPv4:
+		in->sin_family = AF_INET;
+		memcpy(&in->sin_addr, sa->addr.ipv4, 4);
+		memcpy(&in->sin_port, sa->addr.ipv4 + 4, 2);
+		break;
+	case SOCKS5_IPv6:
+		in6->sin6_family = AF_INET6;
+		memcpy(&in6->sin6_addr, sa->addr.ipv6, 16);
+		memcpy(&in6->sin6_port, sa->addr.ipv6 + 16, 2);
+		break;
+	}
 }
 
 void socks5_free_ctx(struct socks5_ctx *ctx)
