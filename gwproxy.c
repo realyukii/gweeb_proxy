@@ -976,7 +976,6 @@ static int socks5_handle_client(struct gwp_tctx* ctx)
 		ret = socks5_handle_default(ctx);
 	}
 
-	adjust_events(ctx->epfd, ctx->pc);
 	return ret;
 }
 
@@ -1005,6 +1004,7 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 		abort();
 	}
 
+	adjust_events(ctx->epfd, ctx->pc);
 	return 0;
 terminate_and_recall_epoll_wait:
 	cleanup_pc(ctx, pc);
@@ -1026,7 +1026,6 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 			return ret;
 	}
 
-	adjust_events(ctx->epfd, ctx->pc);
 	return 0;
 }
 
@@ -1058,6 +1057,7 @@ static int sp_handler(struct gwp_tctx *ctx, void *data,
 		abort();
 	}
 
+	adjust_events(ctx->epfd, ctx->pc);
 	return 0;
 terminate_and_recall_epoll_wait:
 	cleanup_pc(ctx, data);
