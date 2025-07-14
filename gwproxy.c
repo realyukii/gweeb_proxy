@@ -1226,13 +1226,13 @@ static void set_buffer_sizes(struct commandline_args *args, struct buff_sz_opt *
 	}
 
 	if (b->t_recv_sz_opt) {
-		t_recv_sz = atoi(b->t_both_sz_opt);
+		t_recv_sz = atoi(b->t_recv_sz_opt);
 		if (t_recv_sz > 0)
 			args->t_recv_sz = t_recv_sz;
 	}
 
 	if (b->t_send_sz_opt) {
-		t_send_sz = atoi(b->t_both_sz_opt);
+		t_send_sz = atoi(b->t_send_sz_opt);
 		if (t_send_sz > 0)
 			args->t_send_sz = t_send_sz;
 	}
