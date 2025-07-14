@@ -375,15 +375,19 @@ static int do_recv(struct gwp_conn *from, int len)
 	return 0;
 }
 
-static int do_send(int sockfd, char *buf, size_t len)
+static int do_send(struct gwp_conn *to, char *buf, size_t len)
 {
 	int ret;
 
-	ret = send(sockfd, buf, len, MSG_NOSIGNAL);
+	ret = send(to->sockfd, buf, len, MSG_NOSIGNAL);
 	if (ret < 0) {
 		ret = errno;
 		if (ret == EAGAIN || ret == EINTR)
 			return -EAGAIN;
+		pr_err(
+			"failed to send %ld bytes to %s: %s\n",
+			to->addrstr, strerror(ret)
+		);
 		return -ret;
 	}
 	VT_HEXDUMP(buf, len);
@@ -420,14 +424,9 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 		from->recvlen, to->addrstr
 	);
 	if (from->recvlen > 0) {
-		ret = do_send(to->sockfd, &from->recvbuf[from->recvoff], from->recvlen);
-		if (ret < 0) {
-			pr_err(
-				"failed to send %ld bytes to %s: %s\n",
-				to->addrstr, strerror(ret)
-			);
+		ret = do_send(to, &from->recvbuf[from->recvoff], from->recvlen);
+		if (ret < 0)
 			return ret;
-		}
 
 		pr_info(
 			"%ld bytes were sent to %s\n",
@@ -852,14 +851,9 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 		a->sendlen = aslen;
 	}
 
-	ret = do_send(a->sockfd, &a->sendbuf[a->sendoff], a->sendlen);
-	if (ret < 0) {
-		pr_err(
-			"failed to send %ld bytes to %s: %s\n",
-			a->addrstr, strerror(ret)
-		);
+	ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
+	if (ret < 0)
 		return ret;
-	}
 	a->sendoff += ret;
 	a->sendlen -= ret;
 
@@ -869,7 +863,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	return 0;
 }
 
-static int socks5_handle_default(struct gwp_tctx* ctx)
+static int socks5_do_recv(struct gwp_tctx* ctx)
 {
 	size_t rlen, aslen, arlen;
 	struct socks5_conn *conn;
@@ -901,6 +895,24 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 	if (!a->recvlen)
 		a->recvoff = 0;
 
+	a->sendlen += aslen;
+
+	return 0;
+}
+
+static int socks5_handle_default(struct gwp_tctx* ctx)
+{
+	struct socks5_conn *conn;
+	struct gwp_conn *a;
+	int ret;
+
+	conn = ctx->pc->conn_ctx;
+	a = &ctx->pc->client;
+
+	ret = socks5_do_recv(ctx);
+	if (ret)
+		return ret;
+
 	if (conn->state == SOCKS5_CONNECT) {
 		a->epmask = EPOLLIN | EPOLLOUT;
 		ret = mod_events(
@@ -908,14 +920,15 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 			ctx->pc, GWP_EV_CLIENT
 		);
 	} else {
-		ret = do_send(a->sockfd, a->sendbuf, aslen);
-		if (ret < 0) {
-			pr_err(
-				"failed to send %ld bytes to %s: %s\n",
-				a->addrstr, strerror(ret)
-			);
+		ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
+		if (ret < 0)
 			return ret;
-		}
+
+		a->sendoff += ret;
+		a->sendlen -= ret;
+
+		if (!a->sendlen)
+			a->sendoff = 0;
 	}
 
 	return 0;
