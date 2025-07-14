@@ -1120,20 +1120,25 @@ static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
 	pctx->args = args;
 	pctx->tctx = malloc(args->server_thread_nr * sizeof(*pctx->tctx));
 	if (!pctx->tctx) {
-		close(pctx->stopfd);
-		ret = errno;
-		pr_err("failed to allocate threads data: %s\n", strerror(ret));
-		return -ret;
+		ret = -errno;
+		pr_err("failed to allocate threads data: %s\n", strerror(-ret));
+		goto exit_err_close_evfd;
 	}
 
-	ret = 0;
 	pctx->func_handler = sp_handler;
 	if (args->socks5_mode) {
 		cfg.auth_file = args->auth_file;
-		ret = socks5_init(&pctx->socks5_ctx, &cfg);
 		pctx->func_handler = socks5_proxy_handler;
+		ret = socks5_init(&pctx->socks5_ctx, &cfg);
+		if (ret)
+			goto exit_err_free_tctx;
 	}
 
+	return 0;
+exit_err_free_tctx:
+	free(pctx->tctx);
+exit_err_close_evfd:
+	close(pctx->stopfd);
 	return ret;
 }
 
