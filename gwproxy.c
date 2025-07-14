@@ -774,29 +774,20 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 
 static int socks5_handle_target(struct gwp_tctx* ctx)
 {
-	struct socks5_conn *conn;
 	struct gwp_pair_conn *pc;
 	struct gwp_conn *a, *b;
 	int ret;
 
 	pc = ctx->pc;
-	conn = pc->conn_ctx;
 	a = &pc->target;
 	b = &pc->client;
 
 	if (!pc->is_target_connected && a->sockfd != -1)
 		pc->is_target_connected = true;
 
-	switch (conn->state) {
-	case SOCKS5_FORWARDING:
-		ret = sp_forward(ctx, a, b);
-		if (ret)
-			return ret;
-		break;
-	default:
-		pr_dbg("aborted\n");
-		abort();
-	}
+	ret = sp_forward(ctx, a, b);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -809,8 +800,8 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 	struct socks5_conn *conn;
 	struct socks5_request *r;
 	struct gwp_pair_conn *pc;
-	struct gwp_conn *b;
 	struct socks5_addr sa;
+	struct gwp_conn *b;
 	size_t tlen;
 	int ret;
 
@@ -853,9 +844,9 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 
 static int socks5_do_recv(struct gwp_tctx *ctx)
 {
-	size_t olen, ilen;
 	struct socks5_conn *conn;
 	struct gwp_conn *a, *b;
+	size_t olen, ilen;
 	int ret;
 
 	conn = ctx->pc->conn_ctx;
