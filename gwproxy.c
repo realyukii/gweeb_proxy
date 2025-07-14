@@ -932,6 +932,9 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 
 	a = &ctx->pc->client;
 
+	if (!a->sendlen)
+		return 0;
+
 	ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
 	if (ret < 0)
 		return ret;
