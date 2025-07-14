@@ -369,6 +369,13 @@ static int do_recv(struct gwp_conn *from, int len)
 		ret, from->addrstr
 	);
 	VT_HEXDUMP(&from->recvbuf[from->recvlen], ret);
+	if (ret != len)
+		pr_warn(
+			"incomplete recv: requested %d bytes, "
+			"but only %d bytes received. "
+			"Note: this might not indicate an actual short-recv.\n",
+			len, ret
+		);
 
 	from->recvlen += (size_t)ret;
 
@@ -377,7 +384,7 @@ static int do_recv(struct gwp_conn *from, int len)
 
 static int do_send(struct gwp_conn *to, char *buf, size_t len)
 {
-	int ret;
+	ssize_t ret;
 
 	ret = send(to->sockfd, buf, len, MSG_NOSIGNAL);
 	if (ret < 0) {
@@ -390,7 +397,15 @@ static int do_send(struct gwp_conn *to, char *buf, size_t len)
 		);
 		return -ret;
 	}
+
 	VT_HEXDUMP(buf, len);
+	if ((size_t)ret != len)
+		pr_warn(
+			"short send detected: "
+			"attempted to send %d bytes, "
+			"but only %d bytes were transmitted.\n",
+			len, ret
+		);
 
 	return ret;
 }
