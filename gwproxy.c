@@ -977,6 +977,7 @@ static int socks5_handle_client(struct gwp_tctx* ctx)
 		ret = socks5_handle_default(ctx);
 	}
 
+	adjust_events(ctx->epfd, ctx->pc);
 	return ret;
 }
 
