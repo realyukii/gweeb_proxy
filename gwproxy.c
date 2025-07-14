@@ -398,7 +398,7 @@ static int do_send(struct gwp_conn *to, char *buf, size_t len)
 		return -ret;
 	}
 
-	VT_HEXDUMP(buf, len);
+	VT_HEXDUMP(buf, ret);
 	if ((size_t)ret != len)
 		pr_warn(
 			"short send detected: "
@@ -913,8 +913,10 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 		&a->recvbuf[a->recvoff], &arlen,
 		a->sendbuf, &aslen
 	);
-	if (ret)
+	if (ret) {
+		ret = ret == -EAGAIN ? 0 : ret;
 		return ret;
+	}
 
 	advance_recvbuff(a, arlen);
 	// fill send buff
