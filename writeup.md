@@ -136,3 +136,13 @@ test memory error and memory leak with valgrind:
 ```shell
 valgrind --leak-check=full --show-leak-kinds=all --leak-resolution=high --log-file=leaks.log ./build/dns_resolver -b [::]:6969 -t 1
 ```
+
+profiles CPU/cache performance:
+```
+valgrind --tool=callgrind build/gwproxy -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+```
+
+print function call trace with arguments and its return value (require -pg, see https://github.com/namhyung/uftrace/discussions/2012)
+```
+uftrace live --no-pager --no-libcall -a -- build/gwproxy -s -b [::]:1080 -T 1 -w 60
+```

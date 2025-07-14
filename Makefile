@@ -45,6 +45,9 @@ test_conventional: $(TARGET1)
 	$< -t [::1]:8081 -b [::1]:8080 -T 1
 test_socks5: $(TARGET1)
 	$< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+test_socks5_strace: CFLAGS += -DENABLE_LOG=false
+test_socks5_strace: $(TARGET1)
+	strace -e trace=%net -f $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
 test_dns_serv: $(TARGET4)
 	$< -b [::]:6969 -t 1
 stress_test: $(TARGET5)

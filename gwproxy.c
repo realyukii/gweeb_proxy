@@ -275,9 +275,8 @@ static void adjust_pollin(struct gwp_conn *src, bool *epmask_changed)
 
 static void adjust_events(int epfd, struct gwp_pair_conn *pc)
 {
+	bool is_target_changed, is_client_changed;
 	struct gwp_conn *client, *target;
-	bool is_client_changed;
-	bool is_target_changed;
 	int ret;
 
 	is_client_changed = false;
