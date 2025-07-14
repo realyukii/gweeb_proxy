@@ -760,16 +760,7 @@ static int process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 	uint64_t ev_bit;
 	void *data;
 
-	// debugging epoll
-	// pr_info("epoll event:\n");
-	// VT_HEXDUMP(&ev->events, sizeof(uint32_t));
-	// pr_info("epoll data:\n");
-	// VT_HEXDUMP(&ev->data, sizeof(epoll_data_t));
-
 	ev_bit = GET_EV_BIT(ev->data.u64);
-	// debugging epoll
-	// pr_dbg("ev bit:\n");
-	// VT_HEXDUMP(&ev_bit, 8);
 
 	ev->data.u64 = CLEAR_EV_BIT(ev->data.u64);
 	data = ev->data.ptr;
@@ -828,9 +819,6 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 			);
 			break;
 		}
-
-		// debugging epoll
-		// pr_info("ready events: %d\n", ready_nr);
 
 		for (i = 0; i < ready_nr; i++) {
 			ret = process_event(ctx, &evs[i]);
@@ -941,7 +929,7 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 	}
 
 	advance_recvbuff(a, arlen);
-	// fill send buff
+	/* fill the send buff */
 	a->sendlen += aslen;
 
 	return 0;

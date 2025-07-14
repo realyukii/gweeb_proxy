@@ -6,7 +6,7 @@
 #define HANDSHAKE_LEN 2
 #define REPLY_REQ_IPV6_LEN (1 + 1 + 1 + 1 + 16 + 2)
 #define MAX_USERPWD_PKT (1 + 1 + 255 + 1 + 255)
-
+#define ERR_REPLY_IPv4_LEN (4 + 4 + 2)
 struct data_args {
 	struct socks5_conn *conn;
 	const void *in;
@@ -237,9 +237,8 @@ static int socks5_handle_request(struct data_args *args)
 	uint8_t atyp;
 	struct socks5_reply *out = args->out;
 	const struct socks5_request *in = args->in;
-	// struct socks5_addr *sa = args->out;
 	enum socks5_state state;
-	size_t exp_len = 4, required_len = 4 + 4 + 2;
+	size_t exp_len = 4, required_len = ERR_REPLY_IPv4_LEN;
 
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
@@ -294,14 +293,6 @@ static int socks5_handle_request(struct data_args *args)
 
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
-
-	// required_len = sizeof(*sa);
-	// if (*args->out_len < required_len) {
-	// 	args->total_out = required_len;
-	// 	return -ENOBUFS;
-	// }
-	// memcpy(sa, &in->dst_addr, required_len);
-	// append_outbuf(args, required_len);
 
 	advance_inbuf(args, exp_len);
 
