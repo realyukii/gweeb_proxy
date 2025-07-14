@@ -869,11 +869,6 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 		return ret;
 	}
 
-	if (conn->state == SOCKS5_CONNECT) {
-		memcpy(b->recvbuf, a->recvbuf, arlen);
-		aslen = arlen;
-	}
-
 	advance_recvbuff(a, arlen);
 	/* update the out len */
 	b->recvlen += aslen;

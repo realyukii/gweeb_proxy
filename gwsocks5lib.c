@@ -294,6 +294,11 @@ static int socks5_handle_request(struct data_args *args)
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
+	if (*args->out_len < exp_len)
+		return -ENOBUFS;
+
+	memcpy(out, in, exp_len);
+	append_outbuf(args, exp_len);
 	advance_inbuf(args, exp_len);
 
 	args->conn->state = state;
