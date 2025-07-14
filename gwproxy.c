@@ -346,13 +346,24 @@ static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
 	return 0;
 }
 
-static int do_recv(struct gwp_conn *from, int len)
+static int do_recv(struct gwp_conn *from)
 {
-	int ret;
+	size_t rlen;
+	ssize_t ret;
 
+	/* remaining space of the buffer */
+	rlen = from->recvcap - from->recvlen;
+	if (!rlen)
+		return 0;
+
+	pr_info(
+		"attempting to recv from %s "
+		"with %ld bytes of free space\n",
+		from->addrstr, rlen
+	);
 	ret = recv(
-		from->sockfd, &from->recvbuf[from->recvlen],
-		len, MSG_NOSIGNAL
+		from->sockfd, &from->recvbuf[from->recvoff],
+		rlen, MSG_NOSIGNAL
 	);
 	if (ret < 0) {
 		ret = errno;
@@ -379,14 +390,18 @@ static int do_recv(struct gwp_conn *from, int len)
 		ret, from->addrstr
 	);
 	VT_HEXDUMP(&from->recvbuf[from->recvlen], ret);
-	if (ret != len)
+	if ((size_t)ret != rlen)
 		pr_warn(
 			"incomplete recv: requested %d bytes, "
 			"but only %d bytes received. "
 			"Note: this might not indicate an actual short-recv.\n",
-			len, ret
+			rlen, ret
 		);
 
+	/*
+	* the buffer is still needed, don't advance.
+	* just update the length
+	*/
 	from->recvlen += (size_t)ret;
 
 	return 0;
@@ -445,20 +460,11 @@ static void advance_sendbuff(struct gwp_conn *a, size_t len)
 */
 static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 {
-	ssize_t ret;
-	size_t rlen;
+	int ret;
 
-	/* remaining space of the buffer */
-	rlen = from->recvcap - from->recvlen;
-	pr_info(
-		"attempting to recv from %s with %ld bytes of free space\n",
-		from->addrstr, rlen
-	);
-	if (rlen > 0) {
-		ret = do_recv(from, rlen);
-		if (ret)
-			return ret;
-	}
+	ret = do_recv(from);
+	if (ret)
+		return ret;
 
 	pr_info(
 		"attempting to send %ld bytes to %s\n",
@@ -889,7 +895,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 		if (ret)
 			return ret;
 
-		// fill send buff
+		/* fill the send buffer */
 		a->sendlen = aslen;
 	}
 
@@ -898,7 +904,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 
 static int socks5_do_recv(struct gwp_tctx *ctx)
 {
-	size_t rlen, aslen, arlen;
+	size_t aslen, arlen;
 	struct socks5_conn *conn;
 	struct gwp_conn *a;
 	int ret;
@@ -906,13 +912,7 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 	conn = ctx->pc->conn_ctx;
 	a = &ctx->pc->client;
 
-	rlen = a->recvcap - a->recvlen;
-	pr_info(
-		"attempting to recv from %s "
-		"with %ld bytes of free space\n",
-		a->addrstr, rlen
-	);
-	ret = do_recv(a, rlen);
+	ret = do_recv(a);
 	if (ret)
 		return ret;
 
