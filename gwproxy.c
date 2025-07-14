@@ -994,13 +994,13 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 	int ret;
 	if (ctx->epev & EPOLLIN) {
 		ret = do_forwarding(a, b);
-		if (ret)
+		if (ret && ret != -EAGAIN)
 			return ret;
 	}
 
 	if (ctx->epev & EPOLLOUT) {
 		ret = do_forwarding(b, a);
-		if (ret)
+		if (ret && ret != -EAGAIN)
 			return ret;
 	}
 
