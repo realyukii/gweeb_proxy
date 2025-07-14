@@ -863,7 +863,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	return 0;
 }
 
-static int socks5_handle_default(struct gwp_tctx* ctx)
+static int socks5_do_recv(struct gwp_tctx* ctx)
 {
 	size_t rlen, aslen, arlen;
 	struct socks5_conn *conn;
@@ -895,6 +895,24 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 	if (!a->recvlen)
 		a->recvoff = 0;
 
+	a->sendlen += aslen;
+
+	return 0;
+}
+
+static int socks5_handle_default(struct gwp_tctx* ctx)
+{
+	struct socks5_conn *conn;
+	struct gwp_conn *a;
+	int ret;
+
+	conn = ctx->pc->conn_ctx;
+	a = &ctx->pc->client;
+
+	ret = socks5_do_recv(ctx);
+	if (ret)
+		return ret;
+
 	if (conn->state == SOCKS5_CONNECT) {
 		a->epmask = EPOLLIN | EPOLLOUT;
 		ret = mod_events(
@@ -902,9 +920,15 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 			ctx->pc, GWP_EV_CLIENT
 		);
 	} else {
-		ret = do_send(a, a->sendbuf, aslen);
+		ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
 		if (ret < 0)
 			return ret;
+
+		a->sendoff += ret;
+		a->sendlen -= ret;
+
+		if (!a->sendlen)
+			a->sendoff = 0;
 	}
 
 	return 0;
