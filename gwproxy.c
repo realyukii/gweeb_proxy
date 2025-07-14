@@ -31,7 +31,6 @@ printf(							\
 	usage,						\
 	DEFAULT_THREAD_NR, DEFAULT_TIMEOUT_SEC,		\
 	DEFAULT_PREALLOC_CONN, DEFAULT_BUFF_SZ,		\
-	DEFAULT_BUFF_SZ, DEFAULT_BUFF_SZ, DEFAULT_BUFF_SZ, \
 	DEFAULT_BUFF_SZ, DEFAULT_BUFF_SZ		\
 );							\
 } while (0)
@@ -49,12 +48,9 @@ static const char usage[] =
 "-T\tnumber of tcp server thread (default: %d)\n"
 "-w\twait time for timeout, set to zero for no timeout (default: %d seconds)\n"
 "-n\tnumber of pre-allocated connection pointer per-thread (default: %d session)\n"
-"-g\tclient buffer size of both recv and send (default: %d bytes)\n"
-"-j\tclient buffer size of recv (default: %d bytes)\n"
-"-l\tclient buffer size of send (default: %d bytes)\n"
-"-y\ttarget buffer size of both recv and send (default: %d bytes)\n"
-"-k\ttarget buffer size of recv (default: %d bytes)\n"
-"-p\ttarget buffer size of send (default: %d bytes)\n"
+"-g\tclient buffer size of both client and target (default: %d bytes)\n"
+"-j\tclient recv buffer size (default: %d bytes)\n"
+"-k\ttarget recv buffer size (default: %d bytes)\n"
 "-h\tShow this help message and exit\n";
 
 enum gwp_ev_bit {
@@ -73,10 +69,6 @@ struct gwp_conn {
 	size_t recvoff;
 	size_t recvlen;
 	size_t recvcap;
-	char *sendbuf;
-	size_t sendoff;
-	size_t sendlen;
-	size_t sendcap;
 	uint64_t epmask;
 };
 
@@ -101,9 +93,7 @@ struct commandline_args {
 	size_t server_thread_nr;
 	size_t timeout;
 	size_t t_recv_sz;
-	size_t t_send_sz;
 	size_t c_recv_sz;
-	size_t c_send_sz;
 	/* local address to be bound */
 	struct sockaddr_storage src_addr_st;
 	/* only used on simple TCP proxy mode */
@@ -111,12 +101,9 @@ struct commandline_args {
 };
 
 struct buff_sz_opt {
-	char *c_both_sz_opt;
 	char *c_recv_sz_opt;
-	char *c_send_sz_opt;
-	char *t_both_sz_opt;
+	char *both_sz_opt;
 	char *t_recv_sz_opt;
-	char *t_send_sz_opt;
 };
 
 /* program configuration and data */
@@ -224,7 +211,7 @@ static bool adjust_pollout(struct gwp_conn *src, struct gwp_conn *dst)
 {
 	bool epmask_changed = false;
 
-	if (src->recvlen > 0 || dst->sendlen > 0) {
+	if (src->recvlen > 0) {
 		if (!(dst->epmask & EPOLLOUT)) {
 			pr_info(
 				"set EPOLLOUT: continuing transfer to %s\n",
@@ -433,14 +420,6 @@ static void advance_recvbuff(struct gwp_conn *a, size_t len)
 		a->recvoff = 0;
 }
 
-static void advance_sendbuff(struct gwp_conn *a, size_t len)
-{
-	a->sendoff += len;
-	a->sendlen -= len;
-	if (!a->sendlen)
-		a->sendoff = 0;
-}
-
 /*
 * Handle incoming and outgoing data.
 *
@@ -594,38 +573,17 @@ int alloc_recv_send_buff(struct gwp_tctx *ctx, struct gwp_pair_conn *s)
 	c->recvlen = 0;
 	c->recvcap = args->c_recv_sz;
 
-	c->sendbuf = malloc(args->c_send_sz);
-	if (!c->sendbuf)
-		goto exit_free_c_recv;
-
-	c->sendoff = 0;
-	c->sendlen = 0;
-	c->sendcap = args->c_send_sz;
-
 	t->recvbuf = malloc(args->t_recv_sz);
-	if (!t->recvbuf)
-		goto exit_free_c_send;
+	if (!t->recvbuf) {
+		free(c->recvbuf);
+		return -ENOMEM;
+	}
 
 	t->recvoff = 0;
 	t->recvlen = 0;
 	t->recvcap = args->t_recv_sz;
 
-	t->sendbuf = malloc(args->t_send_sz);
-	if (!t->sendbuf)
-		goto exit_free_t_recv;
-
-	c->sendoff = 0;
-	t->sendlen = 0;
-	t->sendcap = args->t_send_sz;
-
 	return 0;
-exit_free_t_recv:
-	free(t->recvbuf);
-exit_free_c_send:
-	free(c->sendbuf);
-exit_free_c_recv:
-	free(c->recvbuf);
-	return -ENOMEM;
 }
 
 static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
@@ -664,7 +622,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	if (ret < 0) {
 		ret = -errno;
 		pr_err("failed to register client to epoll: %s", strerror(-ret));
-		goto exit_free_recv_send_buff;
+		goto exit_free_recv_buff;
 	}
 
 	s->target.epmask = EPOLLIN | EPOLLOUT;
@@ -674,21 +632,19 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	if (args->socks5_mode) {
 		s->conn_ctx = socks5_alloc_conn(ctx->pctx->socks5_ctx);
 		if (!s->conn_ctx)
-			goto exit_free_recv_send_buff;
+			goto exit_free_recv_buff;
 	} else {
 		ret = prepare_forward(ctx, s, &args->dst_addr_st);
 		if (ret)
-			goto exit_free_recv_send_buff;
+			goto exit_free_recv_buff;
 	}
 
 	container->sessions[container->session_nr] = s;
 	container->session_nr++;
 
 	return 0;
-exit_free_recv_send_buff:
-	free(s->target.sendbuf);
+exit_free_recv_buff:
 	free(s->target.recvbuf);
-	free(s->client.sendbuf);
 	free(s->client.recvbuf);
 exit_free_s:
 	free(s);
@@ -722,9 +678,7 @@ static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 		socks5_free_conn(pc->conn_ctx);
 	close(pc->client.sockfd);
 	free(pc->client.recvbuf);
-	free(pc->client.sendbuf);
 	free(pc->target.recvbuf);
-	free(pc->target.sendbuf);
 	free(pc);
 }
 
@@ -855,7 +809,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	struct socks5_conn *conn;
 	struct socks5_request *r;
 	struct gwp_pair_conn *pc;
-	struct gwp_conn *a;
+	struct gwp_conn *a, *b;
 	struct socks5_addr sa;
 	size_t aslen;
 	int ret;
@@ -863,25 +817,26 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	pc = ctx->pc;
 	conn = pc->conn_ctx;
 	a = &pc->client;
+	b = &pc->target;
 
 	if (!pc->is_target_connected) {
-		r = (void *)a->sendbuf;
+		r = (void *)b->recvbuf;
 		memcpy(&sa, &r->dst_addr, sizeof(sa));
 		socks5_convert_addr(&r->dst_addr, &addr);
 		ret = prepare_forward(ctx, pc, &addr);
 		if (ret)
 			return ret;
 
-		aslen = a->sendcap;
+		aslen = b->recvcap;
 		ret = socks5_craft_connect_reply(
-			conn, &sa, SOCKS5_SUCCEEDED, a->sendbuf, &aslen
+			conn, &sa, SOCKS5_SUCCEEDED, b->recvbuf, &aslen
 		);
 
 		if (ret)
 			return ret;
 
-		/* fill the send buffer */
-		a->sendlen = aslen;
+		/* update the out len */
+		b->recvlen = aslen;
 	}
 
 	return socks5_do_send(ctx);
@@ -891,22 +846,23 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 {
 	size_t aslen, arlen;
 	struct socks5_conn *conn;
-	struct gwp_conn *a;
+	struct gwp_conn *a, *b;
 	int ret;
 
 	conn = ctx->pc->conn_ctx;
 	a = &ctx->pc->client;
+	b = &ctx->pc->target;
 
 	ret = do_recv(a);
 	if (ret)
 		return ret;
 
-	aslen = a->sendcap;
+	aslen = b->recvcap;
 	arlen = a->recvlen - a->recvoff;
 	ret = socks5_process_data(
 		conn,
 		&a->recvbuf[a->recvoff], &arlen,
-		a->sendbuf, &aslen
+		b->recvbuf, &aslen
 	);
 	if (ret) {
 		ret = ret == -EAGAIN ? 0 : ret;
@@ -914,13 +870,13 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 	}
 
 	if (conn->state == SOCKS5_CONNECT) {
-		memcpy(a->sendbuf, a->recvbuf, arlen);
+		memcpy(b->recvbuf, a->recvbuf, arlen);
 		aslen = arlen;
 	}
 
 	advance_recvbuff(a, arlen);
-	/* fill the send buff */
-	a->sendlen += aslen;
+	/* update the out len */
+	b->recvlen += aslen;
 
 	return 0;
 }
@@ -932,11 +888,11 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 
 	a = &ctx->pc->client;
 
-	ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
+	ret = do_send(a, &a->recvbuf[a->recvoff], a->recvlen);
 	if (ret < 0)
 		return ret;
 
-	advance_sendbuff(a, ret);
+	advance_recvbuff(a, ret);
 	return 0;
 }
 
@@ -952,8 +908,6 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 
 	if (conn->state != SOCKS5_CONNECT)
 		ret = socks5_do_send(ctx);
-	else
-		pr_dbg("sendlen: %d\n", ctx->pc->client.sendlen);
 
 	return ret;
 }
@@ -1187,44 +1141,25 @@ static void cleanup_resources(struct gwp_pctx *ctx)
 
 static void set_buffer_sizes(struct commandline_args *args, struct buff_sz_opt *b)
 {
-	int c_both_sz, c_recv_sz, c_send_sz, t_both_sz, t_recv_sz, t_send_sz;
+	int c_recv_sz, both_sz, t_recv_sz;
 
-	args->c_recv_sz = args->c_send_sz =
-	args->t_recv_sz = args->t_send_sz = DEFAULT_BUFF_SZ;
-	if (b->c_recv_sz_opt) {
-		c_recv_sz = atoi(b->c_recv_sz_opt);
-		if (c_recv_sz > 0)
-			args->c_recv_sz = c_recv_sz;
-	}
+	args->c_recv_sz = args->t_recv_sz = DEFAULT_BUFF_SZ;
 
-	if (b->c_send_sz_opt) {
-		c_send_sz = atoi(b->c_send_sz_opt);
-		if (c_send_sz > 0)
-			args->c_send_sz = c_send_sz;
-	}
-
-	if (b->c_both_sz_opt) {
-		c_both_sz = atoi(b->c_both_sz_opt);
-		if (c_both_sz > 0)
-			args->c_recv_sz = args->c_send_sz = c_both_sz;
-	}
-
-	if (b->t_recv_sz_opt) {
-		t_recv_sz = atoi(b->t_recv_sz_opt);
-		if (t_recv_sz > 0)
-			args->t_recv_sz = t_recv_sz;
-	}
-
-	if (b->t_send_sz_opt) {
-		t_send_sz = atoi(b->t_send_sz_opt);
-		if (t_send_sz > 0)
-			args->t_send_sz = t_send_sz;
-	}
-
-	if (b->t_both_sz_opt) {
-		t_both_sz = atoi(b->t_both_sz_opt);
-		if (t_both_sz > 0)
-			args->t_recv_sz = args->t_send_sz = t_both_sz;
+	if (b->both_sz_opt) {
+		both_sz = atoi(b->both_sz_opt);
+		if (both_sz > 0)
+			args->t_recv_sz = args->c_recv_sz = both_sz;
+	} else {
+		if (b->c_recv_sz_opt) {
+			c_recv_sz = atoi(b->c_recv_sz_opt);
+			if (c_recv_sz > 0)
+				args->c_recv_sz = c_recv_sz;
+		}
+		if (b->t_recv_sz_opt) {
+			t_recv_sz = atoi(b->t_recv_sz_opt);
+			if (t_recv_sz > 0)
+				args->t_recv_sz = t_recv_sz;
+		}
 	}
 }
 
@@ -1297,22 +1232,14 @@ static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
 			client_nr_opt = optarg;
 			break;
 		case 'g':
-			b.c_both_sz_opt = optarg;
+			b.both_sz_opt = optarg;
 			break;
 		case 'j':
 			b.c_recv_sz_opt = optarg;
 			break;
-		case 'l':
-			b.c_send_sz_opt = optarg;
-			break;
-		case 'y':
-			b.t_both_sz_opt = optarg;
-			break;
 		case 'k':
 			b.t_recv_sz_opt = optarg;
 			break;
-		case 'p':
-			b.t_send_sz_opt = optarg;
 			break;
 		case 'h':
 			pr_menu();
