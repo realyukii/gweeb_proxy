@@ -809,14 +809,13 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	struct socks5_conn *conn;
 	struct socks5_request *r;
 	struct gwp_pair_conn *pc;
-	struct gwp_conn *a, *b;
+	struct gwp_conn *b;
 	struct socks5_addr sa;
 	size_t aslen;
 	int ret;
 
 	pc = ctx->pc;
 	conn = pc->conn_ctx;
-	a = &pc->client;
 	b = &pc->target;
 
 	if (!pc->is_target_connected) {
