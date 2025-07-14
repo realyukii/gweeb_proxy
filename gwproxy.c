@@ -803,7 +803,7 @@ static int socks5_handle_target(struct gwp_tctx* ctx)
 
 static int socks5_do_send(struct gwp_tctx *ctx);
 
-static int socks5_handle_connect(struct gwp_tctx* ctx)
+static int socks5_prepare_connect(struct gwp_tctx* ctx)
 {
 	struct sockaddr_storage addr;
 	struct socks5_conn *conn;
@@ -811,31 +811,41 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	struct gwp_pair_conn *pc;
 	struct gwp_conn *b;
 	struct socks5_addr sa;
-	size_t aslen;
+	size_t tlen;
 	int ret;
 
 	pc = ctx->pc;
 	conn = pc->conn_ctx;
 	b = &pc->target;
 
-	if (!pc->is_target_connected) {
-		r = (void *)b->recvbuf;
-		memcpy(&sa, &r->dst_addr, sizeof(sa));
-		socks5_convert_addr(&r->dst_addr, &addr);
-		ret = prepare_forward(ctx, pc, &addr);
+	r = (void *)b->recvbuf;
+	memcpy(&sa, &r->dst_addr, sizeof(sa));
+	socks5_convert_addr(&r->dst_addr, &addr);
+	ret = prepare_forward(ctx, pc, &addr);
+	if (ret)
+		return ret;
+
+	tlen = b->recvcap;
+	ret = socks5_craft_connect_reply(
+		conn, &sa, SOCKS5_SUCCEEDED, b->recvbuf, &tlen
+	);
+
+	if (ret)
+		return ret;
+
+	/* update the out len */
+	b->recvlen = tlen;
+	return 0;
+}
+
+static int socks5_handle_connect(struct gwp_tctx* ctx)
+{
+	int ret;
+
+	if (!ctx->pc->is_target_connected) {
+		ret = socks5_prepare_connect(ctx);
 		if (ret)
 			return ret;
-
-		aslen = b->recvcap;
-		ret = socks5_craft_connect_reply(
-			conn, &sa, SOCKS5_SUCCEEDED, b->recvbuf, &aslen
-		);
-
-		if (ret)
-			return ret;
-
-		/* update the out len */
-		b->recvlen = aslen;
 	}
 
 	return socks5_do_send(ctx);
@@ -843,7 +853,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 
 static int socks5_do_recv(struct gwp_tctx *ctx)
 {
-	size_t aslen, arlen;
+	size_t olen, ilen;
 	struct socks5_conn *conn;
 	struct gwp_conn *a, *b;
 	int ret;
@@ -856,21 +866,21 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 	if (ret)
 		return ret;
 
-	aslen = b->recvcap;
-	arlen = a->recvlen - a->recvoff;
+	olen = b->recvcap;
+	ilen = a->recvlen - a->recvoff;
 	ret = socks5_process_data(
 		conn,
-		&a->recvbuf[a->recvoff], &arlen,
-		b->recvbuf, &aslen
+		&a->recvbuf[a->recvoff], &ilen,
+		b->recvbuf, &olen
 	);
 	if (ret) {
 		ret = ret == -EAGAIN ? 0 : ret;
 		return ret;
 	}
 
-	advance_recvbuff(a, arlen);
+	advance_recvbuff(a, ilen);
 	/* update the out len */
-	b->recvlen += aslen;
+	b->recvlen += olen;
 
 	return 0;
 }
