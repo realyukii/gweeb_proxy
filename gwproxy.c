@@ -249,15 +249,13 @@ static bool adjust_pollout(struct gwp_conn *src, struct gwp_conn *dst)
 	epmask_changed = _adjust_pollout(dst, src->recvlen);
 	if (epmask_changed && src->recvlen > 0) {
 			pr_info(
-				"set EPOLLOUT: %s's buffer is not fully drained"
-				"; continuing transfer to %s\n",
-				src->addrstr, dst->addrstr
+				"set EPOLLOUT: continuing transfer to %s\n",
+				dst->addrstr
 			);
-	} else {
+	} else if (epmask_changed) {
 			pr_info(
-				"unset EPOLLOUT: buffer on %s is fully empty, "
-				"stopping transfer to %s\n",
-				src->addrstr, dst->addrstr
+				"unset EPOLLOUT: stopping transfer to %s\n",
+				dst->addrstr
 			);
 	}
 
@@ -684,7 +682,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 		goto exit_free_recv_send_buff;
 	}
 
-	s->target.epmask = EPOLLIN;
+	s->target.epmask = EPOLLIN | EPOLLOUT;
 	s->target.sockfd = -1;
 	s->is_target_connected = false;
 
@@ -884,20 +882,20 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	struct socks5_conn *conn;
 	struct socks5_request *r;
 	struct gwp_pair_conn *pc;
-	struct gwp_conn *a, *b;
+	struct gwp_conn *a;
 	struct socks5_addr sa;
 	size_t aslen;
 	int ret;
 
-	conn = ctx->pc->conn_ctx;
-	a = &ctx->pc->client;
-	b = &ctx->pc->target;
+	pc = ctx->pc;
+	conn = pc->conn_ctx;
+	a = &pc->client;
 
 	if (!pc->is_target_connected) {
 		r = (void *)a->recvbuf;
 		memcpy(&sa, &r->dst_addr, sizeof(sa));
 		socks5_convert_addr(&r->dst_addr, &addr);
-		ret = prepare_forward(ctx, ctx->pc, &addr);
+		ret = prepare_forward(ctx, pc, &addr);
 		if (ret)
 			return ret;
 
