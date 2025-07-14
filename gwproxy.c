@@ -213,34 +213,45 @@ static int set_target(struct gwp_conn *t, struct sockaddr_storage *sockaddr)
 	return 0;
 }
 
-static bool adjust_pollout(struct gwp_conn *src, struct gwp_conn *dst)
+static bool _adjust_pollout(struct gwp_conn *dst, size_t len)
 {
 	bool epmask_changed = false;
 
-	/*
-	* set EPOLLOUT to epmask when there's remaining bytes in the src' buffer
-	* waiting to be sent, otherwise, unset it.
-	*/
-	if (src->recvlen > 0) {
+	if (len > 0) {
 		if (!(dst->epmask & EPOLLOUT)) {
-			pr_info(
-				"set EPOLLOUT: %s's buffer is not fully drained"
-				"; continuing transfer to %s\n",
-				src->addrstr, dst->addrstr
-			);
 			dst->epmask |= EPOLLOUT;
 			epmask_changed = true;
 		}
 	} else {
 		if (dst->epmask & EPOLLOUT) {
+			dst->epmask &= ~EPOLLOUT;
+			epmask_changed = true;
+		}
+	}
+
+	return epmask_changed;
+}
+
+static bool adjust_pollout(struct gwp_conn *src, struct gwp_conn *dst)
+{
+	bool epmask_changed;
+	/*
+	* set EPOLLOUT to epmask when there's remaining bytes in the src' buffer
+	* waiting to be sent, otherwise, unset it.
+	*/
+	epmask_changed = _adjust_pollout(dst, src->recvlen);
+	if (epmask_changed && src->recvlen > 0) {
+			pr_info(
+				"set EPOLLOUT: %s's buffer is not fully drained"
+				"; continuing transfer to %s\n",
+				src->addrstr, dst->addrstr
+			);
+	} else {
 			pr_info(
 				"unset EPOLLOUT: buffer on %s is fully empty, "
 				"stopping transfer to %s\n",
 				src->addrstr, dst->addrstr
 			);
-			dst->epmask &= ~EPOLLOUT;
-			epmask_changed = true;
-		}
 	}
 
 	return epmask_changed;
@@ -1005,6 +1016,14 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	}
 
 	adjust_events(ctx->epfd, ctx->pc);
+	if (pc->conn_ctx->state == SOCKS5_CONNECT) {
+		_adjust_pollout(&pc->client, 1);
+		ret = mod_events(
+			pc->client.sockfd, ctx->epfd, pc->client.epmask, pc, GWP_EV_CLIENT
+		);
+		if (ret < 0)
+			pr_warn("failed to modify event: %s\n", strerror(errno));
+	}
 	return 0;
 terminate_and_recall_epoll_wait:
 	cleanup_pc(ctx, pc);
