@@ -21,8 +21,6 @@
 #define DEFAULT_PREALLOC_CONN 100
 #define DEFAULT_BUFF_SZ 1024
 
-#define DISCONNECTED -1
-
 #define ALL_EV_BITS (GWP_EV_STOP | GWP_EV_ACCEPT | GWP_EV_CLIENT | GWP_EV_TARGET)
 #define GET_EV_BIT(X) ((X) & ALL_EV_BITS)
 #define CLEAR_EV_BIT(X) ((X) & ~ALL_EV_BITS)
@@ -84,6 +82,7 @@ struct gwp_conn {
 
 struct gwp_pair_conn {
 	size_t idx;
+	bool is_target_connected;
 	struct gwp_conn client;
 	struct gwp_conn target;
 	struct socks5_conn *conn_ctx;
@@ -181,8 +180,9 @@ static int mod_events(int fd, int epfd, uint32_t epmask,
 	return custom_epoll_ctl(fd, epfd, epmask, ptr, evmask, EPOLL_CTL_MOD);
 }
 
-static int set_target(struct gwp_conn *t, struct sockaddr_storage *sockaddr)
+static int set_target(struct gwp_pair_conn *pc, struct sockaddr_storage *sockaddr)
 {
+	struct gwp_conn *t;
 	int ret, tsock;
 
 	tsock = socket(sockaddr->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -194,22 +194,29 @@ static int set_target(struct gwp_conn *t, struct sockaddr_storage *sockaddr)
 		return -EXIT_FAILURE;
 	}
 
+	t = &pc->target;
+	t->sockfd = tsock;
+
 	pr_info("target tcp socket created: %d\n", tsock);
 
 	get_addrstr((struct sockaddr *)sockaddr, t->addrstr);
 	pr_info("attempting to connect to %s\n", t->addrstr);
 
 	ret = connect(tsock, (struct sockaddr *)sockaddr, sizeof(*sockaddr));
-	if (ret < 0 && errno != EINPROGRESS) {
+	if (ret < 0) {
+		ret = errno;
+		if (ret == EINPROGRESS)
+			return 0;
 		pr_err(
 			"failed to connect to address %s: %s\n",
-			t->addrstr, strerror(errno)
+			t->addrstr, strerror(ret)
 		);
 		close(tsock);
 		return -EXIT_FAILURE;
 	}
 
-	t->sockfd = tsock;
+	pc->is_target_connected = true;
+
 	return 0;
 }
 
@@ -297,7 +304,7 @@ static void adjust_events(int epfd, struct gwp_pair_conn *pc)
 
 	is_client_changed = adjust_pollout(target, client);
 	adjust_pollin(client, &is_client_changed);
-	if (target->sockfd != -1) {
+	if (pc->is_target_connected) {
 		is_target_changed = adjust_pollout(client, target);
 		adjust_pollin(target, &is_target_changed);
 	}
@@ -335,7 +342,7 @@ static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
 {
 	struct gwp_conn *t = &pc->target;
 
-	int ret = set_target(t, dst);
+	int ret = set_target(pc, dst);
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
@@ -679,6 +686,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 
 	s->target.epmask = EPOLLIN;
 	s->target.sockfd = -1;
+	s->is_target_connected = false;
 
 	if (args->socks5_mode) {
 		s->conn_ctx = socks5_alloc_conn(ctx->pctx->socks5_ctx);
@@ -725,7 +733,7 @@ static int accept_new_client(struct gwp_tctx *ctx)
 
 static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 {
-	if (pc->target.sockfd != -1)
+	if (pc->is_target_connected)
 		close(pc->target.sockfd);
 	if (ctx->pctx->args->socks5_mode)
 		socks5_free_conn(pc->conn_ctx);
@@ -842,12 +850,17 @@ static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn 
 static int socks5_handle_target(struct gwp_tctx* ctx)
 {
 	struct socks5_conn *conn;
+	struct gwp_pair_conn *pc;
 	struct gwp_conn *a, *b;
 	int ret;
 
-	conn = ctx->pc->conn_ctx;
-	a = &ctx->pc->target;
-	b = &ctx->pc->client;
+	pc = ctx->pc;
+	conn = pc->conn_ctx;
+	a = &pc->target;
+	b = &pc->client;
+
+	if (!pc->is_target_connected && a->sockfd != -1)
+		pc->is_target_connected = true;
 
 	switch (conn->state) {
 	case SOCKS5_FORWARDING:
@@ -870,6 +883,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	struct sockaddr_storage addr;
 	struct socks5_conn *conn;
 	struct socks5_request *r;
+	struct gwp_pair_conn *pc;
 	struct gwp_conn *a, *b;
 	struct socks5_addr sa;
 	size_t aslen;
@@ -879,7 +893,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	a = &ctx->pc->client;
 	b = &ctx->pc->target;
 
-	if (b->sockfd == DISCONNECTED) {
+	if (!pc->is_target_connected) {
 		r = (void *)a->recvbuf;
 		memcpy(&sa, &r->dst_addr, sizeof(sa));
 		socks5_convert_addr(&r->dst_addr, &addr);
