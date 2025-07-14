@@ -220,43 +220,28 @@ static int set_target(struct gwp_pair_conn *pc, struct sockaddr_storage *sockadd
 	return 0;
 }
 
-static bool _adjust_pollout(struct gwp_conn *dst, size_t len)
+static bool adjust_pollout(struct gwp_conn *src, struct gwp_conn *dst)
 {
 	bool epmask_changed = false;
 
-	if (len > 0) {
+	if (src->recvlen > 0 || dst->sendlen > 0) {
 		if (!(dst->epmask & EPOLLOUT)) {
+			pr_info(
+				"set EPOLLOUT: continuing transfer to %s\n",
+				dst->addrstr
+			);
 			dst->epmask |= EPOLLOUT;
 			epmask_changed = true;
 		}
 	} else {
 		if (dst->epmask & EPOLLOUT) {
-			dst->epmask &= ~EPOLLOUT;
-			epmask_changed = true;
-		}
-	}
-
-	return epmask_changed;
-}
-
-static bool adjust_pollout(struct gwp_conn *src, struct gwp_conn *dst)
-{
-	bool epmask_changed;
-	/*
-	* set EPOLLOUT to epmask when there's remaining bytes in the src' buffer
-	* waiting to be sent, otherwise, unset it.
-	*/
-	epmask_changed = _adjust_pollout(dst, src->recvlen);
-	if (epmask_changed && src->recvlen > 0) {
-			pr_info(
-				"set EPOLLOUT: continuing transfer to %s\n",
-				dst->addrstr
-			);
-	} else if (epmask_changed) {
 			pr_info(
 				"unset EPOLLOUT: stopping transfer to %s\n",
 				dst->addrstr
 			);
+			dst->epmask &= ~EPOLLOUT;
+			epmask_changed = true;
+		}
 	}
 
 	return epmask_changed;
@@ -880,7 +865,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 	a = &pc->client;
 
 	if (!pc->is_target_connected) {
-		r = (void *)a->recvbuf;
+		r = (void *)a->sendbuf;
 		memcpy(&sa, &r->dst_addr, sizeof(sa));
 		socks5_convert_addr(&r->dst_addr, &addr);
 		ret = prepare_forward(ctx, pc, &addr);
@@ -928,6 +913,11 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 		return ret;
 	}
 
+	if (conn->state == SOCKS5_CONNECT) {
+		memcpy(a->sendbuf, a->recvbuf, arlen);
+		aslen = arlen;
+	}
+
 	advance_recvbuff(a, arlen);
 	/* fill the send buff */
 	a->sendlen += aslen;
@@ -962,6 +952,8 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 
 	if (conn->state != SOCKS5_CONNECT)
 		ret = socks5_do_send(ctx);
+	else
+		pr_dbg("sendlen: %d\n", ctx->pc->client.sendlen);
 
 	return ret;
 }
@@ -1016,14 +1008,6 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	}
 
 	adjust_events(ctx->epfd, ctx->pc);
-	if (pc->conn_ctx->state == SOCKS5_CONNECT) {
-		_adjust_pollout(&pc->client, 1);
-		ret = mod_events(
-			pc->client.sockfd, ctx->epfd, pc->client.epmask, pc, GWP_EV_CLIENT
-		);
-		if (ret < 0)
-			pr_warn("failed to modify event: %s\n", strerror(errno));
-	}
 	return 0;
 terminate_and_recall_epoll_wait:
 	cleanup_pc(ctx, pc);
