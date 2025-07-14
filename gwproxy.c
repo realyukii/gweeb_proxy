@@ -884,15 +884,16 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 static int socks5_do_send(struct gwp_tctx *ctx)
 {
 	int ret;
-	struct gwp_conn *a;
+	struct gwp_conn *a, *b;
 
 	a = &ctx->pc->client;
+	b = &ctx->pc->target;
 
-	ret = do_send(a, &a->recvbuf[a->recvoff], a->recvlen);
+	ret = do_send(a, &b->recvbuf[b->recvoff], b->recvlen);
 	if (ret < 0)
 		return ret;
 
-	advance_recvbuff(a, ret);
+	advance_recvbuff(b, ret);
 	return 0;
 }
 
