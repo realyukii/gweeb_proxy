@@ -847,6 +847,8 @@ static int socks5_handle_target(struct gwp_tctx* ctx)
 	return 0;
 }
 
+static int socks5_do_send(struct gwp_tctx *ctx);
+
 static int socks5_handle_connect(struct gwp_tctx* ctx)
 {
 	struct sockaddr_storage addr;
@@ -873,6 +875,7 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 		ret = socks5_craft_connect_reply(
 			conn, &sa, SOCKS5_SUCCEEDED, a->sendbuf, &aslen
 		);
+
 		if (ret)
 			return ret;
 
@@ -880,16 +883,10 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 		a->sendlen = aslen;
 	}
 
-	ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
-	if (ret < 0)
-		return ret;
-
-	advance_sendbuff(a, ret);
-
-	return 0;
+	return socks5_do_send(ctx);
 }
 
-static int socks5_do_recv(struct gwp_tctx* ctx)
+static int socks5_do_recv(struct gwp_tctx *ctx)
 {
 	size_t rlen, aslen, arlen;
 	struct socks5_conn *conn;
@@ -926,6 +923,21 @@ static int socks5_do_recv(struct gwp_tctx* ctx)
 	return 0;
 }
 
+static int socks5_do_send(struct gwp_tctx *ctx)
+{
+	int ret;
+	struct gwp_conn *a;
+
+	a = &ctx->pc->client;
+
+	ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
+	if (ret < 0)
+		return ret;
+
+	advance_sendbuff(a, ret);
+	return 0;
+}
+
 static int socks5_handle_default(struct gwp_tctx* ctx)
 {
 	struct socks5_conn *conn;
@@ -945,15 +957,10 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 			a->sockfd, ctx->epfd, a->epmask,
 			ctx->pc, GWP_EV_CLIENT
 		);
-	} else {
-		ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
-		if (ret < 0)
-			return ret;
+	} else
+		ret = socks5_do_send(ctx);
 
-		advance_sendbuff(a, ret);
-	}
-
-	return 0;
+	return ret;
 }
 
 static int socks5_handle_client(struct gwp_tctx* ctx)
