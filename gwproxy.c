@@ -395,6 +395,22 @@ static int do_send(struct gwp_conn *to, char *buf, size_t len)
 	return ret;
 }
 
+static void advance_recvbuff(struct gwp_conn *a, size_t len)
+{
+	a->recvoff += len;
+	a->recvlen -= len;
+	if (!a->recvlen)
+		a->recvoff = 0;
+}
+
+static void advance_sendbuff(struct gwp_conn *a, size_t len)
+{
+	a->sendoff += len;
+	a->sendlen -= len;
+	if (!a->sendlen)
+		a->sendoff = 0;
+}
+
 /*
 * Handle incoming and outgoing data.
 *
@@ -433,14 +449,11 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 			ret, to->addrstr
 		);
 
-		from->recvlen -= ret;
-		from->recvoff += ret;
+		advance_recvbuff(from, ret);
 		pr_info(
 			"remaining bytes on %s's recv buffer: %ld\n",
 			from->addrstr, from->recvlen
 		);
-		if (!from->recvlen)
-			from->recvoff = 0;
 	}
 
 	return 0;
@@ -848,17 +861,15 @@ static int socks5_handle_connect(struct gwp_tctx* ctx)
 		if (ret)
 			return ret;
 
+		// fill send buff
 		a->sendlen = aslen;
 	}
 
 	ret = do_send(a, &a->sendbuf[a->sendoff], a->sendlen);
 	if (ret < 0)
 		return ret;
-	a->sendoff += ret;
-	a->sendlen -= ret;
 
-	if (!a->sendlen)
-		a->sendoff = 0;
+	advance_sendbuff(a, ret);
 
 	return 0;
 }
@@ -890,11 +901,11 @@ static int socks5_do_recv(struct gwp_tctx* ctx)
 		&a->recvbuf[a->recvoff], &arlen,
 		a->sendbuf, &aslen
 	);
-	a->recvoff += arlen;
-	a->recvlen -= arlen;
-	if (!a->recvlen)
-		a->recvoff = 0;
+	if (ret)
+		return ret;
 
+	advance_recvbuff(a, arlen);
+	// fill send buff
 	a->sendlen += aslen;
 
 	return 0;
@@ -924,11 +935,7 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 		if (ret < 0)
 			return ret;
 
-		a->sendoff += ret;
-		a->sendlen -= ret;
-
-		if (!a->sendlen)
-			a->sendoff = 0;
+		advance_sendbuff(a, ret);
 	}
 
 	return 0;
