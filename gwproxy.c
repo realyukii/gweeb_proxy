@@ -653,7 +653,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	if (ret)
 		goto exit_free_s;
 
-	s->client.epmask = EPOLLIN;
+	s->client.epmask = EPOLLIN | EPOLLOUT;
 	ret = register_events(cfd, ctx->epfd, s->client.epmask, s, GWP_EV_CLIENT);
 	if (ret < 0) {
 		ret = -errno;
@@ -941,23 +941,14 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 static int socks5_handle_default(struct gwp_tctx* ctx)
 {
 	struct socks5_conn *conn;
-	struct gwp_conn *a;
 	int ret;
 
 	conn = ctx->pc->conn_ctx;
-	a = &ctx->pc->client;
-
 	ret = socks5_do_recv(ctx);
 	if (ret)
 		return ret;
 
-	if (conn->state == SOCKS5_CONNECT) {
-		a->epmask = EPOLLIN | EPOLLOUT;
-		ret = mod_events(
-			a->sockfd, ctx->epfd, a->epmask,
-			ctx->pc, GWP_EV_CLIENT
-		);
-	} else
+	if (conn->state != SOCKS5_CONNECT)
 		ret = socks5_do_send(ctx);
 
 	return ret;
