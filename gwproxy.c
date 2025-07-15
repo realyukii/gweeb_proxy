@@ -87,7 +87,7 @@ struct gwp_session_container {
 	struct gwp_pair_conn **sessions;
 };
 
-struct commandline_args {
+struct gwp_cmdline_args {
 	bool socks5_mode;
 	char *auth_file;
 	int connptr_nr;
@@ -109,7 +109,7 @@ struct buff_sz_opt {
 
 /* program configuration and data */
 struct gwp_pctx {
-	struct commandline_args *args;
+	struct gwp_cmdline_args *args;
 	struct gwp_tctx *tctx;
 	struct socks5_ctx *socks5_ctx;
 	int (*func_handler)(struct gwp_tctx *ctx, void *data, uint64_t ev_bit, uint32_t ev);
@@ -464,7 +464,7 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 
 static int prepare_tcp_serv(struct gwp_tctx *ctx)
 {
-	struct commandline_args *args;
+	struct gwp_cmdline_args *args;
 	uint64_t val;
 	int ret;
 
@@ -562,7 +562,7 @@ int realloc_container(struct gwp_session_container *c)
 
 int alloc_recv_send_buff(struct gwp_tctx *ctx, struct gwp_pair_conn *s)
 {
-	struct commandline_args *args;
+	struct gwp_cmdline_args *args;
 	struct gwp_conn *c, *t;
 
 	args = ctx->pctx->args;
@@ -592,7 +592,7 @@ int alloc_recv_send_buff(struct gwp_tctx *ctx, struct gwp_pair_conn *s)
 static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 {
 	struct gwp_session_container *container;
-	struct commandline_args *args;
+	struct gwp_cmdline_args *args;
 	struct gwp_pair_conn *s;
 	int ret;
 
@@ -1057,7 +1057,7 @@ static int init_tctx(struct gwp_tctx *tctx, struct gwp_pctx *pctx)
 	return prepare_tcp_serv(tctx);
 }
 
-static int init_pctx(struct gwp_pctx *pctx, struct commandline_args *args)
+static int init_pctx(struct gwp_pctx *pctx, struct gwp_cmdline_args *args)
 {
 	struct socks5_cfg cfg;
 	int ret;
@@ -1154,7 +1154,7 @@ static void cleanup_resources(struct gwp_pctx *ctx)
 	close(ctx->stopfd);
 }
 
-static void set_buffer_sizes(struct commandline_args *args, struct buff_sz_opt *b)
+static void set_buffer_sizes(struct gwp_cmdline_args *args, struct buff_sz_opt *b)
 {
 	int c_recv_sz, both_sz, t_recv_sz;
 
@@ -1205,7 +1205,7 @@ static int set_intval(char *val, int defaultval)
 * @param args Pointer to cmdline arguments to initialize.
 * @return Zero on success, or a negative integer on failure.
 */
-static int handle_cmdline(int argc, char *argv[], struct commandline_args *args)
+static int handle_cmdline(int argc, char *argv[], struct gwp_cmdline_args *args)
 {
 	char *server_thread_opt, *client_nr_opt, *wait_opt;
 	char *bind_opt, *target_opt;
@@ -1333,7 +1333,7 @@ static int setfdlimit(void)
 
 int main(int argc, char *argv[])
 {
-	struct commandline_args args;
+	struct gwp_cmdline_args args;
 	struct gwp_pctx ctx;
 	struct sigaction sa = {
 		.sa_handler = signal_handler
