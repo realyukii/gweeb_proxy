@@ -384,11 +384,13 @@ static int do_recv(struct gwp_conn *from)
 	return 0;
 }
 
-static int do_send(struct gwp_conn *to, char *buf, size_t len)
+static int do_send(struct gwp_conn *to, struct gwp_conn *from)
 {
 	ssize_t ret;
+	char *payload;
 
-	ret = send(to->sockfd, buf, len, MSG_NOSIGNAL);
+	payload = &from->recvbuf[from->recvoff];
+	ret = send(to->sockfd, payload, from->recvlen, MSG_NOSIGNAL);
 	if (ret < 0) {
 		ret = errno;
 		if (ret == EAGAIN || ret == EINTR)
@@ -400,13 +402,13 @@ static int do_send(struct gwp_conn *to, char *buf, size_t len)
 		return -ret;
 	}
 
-	VT_HEXDUMP(buf, ret);
-	if ((size_t)ret != len)
+	VT_HEXDUMP(payload, ret);
+	if ((size_t)ret != from->recvlen)
 		pr_warn(
 			"short send detected: "
 			"attempted to send %d bytes, "
 			"but only %d bytes were transmitted.\n",
-			len, ret
+			from->recvlen, ret
 		);
 
 	return ret;
@@ -440,7 +442,7 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 		from->recvlen, to->addrstr
 	);
 	if (from->recvlen > 0) {
-		ret = do_send(to, &from->recvbuf[from->recvoff], from->recvlen);
+		ret = do_send(to, from);
 		if (ret < 0)
 			return ret;
 
@@ -884,7 +886,7 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 	a = &ctx->pc->client;
 	b = &ctx->pc->target;
 
-	ret = do_send(a, &b->recvbuf[b->recvoff], b->recvlen);
+	ret = do_send(a, b);
 	if (ret < 0)
 		return ret;
 
