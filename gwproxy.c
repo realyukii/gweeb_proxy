@@ -10,6 +10,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
+#include <assert.h>
 
 #include "linux.h"
 #include "general.h"
@@ -774,74 +775,58 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 
 static int sp_forward(struct gwp_tctx *ctx, struct gwp_conn *a, struct gwp_conn *b);
 
+static void get_localname(struct gwp_conn *a, struct socks5_addr *addr)
+{
+	struct sockaddr_storage ss;
+	socklen_t sa_sz = sizeof(ss);
+
+	getsockname(a->sockfd, (struct sockaddr *)&ss, &sa_sz);
+	addr_convert_socks5(addr, &ss);
+}
+
+static int socks5_do_send(struct gwp_tctx *ctx);
+
 static int socks5_handle_target(struct gwp_tctx* ctx)
 {
 	struct gwp_pair_conn *pc;
 	struct gwp_conn *a, *b;
-	int ret;
+	struct socks5_addr saddr;
+	int ret, val;
+	size_t rlen;
+	socklen_t valsz;
+
+	val = 0;
+	valsz = sizeof(val);
 
 	pc = ctx->pc;
 	a = &pc->target;
 	b = &pc->client;
 
-	if (!pc->is_target_connected && a->sockfd != -1)
+	if (!pc->is_target_connected && a->sockfd != -1) {
+		getsockopt(a->sockfd, SOL_SOCKET, SO_ERROR, &val, &valsz);
+		if (val) {
+			pr_err("failed to connect: %d\n", strerror(val));
+			return val;
+		}
+		get_localname(a, &saddr);
+		assert(a->recvoff == 0);
+		assert(a->recvlen == 0);
+		rlen = a->recvcap;
 		pc->is_target_connected = true;
+		ret = socks5_craft_connect_reply(pc->conn_ctx, &saddr, 0, a->recvbuf, &rlen);
+		if (ret)
+			return ret;
+		a->recvlen = rlen;
+		ret = socks5_do_send(ctx);
+		if (ret)
+			return ret;
+	}
 
 	ret = sp_forward(ctx, a, b);
 	if (ret)
 		return ret;
 
 	return 0;
-}
-
-static int socks5_do_send(struct gwp_tctx *ctx);
-
-static int socks5_prepare_connect(struct gwp_tctx* ctx)
-{
-	struct sockaddr_storage addr;
-	struct socks5_conn *conn;
-	struct socks5_request *r;
-	struct gwp_pair_conn *pc;
-	struct socks5_addr sa;
-	struct gwp_conn *b;
-	size_t tlen;
-	int ret;
-
-	pc = ctx->pc;
-	conn = pc->conn_ctx;
-	b = &pc->target;
-
-	r = (void *)b->recvbuf;
-	memcpy(&sa, &r->dst_addr, sizeof(sa));
-	socks5_convert_addr(&r->dst_addr, &addr);
-	ret = prepare_forward(ctx, pc, &addr);
-	if (ret)
-		return ret;
-
-	tlen = b->recvcap;
-	ret = socks5_craft_connect_reply(
-		conn, &sa, SOCKS5_SUCCEEDED, b->recvbuf, &tlen
-	);
-
-	if (ret)
-		return ret;
-
-	/* update the out len */
-	b->recvlen = tlen;
-	return 0;
-}
-
-static int socks5_handle_connect(struct gwp_tctx* ctx)
-{
-	int ret;
-
-	if (!ctx->pc->is_target_connected) {
-		ret = socks5_prepare_connect(ctx);
-		if (ret)
-			return ret;
-	}
-
-	return socks5_do_send(ctx);
 }
 
 static int socks5_do_recv(struct gwp_tctx *ctx)
@@ -894,6 +879,25 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 	return 0;
 }
 
+static int socks5_prepare_connect(struct gwp_tctx* ctx)
+{
+	struct sockaddr_storage addr;
+	struct socks5_request *r;
+	struct gwp_pair_conn *pc;
+	struct socks5_addr sa;
+	struct gwp_conn *b;
+
+	pc = ctx->pc;
+	b = &pc->target;
+
+	r = (void *)b->recvbuf;
+	memcpy(&sa, &r->dst_addr, sizeof(sa));
+	socks5_convert_addr(&r->dst_addr, &addr);
+	advance_recvbuff(b, b->recvlen);
+
+	return prepare_forward(ctx, pc, &addr);
+}
+
 static int socks5_handle_default(struct gwp_tctx* ctx)
 {
 	struct socks5_conn *conn;
@@ -904,7 +908,9 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 	if (ret)
 		return ret;
 
-	if (conn->state != SOCKS5_CONNECT)
+	if (conn->state == SOCKS5_CONNECT)
+		ret = socks5_prepare_connect(ctx);
+	else
 		ret = socks5_do_send(ctx);
 
 	return ret;
@@ -920,16 +926,10 @@ static int socks5_handle_client(struct gwp_tctx* ctx)
 	a = &ctx->pc->client;
 	b = &ctx->pc->target;
 
-	switch (conn->state) {
-	case SOCKS5_FORWARDING:
+	if (conn->state == SOCKS5_FORWARDING)
 		ret = sp_forward(ctx, a, b);
-		break;
-	case SOCKS5_CONNECT:
-		ret = socks5_handle_connect(ctx);
-		break;
-	default:
+	else
 		ret = socks5_handle_default(ctx);
-	}
 
 	return ret;
 }

@@ -197,3 +197,5 @@ int socks5_craft_connect_reply(struct socks5_conn *conn, struct socks5_addr *add
 int socks5_reload_creds_file(struct socks5_ctx *ctx);
 
 void socks5_convert_addr(struct socks5_addr *sa, struct sockaddr_storage *ss);
+
+void addr_convert_socks5(struct socks5_addr *sa, struct sockaddr_storage *ss);

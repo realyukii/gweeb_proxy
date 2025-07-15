@@ -472,6 +472,25 @@ void socks5_convert_addr(struct socks5_addr *sa, struct sockaddr_storage *ss)
 	}
 }
 
+void addr_convert_socks5(struct socks5_addr *sa, struct sockaddr_storage *ss)
+{
+	struct sockaddr_in *in = (struct sockaddr_in *)ss;
+	struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)ss;
+
+	switch (ss->ss_family) {
+	case AF_INET:
+		sa->type = SOCKS5_IPv4;
+		memcpy(&sa->addr.ipv4, &in->sin_addr, 4);
+		memcpy(sa->addr.ipv4 + 4, &in->sin_port, 2);
+		break;
+	case AF_INET6:
+		sa->type = SOCKS5_IPv6;
+		memcpy(sa->addr.ipv6, &in6->sin6_addr, 16);
+		memcpy(sa->addr.ipv6 + 16, &in6->sin6_port, 2);
+		break;
+	}
+}
+
 void socks5_free_ctx(struct socks5_ctx *ctx)
 {
 	if (ctx->creds.auth_file) {
