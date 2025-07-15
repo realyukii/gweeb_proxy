@@ -340,7 +340,7 @@ static int do_recv(struct gwp_conn *from)
 		from->addrstr, rlen
 	);
 	ret = recv(
-		from->sockfd, &from->recvbuf[from->recvoff],
+		from->sockfd, &from->recvbuf[from->recvlen],
 		rlen, MSG_NOSIGNAL
 	);
 	if (ret < 0) {
@@ -360,14 +360,14 @@ static int do_recv(struct gwp_conn *from)
 			"terminating the session.\n",
 			from->addrstr
 		);
-		return -EAGAIN;
+		return -ECONNRESET;
 	}
 
 	pr_info(
 		"%ld bytes were received from %s\n",
 		ret, from->addrstr
 	);
-	VT_HEXDUMP(&from->recvbuf[from->recvlen], ret);
+	VT_HEXDUMP(&from->recvbuf[from->recvoff], ret);
 	if ((size_t)ret != rlen)
 		pr_warn(
 			"incomplete recv: requested %d bytes, "
@@ -851,12 +851,13 @@ static int socks5_do_recv(struct gwp_tctx *ctx)
 		&a->recvbuf[a->recvoff], &ilen,
 		b->recvbuf, &olen
 	);
-	if (ret) {
-		ret = ret == -EAGAIN ? 0 : ret;
-		return ret;
-	}
 
-	advance_recvbuff(a, ilen);
+	if (ilen > 0)
+		advance_recvbuff(a, ilen);
+
+	if (ret)
+		return ret;
+
 	/* update the out len */
 	b->recvlen += olen;
 
@@ -888,12 +889,12 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 	struct gwp_conn *b;
 
 	pc = ctx->pc;
-	b = &pc->target;
+	b = &pc->client;
+	assert(b->recvlen == 0);
 
 	r = (void *)b->recvbuf;
 	memcpy(&sa, &r->dst_addr, sizeof(sa));
 	socks5_convert_addr(&r->dst_addr, &addr);
-	advance_recvbuff(b, b->recvlen);
 
 	return prepare_forward(ctx, pc, &addr);
 }
@@ -904,9 +905,12 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 	int ret;
 
 	conn = ctx->pc->conn_ctx;
-	ret = socks5_do_recv(ctx);
-	if (ret)
-		return ret;
+
+	if (ctx->epev & EPOLLIN) {
+		ret = socks5_do_recv(ctx);
+		if (ret)
+			return ret;
+	}
 
 	if (conn->state == SOCKS5_CONNECT)
 		ret = socks5_prepare_connect(ctx);
@@ -946,7 +950,7 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	switch (ev_bit) {
 	case GWP_EV_CLIENT:
 		ret = socks5_handle_client(ctx);
-		if (ret)
+		if (ret && ret != -EAGAIN)
 			goto terminate_and_recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
