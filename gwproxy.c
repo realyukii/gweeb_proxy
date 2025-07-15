@@ -438,11 +438,11 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 	if (ret)
 		return ret;
 
-	pr_info(
-		"attempting to send %ld bytes to %s\n",
-		from->recvlen, to->addrstr
-	);
 	if (from->recvlen > 0) {
+		pr_info(
+			"attempting to send %ld bytes to %s\n",
+			from->recvlen, to->addrstr
+		);
 		ret = do_send(to, from);
 		if (ret < 0)
 			return ret;
@@ -786,14 +786,37 @@ static void get_localname(struct gwp_conn *a, struct socks5_addr *addr)
 
 static int socks5_do_send(struct gwp_tctx *ctx);
 
+static int socks5_reply_connect_cmd(struct gwp_tctx* ctx, int code)
+{
+	struct socks5_addr saddr;
+	struct gwp_pair_conn *pc;
+	struct gwp_conn *a;
+	size_t rlen;
+	int ret;
+
+	pc = ctx->pc;
+	a = &pc->target;
+
+	get_localname(a, &saddr);
+	rlen = a->recvcap;
+	pc->is_target_connected = true;
+	ret = socks5_craft_connect_reply(
+		pc->conn_ctx, &saddr, code, a->recvbuf, &rlen
+	);
+
+	if (ret)
+		return ret;
+
+	a->recvlen = rlen;
+	return socks5_do_send(ctx);
+}
+
 static int socks5_handle_target(struct gwp_tctx* ctx)
 {
 	struct gwp_pair_conn *pc;
 	struct gwp_conn *a, *b;
-	struct socks5_addr saddr;
-	int ret, val;
-	size_t rlen;
 	socklen_t valsz;
+	int ret, val;
 
 	val = 0;
 	valsz = sizeof(val);
@@ -804,20 +827,10 @@ static int socks5_handle_target(struct gwp_tctx* ctx)
 
 	if (!pc->is_target_connected && a->sockfd != -1) {
 		getsockopt(a->sockfd, SOL_SOCKET, SO_ERROR, &val, &valsz);
-		if (val) {
+		if (val)
 			pr_err("failed to connect: %s\n", strerror(val));
-			return val;
-		}
-		get_localname(a, &saddr);
-		assert(a->recvoff == 0);
-		assert(a->recvlen == 0);
-		rlen = a->recvcap;
-		pc->is_target_connected = true;
-		ret = socks5_craft_connect_reply(pc->conn_ctx, &saddr, 0, a->recvbuf, &rlen);
-		if (ret)
-			return ret;
-		a->recvlen = rlen;
-		ret = socks5_do_send(ctx);
+
+		ret = socks5_reply_connect_cmd(ctx, val);
 		if (ret)
 			return ret;
 	}
