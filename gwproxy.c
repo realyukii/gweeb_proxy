@@ -675,7 +675,7 @@ static int accept_new_client(struct gwp_tctx *ctx)
 
 static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 {
-	if (pc->is_target_connected)
+	if (pc->target.sockfd != -1)
 		close(pc->target.sockfd);
 	if (ctx->pctx->args->socks5_mode)
 		socks5_free_conn(pc->conn_ctx);
@@ -805,7 +805,7 @@ static int socks5_handle_target(struct gwp_tctx* ctx)
 	if (!pc->is_target_connected && a->sockfd != -1) {
 		getsockopt(a->sockfd, SOL_SOCKET, SO_ERROR, &val, &valsz);
 		if (val) {
-			pr_err("failed to connect: %d\n", strerror(val));
+			pr_err("failed to connect: %s\n", strerror(val));
 			return val;
 		}
 		get_localname(a, &saddr);
