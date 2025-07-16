@@ -1,6 +1,6 @@
 BUILDDIR	:= build
 
-GWPROXYSRC	:= gwproxy.c gwsocks5lib.c linux.c general.c
+GWPROXYSRC	:= gwproxy.c gwdnslib.c gwsocks5lib.c linux.c general.c
 CONVERTERSRC	:= ip_converter.c general.c
 INOTIFYSRC	:= test_inotify.c linux.c
 DNSRESOLVSRC	:= dns_resolver.c general.c linux.c
@@ -23,7 +23,7 @@ TARGET6		:= $(BUILDDIR)/gwsocks5lib
 
 CC		:= gcc
 CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -g3
-# LDFLAGS		:= -fsanitize=address -fsanitize=undefined
+# LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
 
 all: $(TARGET1) $(TARGET2) $(TARGET3) $(TARGET4) $(TARGET5) $(TARGET6)
 
@@ -47,7 +47,7 @@ test_socks5: $(TARGET1)
 	$< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
 test_socks5_strace: CFLAGS += -DENABLE_LOG=false
 test_socks5_strace: $(TARGET1)
-	strace -e trace=%net -f $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+	strace -x -f $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
 test_dns_serv: $(TARGET4)
 	$< -b [::]:6969 -t 1
 stress_test: $(TARGET5)

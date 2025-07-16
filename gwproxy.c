@@ -15,6 +15,7 @@
 #include "linux.h"
 #include "general.h"
 #include "gwsocks5lib.h"
+#include "gwdnslib.h"
 
 #define DEFAULT_EPOLL_EV 512
 #define DEFAULT_THREAD_NR 4
@@ -30,6 +31,7 @@
 do {							\
 printf(							\
 	usage,						\
+	DEFAULT_THREAD_NR,				\
 	DEFAULT_THREAD_NR, DEFAULT_TIMEOUT_SEC,		\
 	DEFAULT_PREALLOC_CONN, DEFAULT_BUFF_SZ,		\
 	DEFAULT_BUFF_SZ, DEFAULT_BUFF_SZ		\
@@ -46,6 +48,7 @@ static const char usage[] =
 "-t\tIP address and port of the target server (ignored in socks5 mode)\n"
 "\n"
 "advanced option:\n"
+"-y\tnumber of dns resolver thread (default: %d)\n"
 "-T\tnumber of tcp server thread (default: %d)\n"
 "-w\twait time for timeout, set to zero for no timeout (default: %d seconds)\n"
 "-n\tnumber of pre-allocated connection pointer per-thread (default: %d session)\n"
@@ -58,7 +61,8 @@ enum gwp_ev_bit {
 	GWP_EV_STOP	= (0x1ULL << 48ULL),
 	GWP_EV_ACCEPT	= (0x2ULL << 48ULL),
 	GWP_EV_CLIENT	= (0x3ULL << 48ULL),
-	GWP_EV_TARGET	= (0x4ULL << 48ULL)
+	GWP_EV_TARGET	= (0x4ULL << 48ULL),
+	GWP_EV_DOMAIN	= (0x5ULL << 48ULL)
 };
 
 struct gwp_pctx *gctx;
@@ -78,6 +82,7 @@ struct gwp_pair_conn {
 	bool is_target_connected;
 	struct gwp_conn client;
 	struct gwp_conn target;
+	struct gwdns_req *req;
 	struct socks5_conn *conn_ctx;
 };
 
@@ -92,6 +97,7 @@ struct gwp_cmdline_args {
 	char *auth_file;
 	int connptr_nr;
 	size_t server_thread_nr;
+	size_t dns_thread_nr;
 	size_t timeout;
 	size_t t_recv_sz;
 	size_t c_recv_sz;
@@ -112,6 +118,8 @@ struct gwp_pctx {
 	struct gwp_cmdline_args *args;
 	struct gwp_tctx *tctx;
 	struct socks5_ctx *socks5_ctx;
+	struct gwdns_ctx *dns_ctx;
+	struct gwdns_cfg dns_cfg;
 	int (*func_handler)(struct gwp_tctx *ctx, void *data, uint64_t ev_bit, uint32_t ev);
 	int stopfd;
 	volatile bool stop;
@@ -896,20 +904,37 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 static int socks5_prepare_connect(struct gwp_tctx* ctx)
 {
 	struct sockaddr_storage addr;
-	struct socks5_request *r;
 	struct gwp_pair_conn *pc;
-	struct socks5_addr sa;
+	struct socks5_addr *sa;
 	struct gwp_conn *b;
+	struct gwdns_req *req;
+	int ret;
 
 	pc = ctx->pc;
 	b = &pc->client;
+
+	/*
+	* we only do soft advance,
+	* so even though it have no length we can still access the previous
+	* buffer which is client connect command request
+	*/
 	assert(b->recvlen == 0);
+	sa = &((struct socks5_request *)b->recvbuf)->dst_addr;
 
-	r = (void *)b->recvbuf;
-	memcpy(&sa, &r->dst_addr, sizeof(sa));
-	socks5_convert_addr(&r->dst_addr, &addr);
+	if (sa->type == SOCKS5_DOMAIN) {
+		req = gwdns_enqueue_req(ctx->pctx->dns_ctx, sa->addr.domain.name, sa->addr.domain.len);
+		if (!req)
+			return -ENOMEM;
 
-	return prepare_forward(ctx, pc, &addr);
+		register_events(req->evfd, ctx->epfd, EPOLLIN, pc, GWP_EV_STOP);
+	} else {
+		socks5_convert_addr(sa, &addr);
+		ret = prepare_forward(ctx, pc, &addr);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static int socks5_handle_default(struct gwp_tctx* ctx)
@@ -1062,11 +1087,16 @@ static int init_pctx(struct gwp_pctx *pctx, struct gwp_cmdline_args *args)
 	struct socks5_cfg cfg;
 	int ret;
 
+	pctx->dns_cfg.thread_nr = args->dns_thread_nr;
+	ret = gwdns_init_ctx(&pctx->dns_ctx, &pctx->dns_cfg);
+	if (ret)
+		return -ENOMEM;
+
 	ret = eventfd(0, EFD_NONBLOCK);
 	if (ret < 0) {
-		ret = errno;
-		pr_err("failed to create eventfd: %s\n", strerror(ret));
-		return -ret;
+		ret = -errno;
+		pr_err("failed to create eventfd: %s\n", strerror(-ret));
+		goto exit_err_free_dns;
 	}
 	pctx->stopfd = ret;
 	pctx->stop = false;
@@ -1088,6 +1118,8 @@ static int init_pctx(struct gwp_pctx *pctx, struct gwp_cmdline_args *args)
 	}
 
 	return 0;
+exit_err_free_dns:
+	gwdns_free_ctx(pctx->dns_ctx);
 exit_err_free_tctx:
 	free(pctx->tctx);
 exit_err_close_evfd:
@@ -1105,17 +1137,17 @@ static void *tcp_serv_thread(void *args)
 
 static int spawn_threads(struct gwp_pctx *ctx)
 {
-	size_t i, thread_nr;
+	size_t i, server_thread_nr;
 	int ret;
 
-	thread_nr = ctx->args->server_thread_nr;
-	for (i = 0; i < thread_nr; i++) {
+	server_thread_nr = ctx->args->server_thread_nr;
+	for (i = 0; i < server_thread_nr; i++) {
 		ret = init_tctx(&ctx->tctx[i], ctx);
 		if (ret < 0)
 			return ret;
 	}
 
-	for (i = 0; i < thread_nr; i++) {
+	for (i = 0; i < server_thread_nr; i++) {
 		if (i == 0)
 			continue;
 		pthread_create(
@@ -1130,13 +1162,12 @@ static int spawn_threads(struct gwp_pctx *ctx)
 static void join_threads(struct gwp_pctx *ctx)
 {
 	size_t i, thread_nr;
-	intptr_t retval;
 
 	thread_nr = ctx->args->server_thread_nr;
 	for (i = 0; i < thread_nr; i++) {
 		if (i == 0)
 			continue;
-		pthread_join(ctx->tctx[i].thandle, (void *)&retval);
+		pthread_join(ctx->tctx[i].thandle, NULL);
 	}
 }
 
@@ -1148,6 +1179,9 @@ static void cleanup_resources(struct gwp_pctx *ctx)
 		pr_info("de-initialize socks5 library\n");
 		socks5_free_ctx(ctx->socks5_ctx);
 	}
+
+	pr_info("de-initialize gwdns library\n");
+	gwdns_free_ctx(ctx->dns_ctx);
 	pr_info("deallocate pointer to threads data: %p\n", ctx->tctx);
 	free(ctx->tctx);
 	pr_info("closing stop file descriptor (eventfd): %d\n", ctx->stopfd);
@@ -1207,7 +1241,7 @@ static int set_intval(char *val, int defaultval)
 */
 static int handle_cmdline(int argc, char *argv[], struct gwp_cmdline_args *args)
 {
-	char *server_thread_opt, *client_nr_opt, *wait_opt;
+	char *server_thread_opt, *dns_thread_opt, *client_nr_opt, *wait_opt;
 	char *bind_opt, *target_opt;
 	struct buff_sz_opt b;
 	char *auth_file_opt;
@@ -1219,7 +1253,8 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_cmdline_args *args)
 		return -EXIT_FAILURE;
 	}
 
-	client_nr_opt = wait_opt = server_thread_opt = NULL;
+	client_nr_opt = wait_opt = NULL;
+	dns_thread_opt = server_thread_opt = NULL;
 	auth_file_opt = bind_opt = target_opt= NULL;
 	args->socks5_mode = false;
 	memset(&b, 0, sizeof(b));
@@ -1240,6 +1275,9 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_cmdline_args *args)
 		case 'T':
 			server_thread_opt = optarg;
 			break;
+		case 'y':
+			dns_thread_opt = optarg;
+			break;
 		case 'w':
 			wait_opt = optarg;
 			break;
@@ -1254,7 +1292,6 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_cmdline_args *args)
 			break;
 		case 'k':
 			b.t_recv_sz_opt = optarg;
-			break;
 			break;
 		case 'h':
 			pr_menu();
@@ -1283,6 +1320,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_cmdline_args *args)
 
 	args->connptr_nr = set_intval(client_nr_opt, DEFAULT_PREALLOC_CONN);
 	args->server_thread_nr = set_intval(server_thread_opt, DEFAULT_THREAD_NR);
+	args->dns_thread_nr = set_intval(dns_thread_opt, DEFAULT_THREAD_NR);
 	args->timeout = set_intval(wait_opt, DEFAULT_TIMEOUT_SEC);
 
 	memset(&args->src_addr_st, 0, sizeof(args->src_addr_st));
