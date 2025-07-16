@@ -58,11 +58,12 @@ static const char usage[] =
 "-h\tShow this help message and exit\n";
 
 enum gwp_ev_bit {
-	GWP_EV_STOP	= (0x1ULL << 48ULL),
-	GWP_EV_ACCEPT	= (0x2ULL << 48ULL),
-	GWP_EV_CLIENT	= (0x3ULL << 48ULL),
-	GWP_EV_TARGET	= (0x4ULL << 48ULL),
-	GWP_EV_DOMAIN	= (0x5ULL << 48ULL)
+	GWP_EV_STOP		= (0x1ULL << 48ULL),
+	GWP_EV_ACCEPT		= (0x2ULL << 48ULL),
+	GWP_EV_CLIENT		= (0x3ULL << 48ULL),
+	GWP_EV_TARGET		= (0x4ULL << 48ULL),
+	GWP_EV_DOMAIN		= (0x5ULL << 48ULL),
+	GWP_EV_RELOAD_CREDS	= (0x6ULL << 48ULL)
 };
 
 struct gwp_pctx *gctx;
@@ -1002,6 +1003,10 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	ctx->epev = ev;
 
 	switch (ev_bit) {
+	case GWP_EV_RELOAD_CREDS:
+		pr_info("socks5 credential file reloaded\n");
+		socks5_reload_creds_file(ctx->pctx->socks5_ctx);
+		return 0;
 	case GWP_EV_CLIENT:
 		ret = socks5_handle_client(ctx);
 		if (ret && ret != -EAGAIN)
@@ -1162,6 +1167,25 @@ static void *tcp_serv_thread(void *args)
 	return (void *)ret;
 }
 
+static int register_hotreload(struct gwp_pctx *ctx)
+{
+	struct socks5_ctx *sctx;
+	struct epoll_event ev;
+	int ret;
+
+	sctx = ctx->socks5_ctx;
+	if (sctx->creds.auth_file) {
+		ev.events = EPOLLIN;
+		ev.data.u64 = GWP_EV_RELOAD_CREDS;
+		ret = epoll_ctl(
+			ctx->tctx[0].epfd, EPOLL_CTL_ADD, sctx->creds.ifd, &ev
+		);
+		return ret;
+	}
+
+	return 0;
+}
+
 static int spawn_threads(struct gwp_pctx *ctx)
 {
 	size_t i, server_thread_nr;
@@ -1182,6 +1206,10 @@ static int spawn_threads(struct gwp_pctx *ctx)
 			tcp_serv_thread, &ctx->tctx[i]
 		);
 	}
+
+	ret = register_hotreload(ctx);
+	if (ret)
+		return ret;
 
 	return start_tcp_serv(ctx->tctx);
 }

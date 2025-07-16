@@ -302,8 +302,10 @@ static int socks5_handle_request(struct data_args *args)
 
 int socks5_reload_creds_file(struct socks5_ctx *ctx)
 {
-	int ret;
 	struct socks5_creds *ac = &ctx->creds;
+	struct inotify_event iev[2];
+	int ret;
+
 	if (ac->userpwd_l.nr_entry) {
 		ac->userpwd_l.prev_arr = ac->userpwd_l.arr;
 		ac->prev_userpwd_buf = ac->userpwd_buf;
@@ -314,6 +316,8 @@ int socks5_reload_creds_file(struct socks5_ctx *ctx)
 		free(ac->userpwd_l.prev_arr);
 		free(ac->prev_userpwd_buf);
 	}
+
+	read(ac->ifd, &iev, sizeof(iev));
 
 	return ret;
 }
