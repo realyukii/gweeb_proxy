@@ -333,6 +333,14 @@ static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
 	return 0;
 }
 
+static void advance_recvbuff(struct gwp_conn *a, size_t len)
+{
+	a->recvoff += len;
+	a->recvlen -= len;
+	if (!a->recvlen)
+		a->recvoff = 0;
+}
+
 static int do_recv(struct gwp_conn *from)
 {
 	size_t rlen;
@@ -399,6 +407,10 @@ static int do_send(struct gwp_conn *to, struct gwp_conn *from)
 	ssize_t ret;
 	char *payload;
 
+	pr_info(
+		"attempting to send %ld bytes to %s\n",
+		from->recvlen, to->addrstr
+	);
 	payload = &from->recvbuf[from->recvoff];
 	ret = send(to->sockfd, payload, from->recvlen, MSG_NOSIGNAL);
 	if (ret < 0) {
@@ -421,15 +433,18 @@ static int do_send(struct gwp_conn *to, struct gwp_conn *from)
 			from->recvlen, ret
 		);
 
-	return ret;
-}
+	pr_info(
+		"%ld bytes were sent to %s\n",
+		ret, to->addrstr
+	);
 
-static void advance_recvbuff(struct gwp_conn *a, size_t len)
-{
-	a->recvoff += len;
-	a->recvlen -= len;
-	if (!a->recvlen)
-		a->recvoff = 0;
+	advance_recvbuff(from, ret);
+	pr_info(
+		"remaining bytes on %s's recv buffer: %ld\n",
+		from->addrstr, from->recvlen
+	);
+
+	return ret;
 }
 
 /*
@@ -448,24 +463,9 @@ static int do_forwarding(struct gwp_conn *from, struct gwp_conn *to)
 		return ret;
 
 	if (from->recvlen > 0) {
-		pr_info(
-			"attempting to send %ld bytes to %s\n",
-			from->recvlen, to->addrstr
-		);
 		ret = do_send(to, from);
 		if (ret < 0)
 			return ret;
-
-		pr_info(
-			"%ld bytes were sent to %s\n",
-			ret, to->addrstr
-		);
-
-		advance_recvbuff(from, ret);
-		pr_info(
-			"remaining bytes on %s's recv buffer: %ld\n",
-			from->addrstr, from->recvlen
-		);
 	}
 
 	return 0;
@@ -926,7 +926,6 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 	if (ret < 0)
 		return ret;
 
-	advance_recvbuff(b, ret);
 	return 0;
 }
 
