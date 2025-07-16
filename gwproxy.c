@@ -799,9 +799,9 @@ static void get_localname(struct gwp_conn *a, struct socks5_addr *addr)
 
 static int socks5_do_send(struct gwp_tctx *ctx);
 
-static int socks5_reply_connect_cmd(struct gwp_tctx* ctx, int code)
+static int _socks5_reply_connect_cmd(struct gwp_tctx* ctx, int code,
+					struct socks5_addr *saddr)
 {
-	struct socks5_addr saddr;
 	struct gwp_pair_conn *pc;
 	struct gwp_conn *a;
 	size_t rlen;
@@ -810,11 +810,9 @@ static int socks5_reply_connect_cmd(struct gwp_tctx* ctx, int code)
 	pc = ctx->pc;
 	a = &pc->target;
 
-	get_localname(a, &saddr);
 	rlen = a->recvcap;
-	pc->is_target_connected = true;
 	ret = socks5_craft_connect_reply(
-		pc->conn_ctx, &saddr, code, a->recvbuf, &rlen
+		pc->conn_ctx, saddr, code, a->recvbuf, &rlen
 	);
 
 	if (ret)
@@ -822,6 +820,30 @@ static int socks5_reply_connect_cmd(struct gwp_tctx* ctx, int code)
 
 	a->recvlen = rlen;
 	return socks5_do_send(ctx);
+}
+
+static int socks5_reply_err_connect_cmd(struct gwp_tctx* ctx, int code)
+{
+	struct socks5_addr saddr;
+
+	memset(&saddr, 0, sizeof(saddr));
+	saddr.type = SOCKS5_IPv4;
+	return _socks5_reply_connect_cmd(ctx, code, &saddr);
+}
+
+static int socks5_reply_connect_cmd(struct gwp_tctx* ctx, int code)
+{
+	struct socks5_addr saddr;
+	struct gwp_pair_conn *pc;
+	struct gwp_conn *a;
+
+	pc = ctx->pc;
+	a = &pc->target;
+
+	get_localname(a, &saddr);
+	pc->is_target_connected = true;
+
+	return _socks5_reply_connect_cmd(ctx, code, &saddr);
 }
 
 static int socks5_handle_target(struct gwp_tctx* ctx)
@@ -996,10 +1018,15 @@ static int socks5_handle_client(struct gwp_tctx* ctx)
 static int socks5_handle_resolved_domain(struct gwp_tctx *ctx)
 {
 	struct gwp_pair_conn *pc;
+	struct gwdns_req *req;
 	int ret;
 
 	pc = ctx->pc;
-	ret = prepare_forward(ctx, pc, &pc->req->result);
+	req = pc->req;
+	if (req->status)
+		return socks5_reply_err_connect_cmd(ctx, SOCKS5_HOST_UNREACH);
+
+	ret = prepare_forward(ctx, pc, &req->result);
 	if (ret)
 		return ret;
 

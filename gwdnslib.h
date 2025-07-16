@@ -21,6 +21,7 @@ struct gwdns_req {
 	char port[5 + 1];
 	int evfd;
 	atomic_int refcnt;
+	int status;
 };
 
 struct dns_queue {

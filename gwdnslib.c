@@ -32,8 +32,11 @@ static void resolve_dns(struct gwdns_req *req)
 			"failed to resolve domain name: %s\n",
 			gai_strerror(ret)
 		);
+		req->status = ret;
 		return;
 	}
+
+	req->status = 0;
 
 	memcpy(&req->result, l->ai_addr, l->ai_addrlen);
 	freeaddrinfo(l);
