@@ -70,7 +70,8 @@ static void *dns_serv_thread(void *args)
 		pr_dbg("acquired dns_lock\n");
 		dequeue_req(&dctx->q);
 
-		write(r->evfd, &val, sizeof(val));
+		if (!gwdns_release_req(r))
+			write(r->evfd, &val, sizeof(val));
 	}
 	pr_dbg("releasing dns_lock\n");
 	pthread_mutex_unlock(&dctx->dns_lock);
@@ -140,6 +141,7 @@ struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain,
 	memcpy(r->domainname, domain, domain_len);
 	r->domainname[domain_len] = '\0';
 
+	atomic_init(&r->refcnt, 2);
 	pr_dbg("attempting to lock dns_lock\n");
 	pthread_mutex_lock(&ctx->dns_lock);
 
@@ -151,4 +153,18 @@ struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain,
 	pthread_mutex_unlock(&ctx->dns_lock);
 
 	return r;
+}
+
+bool gwdns_release_req(struct gwdns_req *req)
+{
+	int x = atomic_fetch_sub(&req->refcnt, 1);
+
+	assert(x > 0);
+	if (x == 1) {
+		close(req->evfd);
+		free(req);
+		return true;
+	}
+
+	return false;
 }

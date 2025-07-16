@@ -640,6 +640,8 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	s->target.sockfd = -1;
 	s->is_target_connected = false;
 
+	s->req = NULL;
+
 	if (args->socks5_mode) {
 		s->conn_ctx = socks5_alloc_conn(ctx->pctx->socks5_ctx);
 		if (!s->conn_ctx)
@@ -683,6 +685,8 @@ static int accept_new_client(struct gwp_tctx *ctx)
 
 static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 {
+	if (pc->req)
+		gwdns_release_req(pc->req);
 	if (pc->target.sockfd != -1)
 		close(pc->target.sockfd);
 	if (ctx->pctx->args->socks5_mode)
@@ -1015,7 +1019,9 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 		ret = prepare_forward(ctx, pc, &pc->req->result);
 		if (ret)
 			return ret;
-		close(pc->req->evfd);
+
+		gwdns_release_req(pc->req);
+		pc->req = NULL;
 		break;
 	default:
 		pr_dbg("aborted\n");

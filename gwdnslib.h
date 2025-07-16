@@ -9,15 +9,18 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdbool.h>
+#include <stdatomic.h>
+#include <assert.h>
 
 #include "linux.h"
 
 struct gwdns_req {
-	char domainname[255 + 1];
 	struct sockaddr_storage result;
-	int evfd;
-	char port[5 + 1];
 	struct gwdns_req *next;
+	char domainname[255 + 1];
+	char port[5 + 1];
+	int evfd;
+	atomic_int refcnt;
 };
 
 struct dns_queue {
@@ -33,6 +36,7 @@ struct gwdns_ctx {
 	bool should_stop;
 	pthread_t tdns;
 	int thread_nr;
+	int sleep_nr;
 };
 
 struct gwdns_cfg {
@@ -70,6 +74,6 @@ struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain,
 /*
 * Release dns query when no longer needed.
 *
-* @param ctx
+* @param req
 */
-int gwdns_release_req(struct gwdns_ctx *ctx);
+bool gwdns_release_req(struct gwdns_req *req);
