@@ -23,7 +23,7 @@ TARGET6		:= $(BUILDDIR)/gwsocks5lib
 
 CC		:= gcc
 CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -g3
-# LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
+LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
 
 all: $(TARGET1) $(TARGET2) $(TARGET3) $(TARGET4) $(TARGET5) $(TARGET6)
 
@@ -45,6 +45,8 @@ test_conventional: $(TARGET1)
 	$< -t [::1]:8081 -b [::1]:8080 -T 1
 test_socks5: $(TARGET1)
 	$< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+test_socks5_valgrind: $(TARGET1)
+	valgrind --leak-check=full --show-leak-kinds=all --leak-resolution=high --log-file=leaks.log $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
 test_socks5_strace: CFLAGS += -DENABLE_LOG=false
 test_socks5_strace: $(TARGET1)
 	strace -x -f $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
