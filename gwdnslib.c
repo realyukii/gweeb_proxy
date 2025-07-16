@@ -139,6 +139,8 @@ struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain,
 		return NULL;
 	}
 
+	r->next = NULL;
+
 	sprintf(r->port, "%d", ntohs(port));
 
 	memcpy(r->domainname, domain, domain_len);
