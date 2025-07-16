@@ -993,18 +993,33 @@ static int socks5_handle_client(struct gwp_tctx* ctx)
 	return ret;
 }
 
+static int socks5_handle_resolved_domain(struct gwp_tctx *ctx)
+{
+	struct gwp_pair_conn *pc;
+	int ret;
+
+	pc = ctx->pc;
+	ret = prepare_forward(ctx, pc, &pc->req->result);
+	if (ret)
+		return ret;
+
+	gwdns_release_req(pc->req);
+	pc->req = NULL;
+	return 0;
+}
+
 static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 				uint64_t ev_bit, uint32_t ev)
 {
-	struct gwp_pair_conn *pc = data;
+	struct gwp_pair_conn *pc;
 	int ret;
 
+	pc = data;
 	ctx->pc = pc;
 	ctx->epev = ev;
 
 	switch (ev_bit) {
 	case GWP_EV_RELOAD_CREDS:
-		pr_info("socks5 credential file reloaded\n");
 		socks5_reload_creds_file(ctx->pctx->socks5_ctx);
 		return 0;
 	case GWP_EV_CLIENT:
@@ -1018,15 +1033,9 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 			goto terminate_and_recall_epoll_wait;
 		break;
 	case GWP_EV_DOMAIN:
-		char buf[INET6_ADDRSTRLEN];
-		get_addrstr((struct sockaddr *)&pc->req->result, buf);
-		pr_info("request %s completed: %s\n", pc->req->domainname, buf);
-		ret = prepare_forward(ctx, pc, &pc->req->result);
+		ret = socks5_handle_resolved_domain(ctx);
 		if (ret)
-			return ret;
-
-		gwdns_release_req(pc->req);
-		pc->req = NULL;
+			goto terminate_and_recall_epoll_wait;
 		break;
 	default:
 		pr_dbg("aborted\n");
