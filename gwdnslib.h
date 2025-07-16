@@ -16,6 +16,7 @@ struct gwdns_req {
 	char domainname[255 + 1];
 	struct sockaddr_storage result;
 	int evfd;
+	char port[5 + 1];
 	struct gwdns_req *next;
 };
 
@@ -63,7 +64,8 @@ void gwdns_free_ctx(struct gwdns_ctx *ctx);
 *		it contain valid event file descriptor, the caller can use this
 *		to register it to epoll and read the answer to the request.
 */
-struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain, int domain_len);
+struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain,
+					int domain_len, uint16_t port);
 
 /*
 * Release dns query when no longer needed.

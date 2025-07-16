@@ -19,9 +19,6 @@ static void dequeue_req(struct dns_queue *q)
 	q->head = r->next;
 	if (!q->head)
 		q->tail = NULL;
-
-	close(r->evfd);
-	free(r);
 }
 
 static void resolve_dns(struct gwdns_req *req)
@@ -29,7 +26,7 @@ static void resolve_dns(struct gwdns_req *req)
 	struct addrinfo *l;
 	int ret;
 
-	ret = getaddrinfo(req->domainname, NULL, NULL, &l);
+	ret = getaddrinfo(req->domainname, req->port, NULL, &l);
 	if (ret != 0) {
 		pr_err(
 			"failed to resolve domain name: %s\n",
@@ -125,17 +122,20 @@ void gwdns_free_ctx(struct gwdns_ctx *ctx)
 	free(ctx);
 }
 
-struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain, int domain_len)
+struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain,
+					int domain_len, uint16_t port)
 {
 	struct gwdns_req *r = malloc(sizeof(*r));
 	if (!r)
 		return NULL;
-	
+
 	r->evfd = eventfd(0, EFD_NONBLOCK);
 	if (r->evfd < 0) {
 		free(r);
 		return NULL;
 	}
+
+	sprintf(r->port, "%d", ntohs(port));
 
 	memcpy(r->domainname, domain, domain_len);
 	r->domainname[domain_len] = '\0';

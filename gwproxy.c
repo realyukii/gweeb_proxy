@@ -904,10 +904,12 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 static int socks5_prepare_connect(struct gwp_tctx* ctx)
 {
 	struct sockaddr_storage addr;
+	struct atyp_domain *domain;
 	struct gwp_pair_conn *pc;
 	struct socks5_addr *sa;
-	struct gwp_conn *b;
 	struct gwdns_req *req;
+	struct gwp_conn *b;
+	uint16_t *port;
 	int ret;
 
 	pc = ctx->pc;
@@ -920,13 +922,23 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 	*/
 	assert(b->recvlen == 0);
 	sa = &((struct socks5_request *)b->recvbuf)->dst_addr;
+	domain = &sa->addr.domain;
+	port = (void *)(domain->name + domain->len);
 
 	if (sa->type == SOCKS5_DOMAIN) {
-		req = gwdns_enqueue_req(ctx->pctx->dns_ctx, sa->addr.domain.name, sa->addr.domain.len);
+		req = gwdns_enqueue_req(
+			ctx->pctx->dns_ctx,
+			domain->name, domain->len, *port
+		);
 		if (!req)
 			return -ENOMEM;
 
-		register_events(req->evfd, ctx->epfd, EPOLLIN, pc, GWP_EV_STOP);
+		pc->req = req;
+		ret = register_events(
+			req->evfd, ctx->epfd, EPOLLIN, pc, GWP_EV_DOMAIN
+		);
+		if (ret)
+			return ret;
 	} else {
 		socks5_convert_addr(sa, &addr);
 		ret = prepare_forward(ctx, pc, &addr);
@@ -995,6 +1007,15 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 		ret = socks5_handle_target(ctx);
 		if (ret)
 			goto terminate_and_recall_epoll_wait;
+		break;
+	case GWP_EV_DOMAIN:
+		char buf[INET6_ADDRSTRLEN];
+		get_addrstr((struct sockaddr *)&pc->req->result, buf);
+		pr_info("request %s completed: %s\n", pc->req->domainname, buf);
+		ret = prepare_forward(ctx, pc, &pc->req->result);
+		if (ret)
+			return ret;
+		close(pc->req->evfd);
 		break;
 	default:
 		pr_dbg("aborted\n");

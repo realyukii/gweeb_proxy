@@ -169,9 +169,8 @@ static int socks5_handle_auth(struct data_args *args)
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
-	// if (in->ver != 1) {
-	// 	return -EINVAL;
-	// }
+	if (in->ver != 1)
+		return -EINVAL;
 
 	exp_len += in->ulen + 1;
 	if (*args->in_len < exp_len)

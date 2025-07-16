@@ -95,7 +95,7 @@ struct socks5_addr {
 	uint8_t type;
 	union saddr {
 		uint8_t ipv4[4];
-		struct {
+		struct atyp_domain {
 			uint8_t len;
 			char name[MAX_DOMAIN_LEN];
 		} domain;
