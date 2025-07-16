@@ -250,7 +250,7 @@ static void adjust_pollin(struct gwp_conn *src, bool *epmask_changed)
 	* unset EPOLLIN from epmask when the src buffer is full,
 	* otherwise, set it.
 	*/
-	if (src->recvcap == src->recvlen) {
+	if (src->recvcap == (src->recvlen + src->recvoff)) {
 		if (src->epmask & EPOLLIN) {
 			pr_info(
 				"unset EPOLLIN: %s's buffer is full "
@@ -347,7 +347,21 @@ static int do_recv(struct gwp_conn *from)
 	ssize_t ret;
 
 	/* remaining space of the buffer */
-	rlen = from->recvcap - from->recvlen;
+	// recvcap = 10; recvlen = 0; recvoff = 0; rlen -> 10;
+	// recvcap = 10; recvlen = 5; recvoff = 0; rlen -> 5;
+	// recvcap = 10; recvlen = 0; recvoff = 5; rlen -> 10;
+
+	// [a, b, c, d, e, ................]
+	//                                @
+	//           #                    
+	//     *
+
+
+	// recvcap = 5
+	// recv(), "abc"; recvlen = 3; recvoff = 0;
+	// send(), "bc";  recvlen = 2; recvoff = 1;
+	// recv(), &buf[]
+	rlen = from->recvcap - (from->recvlen + from->recvoff);
 	if (!rlen)
 		return 0;
 
@@ -357,7 +371,7 @@ static int do_recv(struct gwp_conn *from)
 		from->addrstr, rlen
 	);
 	ret = recv(
-		from->sockfd, &from->recvbuf[from->recvlen],
+		from->sockfd, &from->recvbuf[from->recvoff + from->recvlen],
 		rlen, MSG_NOSIGNAL
 	);
 	if (ret < 0) {
@@ -411,7 +425,11 @@ static int do_send(struct gwp_conn *to, struct gwp_conn *from)
 		"attempting to send %ld bytes to %s\n",
 		from->recvlen, to->addrstr
 	);
+	// recvlen 10 bytes
+	// 3 bytes
+	// 7 bytes
 	payload = &from->recvbuf[from->recvoff];
+	// printf("recvlen: %zu recvoff: %zu recvcap: %zu\n", from->recvlen, from->recvoff, from->recvcap);
 	ret = send(to->sockfd, payload, from->recvlen, MSG_NOSIGNAL);
 	if (ret < 0) {
 		ret = errno;
@@ -623,7 +641,9 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	get_addrstr(in, s->client.addrstr);
 	pr_info("client %s on socket %d is accepted\n", s->client.addrstr, cfd);
 	s->client.sockfd = cfd;
-	s->idx = container->session_nr;
+	s->idx = container->session_nr++;
+	container->sessions[s->idx] = s;
+	printf("new idx=%zu with ptr=%p and session_nr=%zu\n", s->idx, s, container->session_nr);
 
 	ret = alloc_recv_send_buff(ctx, s);
 	if (ret)
@@ -637,6 +657,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 		goto exit_free_recv_buff;
 	}
 
+	memset(s->target.addrstr, 0, sizeof(s->target.addrstr));
 	s->target.epmask = EPOLLIN | EPOLLOUT;
 	s->target.sockfd = -1;
 	s->is_target_connected = false;
@@ -652,9 +673,6 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 		if (ret)
 			goto exit_free_recv_buff;
 	}
-
-	container->sessions[container->session_nr] = s;
-	container->session_nr++;
 
 	return 0;
 exit_free_recv_buff:
@@ -700,13 +718,30 @@ static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 
 static void cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 {
+	struct gwp_pair_conn **arr = ctx->container.sessions;
+	struct gwp_pair_conn *cur, *last;
+	size_t last_idx;
 	pr_info(
 		"client %s disconnected, cleaning up its resources\n",
 		pc->client.addrstr
 	);
 
-	ctx->container.session_nr--;
-	ctx->container.sessions[pc->idx] = NULL;
+	// 0 1 2 3 4
+	// session_nr = 5
+	// 0 1 X 3 4
+	// session_nr = 4
+	// 0 1 4 3 X
+
+	last_idx = --ctx->container.session_nr;
+	last = arr[last_idx];
+	cur = arr[pc->idx];
+	printf("cur->idx = %zu; pc->idx = %zu; pc=%p cur=%p; session_nr = %zu\n",
+		(cur != (void *)-1UL) ? cur->idx : -1Ul, pc->idx, pc, cur, ctx->container.session_nr);
+	assert(cur == pc);
+	arr[pc->idx] = last;
+	last->idx = pc->idx;
+	assert(last == arr[last_idx]);
+	arr[last_idx] = NULL;
 	_cleanup_pc(ctx, pc);
 }
 
@@ -737,15 +772,20 @@ static int process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 static void cleanup_tctx(struct gwp_tctx *ctx)
 {
 	struct gwp_pair_conn *pc;
+	size_t i;
 
-	pr_info("unfreed resource of session: %d\n", ctx->container.session_nr);
-	for (size_t i = 0; i < ctx->container.session_nr; i++) {
+	printf("unfreed resource of session: %ld\n", ctx->container.session_nr);
+	for (i = 0; i < ctx->container.session_nr; i++) {
+		printf("i = %ld\n", i);
 		pc = ctx->container.sessions[i];
+		printf("pc equal to %p\n", pc);
+		assert(pc);
 		if (pc) {
-			pr_info("disconnecting %s\n", pc->client.addrstr);
+			printf("disconnecting %s\n", pc->client.addrstr);
 			_cleanup_pc(ctx, pc);
 		}
 	}
+	printf("i is %ld and session_nr: %ld\n", i, ctx->container.session_nr);
 
 	pr_info("closing TCP socket file descriptor: %d\n", ctx->tcpfd);
 	close(ctx->tcpfd);
@@ -937,7 +977,7 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 	struct socks5_addr *sa;
 	struct gwdns_req *req;
 	struct gwp_conn *b;
-	uint16_t *port;
+	uint16_t port;
 	int ret;
 
 	pc = ctx->pc;
@@ -951,12 +991,12 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 	assert(b->recvlen == 0);
 	sa = &((struct socks5_request *)b->recvbuf)->dst_addr;
 	domain = &sa->addr.domain;
-	port = (void *)(domain->name + domain->len);
+	memcpy(&port, (void *)(domain->name + domain->len), 2);
 
 	if (sa->type == SOCKS5_DOMAIN) {
 		req = gwdns_enqueue_req(
 			ctx->pctx->dns_ctx,
-			domain->name, domain->len, *port
+			domain->name, domain->len, port
 		);
 		if (!req)
 			return -ENOMEM;
@@ -968,6 +1008,7 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 		if (ret)
 			return ret;
 	} else {
+		memset(&addr, 0, sizeof(addr));
 		socks5_convert_addr(sa, &addr);
 		ret = prepare_forward(ctx, pc, &addr);
 		if (ret)
@@ -1425,6 +1466,7 @@ static int handle_cmdline(int argc, char *argv[], struct gwp_cmdline_args *args)
 	if (args->socks5_mode)
 		return 0;
 
+	memset(&args->dst_addr_st, 0, sizeof(args->dst_addr_st));
 	ret = init_addr(target_opt, &args->dst_addr_st);
 	if (ret < 0) {
 		pr_err("invalid format for %s\n", target_opt);
