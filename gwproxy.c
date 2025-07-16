@@ -828,7 +828,9 @@ static int socks5_reply_err_connect_cmd(struct gwp_tctx* ctx, int code)
 
 	memset(&saddr, 0, sizeof(saddr));
 	saddr.type = SOCKS5_IPv4;
-	return _socks5_reply_connect_cmd(ctx, code, &saddr);
+	_socks5_reply_connect_cmd(ctx, code, &saddr);
+
+	return -ECONNRESET;
 }
 
 static int socks5_reply_connect_cmd(struct gwp_tctx* ctx, int code)
