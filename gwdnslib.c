@@ -54,9 +54,11 @@ static void *dns_serv_thread(void *args)
 	while (!dctx->should_stop) {
 		r = dctx->q.head;
 		if (!r) {
+			dctx->sleep_nr++;
 			pr_dbg("releasing dns_lock and waiting signal\n");
 			pthread_cond_wait(&dctx->dns_cond, &dctx->dns_lock);
 			pr_dbg("dns_lock acquired\n");
+			dctx->sleep_nr--;
 			r = dctx->q.head;
 			if (!r)
 				continue;
@@ -96,6 +98,7 @@ int gwdns_init_ctx(struct gwdns_ctx **ctx, struct gwdns_cfg *cfg)
 		return -ENOMEM;
 	}
 
+	dctx->sleep_nr = 0;
 	dctx->thread_nr = cfg->thread_nr;
 	dctx->q.head = NULL;
 	dctx->should_stop = false;
@@ -147,7 +150,8 @@ struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain,
 
 	pr_dbg("acquired dns_lock\n");
 	enqueue_req(&ctx->q, r);
-	pthread_cond_signal(&ctx->dns_cond);
+	if (ctx->sleep_nr)
+		pthread_cond_signal(&ctx->dns_cond);
 
 	pr_dbg("releasing dns_lock\n");
 	pthread_mutex_unlock(&ctx->dns_lock);
