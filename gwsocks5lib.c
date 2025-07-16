@@ -445,7 +445,10 @@ int socks5_craft_connect_reply(struct socks5_conn *conn, struct socks5_addr *sa,
 	default:
 		return -EINVAL;
 	}
-	conn->state = SOCKS5_FORWARDING;
+
+	if (rep_code == SOCKS5_SUCCEEDED)
+		conn->state = SOCKS5_FORWARDING;
+
 	*rep_len = required_len;
 
 	return 0;
