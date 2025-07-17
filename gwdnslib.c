@@ -67,18 +67,15 @@ static void *dns_serv_thread(void *args)
 				continue;
 		}
 
-		// commenting the mutex unlock and lock solving the segfault (use after free) problem
-		// but it is not an optimal solution
 		pr_dbg("doing blocking operation, releasing dns_lock\n");
+		dequeue_req(&dctx->q);
 		pthread_mutex_unlock(&dctx->dns_lock);
 		resolve_dns(r);
+		if (!gwdns_release_req(r))
+			write(r->evfd, &val, sizeof(val));
 		pr_dbg("attempting to lock dns_lock\n");
 		pthread_mutex_lock(&dctx->dns_lock);
 		pr_dbg("acquired dns_lock\n");
-		dequeue_req(&dctx->q);
-
-		if (!gwdns_release_req(r))
-			write(r->evfd, &val, sizeof(val));
 	}
 	pr_dbg("releasing dns_lock\n");
 	pthread_mutex_unlock(&dctx->dns_lock);
@@ -170,7 +167,6 @@ struct gwdns_req *gwdns_enqueue_req(struct gwdns_ctx *ctx, char *domain,
 
 bool gwdns_release_req(struct gwdns_req *req)
 {
-	pr_info("current value: %d decrementing refcnt for %d...\n", req->refcnt, req->evfd);
 	int x = atomic_fetch_sub(&req->refcnt, 1);
 
 	assert(x > 0);
