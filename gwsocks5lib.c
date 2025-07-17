@@ -43,8 +43,9 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 
 	afd = open(ctx->creds.auth_file, O_RDONLY);
 	if (afd < 0) {
+		ret = -errno;
 		pr_err("failed to load %s file\n", ctx->creds.auth_file);
-		return -errno;
+		goto exit_free_str;
 	}
 
 	ctx->creds.userpwd_buf = NULL;
@@ -63,6 +64,8 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 	return 0;
 exit_close_filefd:
 	close(afd);
+exit_free_str:
+	free((void *)ctx->creds.auth_file);
 	return ret;
 }
 
