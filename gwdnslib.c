@@ -62,9 +62,7 @@ static void *dns_serv_thread(void *args)
 			pthread_cond_wait(&dctx->dns_cond, &dctx->dns_lock);
 			pr_dbg("dns_lock acquired\n");
 			dctx->sleep_nr--;
-			r = dctx->q.head;
-			if (!r)
-				continue;
+			continue;
 		}
 
 		pr_dbg("doing blocking operation, releasing dns_lock\n");
