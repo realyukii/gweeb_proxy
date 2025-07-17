@@ -631,7 +631,7 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	if (ret)
 		goto exit_free_s;
 
-	s->client.epmask = EPOLLIN | EPOLLOUT;
+	s->client.epmask = EPOLLIN;
 	ret = register_events(cfd, ctx->epfd, s->client.epmask, s, GWP_EV_CLIENT);
 	if (ret < 0) {
 		ret = -errno;
@@ -1041,6 +1041,7 @@ static int socks5_handle_resolved_domain(struct gwp_tctx *ctx)
 
 	pc = ctx->pc;
 	req = pc->req;
+
 	if (req->status)
 		return socks5_reply_err_connect_cmd(ctx, SOCKS5_HOST_UNREACH);
 
@@ -1049,6 +1050,7 @@ static int socks5_handle_resolved_domain(struct gwp_tctx *ctx)
 		return ret;
 
 	gwdns_release_req(pc->req);
+
 	pc->req = NULL;
 	return 0;
 }
