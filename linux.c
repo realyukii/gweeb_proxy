@@ -32,6 +32,7 @@ void __pr_log(unsigned lvl, const char *fmt, ...)
 	static const char *warn = "warning";
 	static const char *err = "error";
 	static const char *dbg = "debug";
+	static const char *vrbs = "verbose";
 
 	va_list args;
 	va_start(args, fmt);
@@ -48,6 +49,9 @@ void __pr_log(unsigned lvl, const char *fmt, ...)
 		break;
 	case DEBUG:
 		level = dbg;
+		break;
+	case VERBOSE:
+		level = vrbs;
 		break;
 	}
 

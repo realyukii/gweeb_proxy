@@ -351,7 +351,7 @@ static int do_recv(struct gwp_conn *from)
 	if (!rlen)
 		return 0;
 
-	pr_info(
+	pr_verbose(
 		"attempting to recv from %s "
 		"with %ld bytes of free space\n",
 		from->addrstr, rlen
@@ -380,13 +380,13 @@ static int do_recv(struct gwp_conn *from)
 		return -ECONNRESET;
 	}
 
-	pr_info(
+	pr_verbose(
 		"%ld bytes were received from %s\n",
 		ret, from->addrstr
 	);
 	VT_HEXDUMP(&from->recvbuf[from->recvoff], ret);
 	if ((size_t)ret != rlen)
-		pr_warn(
+		pr_verbose(
 			"incomplete recv: requested %d bytes, "
 			"but only %d bytes received. "
 			"Note: this might not indicate an actual short-recv.\n",
@@ -407,7 +407,7 @@ static int do_send(struct gwp_conn *to, struct gwp_conn *from)
 	ssize_t ret;
 	char *payload;
 
-	pr_info(
+	pr_verbose(
 		"attempting to send %ld bytes to %s\n",
 		from->recvlen, to->addrstr
 	);
@@ -434,13 +434,13 @@ static int do_send(struct gwp_conn *to, struct gwp_conn *from)
 			from->recvlen, ret
 		);
 
-	pr_info(
+	pr_verbose(
 		"%ld bytes were sent to %s\n",
 		ret, to->addrstr
 	);
 
 	advance_recvbuff(from, ret);
-	pr_info(
+	pr_verbose(
 		"remaining bytes on %s's recv buffer: %ld\n",
 		from->addrstr, from->recvlen
 	);

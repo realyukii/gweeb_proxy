@@ -25,6 +25,8 @@ CC		:= gcc
 CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -g3
 LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
 
+BUFF_SIZE = $$((1024 * 1024 * 10))
+
 all: $(TARGET1) $(TARGET2) $(TARGET3) $(TARGET4) $(TARGET5) $(TARGET6)
 
 $(BUILDDIR):
@@ -43,10 +45,14 @@ $(TARGET6): $(OBJS6)
 # test without log: make CFLAGS="-DENABLE_LOG=false" -B test_conventional
 test_conventional: $(TARGET1)
 	$< -t [::1]:8081 -b [::1]:8080 -T 1
+test_socks5_nodump: CFLAGS += -DENABLE_DUMP=false
+test_socks5_nodump: $(TARGET1)
+	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 1 -w 60 2>&1 | grep -v verbose | grep -v debug
+test_socks5: CFLAGS += -DENABLE_LOG=false -DENABLE_DUMP=true
 test_socks5: $(TARGET1)
-	$< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 1 -w 60
 test_socks5_valgrind: $(TARGET1)
-	valgrind --leak-check=full --show-leak-kinds=all --leak-resolution=high --log-file=leaks.log $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+	valgrind --leak-check=full --leak-resolution=high --log-file=leaks.log $< -s -b [::]:1080 -T 1 -w 60
 test_socks5_strace: CFLAGS += -DENABLE_LOG=false
 test_socks5_strace: $(TARGET1)
 	strace -x -f $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60

@@ -95,8 +95,7 @@ void get_addrstr(struct sockaddr *saddr, char *bufptr)
 	snprintf(bufptr, ADDRSTR_SZ, addrfmt, addrbuf, port_nr);
 }
 
-#ifndef VT_HEXDUMP_H
-#define VT_HEXDUMP_H
+#ifdef VT_HEXDUMP_H
 
 #include <stdio.h>
 #include <stdint.h>

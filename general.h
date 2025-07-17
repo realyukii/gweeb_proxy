@@ -16,21 +16,21 @@
 #define EINVAL 22
 #define ADDRSTR_SZ (1 + INET6_ADDRSTRLEN + 1 + 1 + 5 + 1)
 
-#if ENABLE_LOG
-
 #ifndef VT_HEXDUMP_H
 #define VT_HEXDUMP_H
 
+#if ENABLE_DUMP
 #define VT_HEXDUMP(PTR, SIZE)					\
 do {								\
 	vt_hexdump(PTR, SIZE, __FILE__, __LINE__, __FUNCTION__);\
 } while (0);
 
-#endif // VT_HEXDUMP_H
 #else
 #define VT_HEXDUMP(PTR, SIZE) {}
+#endif // ENABLE_DUMP
 
-#endif // ENABLE_LOG
+#endif // VT_HEXDUMP_H
+
 
 /*
 * Initialize address used to bind or connect a socket.
