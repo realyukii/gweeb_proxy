@@ -528,7 +528,9 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 
 	ctx->epfd = ret;
 
-	ret = register_events(ctx->tcpfd, ctx->epfd, EPOLLIN, NULL, GWP_EV_ACCEPT);
+	ret = register_events(
+		ctx->tcpfd, ctx->epfd, EPOLLIN, NULL, GWP_EV_ACCEPT
+	);
 	if (ret < 0) {
 		ret = errno;
 		pr_err(
@@ -538,7 +540,9 @@ static int prepare_tcp_serv(struct gwp_tctx *ctx)
 		goto exit_close_epfd;
 	}
 
-	ret = register_events(ctx->pctx->stopfd, ctx->epfd, EPOLLIN, NULL, GWP_EV_STOP);
+	ret = register_events(
+		ctx->pctx->stopfd, ctx->epfd, EPOLLIN, NULL, GWP_EV_STOP
+	);
 	if (ret < 0) {
 		ret = errno;
 		pr_err(
@@ -955,20 +959,12 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 	struct gwp_pair_conn *pc;
 	struct socks5_addr *sa;
 	struct gwdns_req *req;
-	struct gwp_conn *b;
 	uint16_t port;
 	int ret;
 
 	pc = ctx->pc;
-	b = &pc->client;
 
-	/*
-	* we only do soft advance,
-	* so even though it have no length we can still access the previous
-	* buffer which is client connect command request
-	*/
-	assert(b->recvlen == 0);
-	sa = &((struct socks5_request *)b->recvbuf)->dst_addr;
+	sa = &pc->conn_ctx->target_addr;
 	domain = &sa->addr.domain;
 	memcpy(&port, (void *)(domain->name + domain->len), 2);
 
@@ -1089,6 +1085,7 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 		break;
 	default:
 		pr_dbg("aborted\n");
+		VT_HEXDUMP(&ev_bit, sizeof(ev_bit));
 		abort();
 	}
 
@@ -1142,6 +1139,7 @@ static int sp_handler(struct gwp_tctx *ctx, void *data,
 		break;
 	default:
 		pr_dbg("aborted\n");
+		VT_HEXDUMP(&ev_bit, sizeof(ev_bit));
 		abort();
 	}
 

@@ -57,11 +57,6 @@ enum auth_type {
 	NONE = 0xFF
 };
 
-struct socks5_conn {
-	enum socks5_state state;
-	struct socks5_ctx *ctx;
-};
-
 struct socks5_cfg {
 	const char *auth_file;
 };
@@ -103,6 +98,12 @@ struct socks5_addr {
 	} addr;
 	uint16_t port;
 } __attribute__((packed));
+
+struct socks5_conn {
+	enum socks5_state state;
+	struct socks5_ctx *ctx;
+	struct socks5_addr target_addr;
+};
 
 struct socks5_request {
 	uint8_t ver;

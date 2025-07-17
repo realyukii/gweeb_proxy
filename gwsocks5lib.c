@@ -293,6 +293,7 @@ static int socks5_handle_request(struct data_args *args)
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
+	memcpy(&args->conn->target_addr, &in->dst_addr, exp_len - 3);
 	advance_inbuf(args, exp_len);
 
 	args->conn->state = state;
@@ -383,14 +384,17 @@ retry:
 	case SOCKS5_REQUEST:
 		r = socks5_handle_request(&args);
 		break;
+	case SOCKS5_CONNECT:
+		goto exit;
 	default:
+		pr_dbg("unhandled state: %d\n", conn->state);
 		abort();
-		break;
 	}
 
 	if (!r && *args.in_len > 0)
 		goto retry;
 
+exit:
 	*in_len = args.total_advance;
 	*out_len = args.total_out;
 
@@ -775,12 +779,12 @@ static void socks5_test_two_state_at_once(void)
 	char out_buf[1024];
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0,		// VER, NMETHODS, METHOD NO AUTH
-		0x5, 0x1, 0x0, 0x2, 	// VER, CONNECT CMD, RSV, invalid ATYP
+		0x5, 0x1, 0x0, 0x4, 	// VER, CONNECT CMD, RSV, IPv6 ATYP
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x1,	// address ::1
-		0x1f, 0x91		// port 8081
+		0x1f, 0x91, 0x1		// port 8081
 	};
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
@@ -791,9 +795,15 @@ static void socks5_test_two_state_at_once(void)
 	plen = sizeof(payload);
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
-	assert(r == -EINVAL);
-	assert(olen == 12);
-	assert(conn->state == SOCKS5_REQUEST);
+	assert(!r);
+	assert(olen == 2);
+	assert(plen == 3 + 4 + 16 + 2);
+	assert(conn->state == SOCKS5_CONNECT);
+
+	assert(out_buf[0] == 0x5);
+	assert(out_buf[1] == 0x0);
+
+	assert(!memcmp(&conn->target_addr, payload + 6, 1 + 16 + 2));
 
 	socks5_free_conn(conn);
 	socks5_free_ctx(ctx);
