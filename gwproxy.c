@@ -347,20 +347,6 @@ static int do_recv(struct gwp_conn *from)
 	ssize_t ret;
 
 	/* remaining space of the buffer */
-	// recvcap = 10; recvlen = 0; recvoff = 0; rlen -> 10;
-	// recvcap = 10; recvlen = 5; recvoff = 0; rlen -> 5;
-	// recvcap = 10; recvlen = 0; recvoff = 5; rlen -> 10;
-
-	// [a, b, c, d, e, ................]
-	//                                @
-	//           #                    
-	//     *
-
-
-	// recvcap = 5
-	// recv(), "abc"; recvlen = 3; recvoff = 0;
-	// send(), "bc";  recvlen = 2; recvoff = 1;
-	// recv(), &buf[]
 	rlen = from->recvcap - (from->recvlen + from->recvoff);
 	if (!rlen)
 		return 0;
@@ -425,11 +411,8 @@ static int do_send(struct gwp_conn *to, struct gwp_conn *from)
 		"attempting to send %ld bytes to %s\n",
 		from->recvlen, to->addrstr
 	);
-	// recvlen 10 bytes
-	// 3 bytes
-	// 7 bytes
+
 	payload = &from->recvbuf[from->recvoff];
-	// printf("recvlen: %zu recvoff: %zu recvcap: %zu\n", from->recvlen, from->recvoff, from->recvcap);
 	ret = send(to->sockfd, payload, from->recvlen, MSG_NOSIGNAL);
 	if (ret < 0) {
 		ret = errno;
@@ -643,7 +626,6 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 	s->client.sockfd = cfd;
 	s->idx = container->session_nr++;
 	container->sessions[s->idx] = s;
-	printf("new idx=%zu with ptr=%p and session_nr=%zu\n", s->idx, s, container->session_nr);
 
 	ret = alloc_recv_send_buff(ctx, s);
 	if (ret)
@@ -704,6 +686,11 @@ static int accept_new_client(struct gwp_tctx *ctx)
 
 static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 {
+	pr_info(
+		"client %s disconnected, cleaning up its resources\n",
+		pc->client.addrstr
+	);
+
 	if (pc->req)
 		gwdns_release_req(pc->req);
 	if (pc->target.sockfd != -1)
@@ -716,32 +703,28 @@ static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 	free(pc);
 }
 
-static void cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
+static void swap_item(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 {
-	struct gwp_pair_conn **arr = ctx->container.sessions;
 	struct gwp_pair_conn *cur, *last;
+	struct gwp_pair_conn **arr;
 	size_t last_idx;
-	pr_info(
-		"client %s disconnected, cleaning up its resources\n",
-		pc->client.addrstr
-	);
 
-	// 0 1 2 3 4
-	// session_nr = 5
-	// 0 1 X 3 4
-	// session_nr = 4
-	// 0 1 4 3 X
+	arr = ctx->container.sessions;
 
 	last_idx = --ctx->container.session_nr;
 	last = arr[last_idx];
+
 	cur = arr[pc->idx];
-	printf("cur->idx = %zu; pc->idx = %zu; pc=%p cur=%p; session_nr = %zu\n",
-		(cur != (void *)-1UL) ? cur->idx : -1Ul, pc->idx, pc, cur, ctx->container.session_nr);
 	assert(cur == pc);
+
 	arr[pc->idx] = last;
 	last->idx = pc->idx;
-	assert(last == arr[last_idx]);
 	arr[last_idx] = NULL;
+}
+
+static void cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
+{
+	swap_item(ctx, pc);
 	_cleanup_pc(ctx, pc);
 }
 
@@ -774,18 +757,11 @@ static void cleanup_tctx(struct gwp_tctx *ctx)
 	struct gwp_pair_conn *pc;
 	size_t i;
 
-	printf("unfreed resource of session: %ld\n", ctx->container.session_nr);
 	for (i = 0; i < ctx->container.session_nr; i++) {
-		printf("i = %ld\n", i);
 		pc = ctx->container.sessions[i];
-		printf("pc equal to %p\n", pc);
-		assert(pc);
-		if (pc) {
-			printf("disconnecting %s\n", pc->client.addrstr);
+		if (pc)
 			_cleanup_pc(ctx, pc);
-		}
 	}
-	printf("i is %ld and session_nr: %ld\n", i, ctx->container.session_nr);
 
 	pr_info("closing TCP socket file descriptor: %d\n", ctx->tcpfd);
 	close(ctx->tcpfd);
