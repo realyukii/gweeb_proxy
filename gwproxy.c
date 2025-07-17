@@ -964,6 +964,12 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 
 	pc = ctx->pc;
 
+	if (pc->target.recvlen) {
+		ret = socks5_do_send(ctx);
+		if (ret)
+			return ret;
+	}
+
 	sa = &pc->conn_ctx->target_addr;
 	domain = &sa->addr.domain;
 	memcpy(&port, (void *)(domain->name + domain->len), 2);
