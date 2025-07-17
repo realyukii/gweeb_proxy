@@ -691,8 +691,11 @@ static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 		pc->client.addrstr
 	);
 
-	if (pc->req)
-		gwdns_release_req(pc->req);
+	if (pc->req) {
+		if (gwdns_release_req(pc->req)) {
+			pr_info("client disconnect and no longer interest\n");
+		}
+	}
 	if (pc->target.sockfd != -1)
 		close(pc->target.sockfd);
 	if (ctx->pctx->args->socks5_mode)

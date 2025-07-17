@@ -146,3 +146,8 @@ print function call trace with arguments and its return value (require -pg, see 
 ```
 uftrace live --no-pager --no-libcall -a -- build/gwproxy -s -b [::]:1080 -T 1 -w 60
 ```
+
+strace -x -f -e trace=%net,read,write sh test_disconnect.sh 
+
+reproduce segfault (make sure the user auth method is no auth, the payload is not using username/password auth method)
+x=2; for i in $(seq 1 $x); do bash ./test_disconnect.sh; done
