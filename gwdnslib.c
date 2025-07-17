@@ -125,6 +125,8 @@ void gwdns_free_ctx(struct gwdns_ctx *ctx)
 	for (i = 0; i < ctx->thread_nr; i++)
 		pthread_join(ctx->dns_t_pool[i], NULL);
 
+	pthread_cond_destroy(&ctx->dns_cond);
+	pthread_mutex_destroy(&ctx->dns_lock);
 	free(ctx->dns_t_pool);
 	free(ctx);
 }
