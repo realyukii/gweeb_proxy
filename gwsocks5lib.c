@@ -333,8 +333,10 @@ int socks5_init(struct socks5_ctx **ctx, struct socks5_cfg *p)
 
 	if (p->auth_file) {
 		r = socks5_init_creds(c, p->auth_file);
-		if (r < 0)
+		if (r < 0) {
+			free(c);
 			return r;
+		}
 	} else
 		c->creds.auth_file = NULL;
 
@@ -522,7 +524,6 @@ static void socks5_test_creds_file_not_found(void)
 	r = socks5_init(&ctx, &param);
 	assert(r == -ENOENT);
 
-	socks5_free_ctx(ctx);
 	PRTEST_OK();
 }
 
@@ -536,7 +537,6 @@ static void socks5_test_invalid_creds_format(void)
 	r = socks5_init(&ctx, &param);
 	assert(r == -EINVAL);
 
-	socks5_free_ctx(ctx);
 	PRTEST_OK();
 }
 
