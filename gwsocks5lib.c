@@ -629,6 +629,8 @@ static void socks5_test_ipv6_noauth(void)
 	int r;
 	size_t plen, olen;
 	char out_buf[1024];
+	uint16_t port;
+
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0, 0x4, 	// VER, CONNECT CMD, RSV, IPv6 ATYP
 		0x0, 0x0, 0x0, 0x0,
@@ -653,15 +655,17 @@ static void socks5_test_ipv6_noauth(void)
 	/* .. pretend perform connect syscall ... */
 
 	struct socks5_addr saddr = {
-		.type = 0x4,
+		.type = SOCKS5_IPv6,
 		.addr.ipv6 = {
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x1,
-		},
-		.port = 0x1dd9
+		}
 	};
+	port = htons(5081);
+	memcpy(((void *)(&saddr.addr.ipv6) + 16), &port, 2);
+
 	olen = sizeof(out_buf);
 	r = socks5_craft_connect_reply(conn, &saddr, 0, out_buf, &olen);
 	assert(!r);
@@ -672,7 +676,7 @@ static void socks5_test_ipv6_noauth(void)
 	assert(out_buf[2] == 0x0);				// RSV
 	assert(out_buf[3] == 0x4);				// ATYP IPv6
 	assert(!memcmp(&out_buf[4], saddr.addr.ipv6, 16));	// BND ADDR ::1
-	assert(!memcmp(&out_buf[20], "\x13\xd9", 2));		// BND PORT 5081
+	assert(!memcmp(&out_buf[20], &port, 2));		// BND PORT 5081
 
 	socks5_free_conn(conn);
 	socks5_free_ctx(ctx);
@@ -750,9 +754,8 @@ static void socks5_test_short_recv(void)
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
-			0x0, 0x0, 0x0, 0x1,
-		},
-		.port = 0x1dd9
+			0x0, 0x0, 0x0, 0x1
+		}
 	};
 	olen = sizeof(out_buf);
 	r = socks5_craft_connect_reply(conn, &saddr, 0, out_buf, &olen);
