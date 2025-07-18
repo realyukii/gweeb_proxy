@@ -5,7 +5,8 @@ CONVERTERSRC	:= ip_converter.c general.c
 INOTIFYSRC	:= test_inotify.c linux.c
 DNSRESOLVSRC	:= dns_resolver.c general.c linux.c
 DNSCLIENTSRC	:= dns_client.c general.c linux.c
-GWSOCKS5LIBSRC	:= gwsocks5lib.c linux.c
+GWSOCKS5LIBSRC	:= gwsocks5lib.c linux.c general.c
+GWDNSLIBSRC	:= gwdnslib.c linux.c
 
 OBJS1		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(GWPROXYSRC))
 OBJS2		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(CONVERTERSRC))
@@ -13,6 +14,7 @@ OBJS3		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(INOTIFYSRC))
 OBJS4		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(DNSRESOLVSRC))
 OBJS5		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(DNSCLIENTSRC))
 OBJS6		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(GWSOCKS5LIBSRC))
+OBJS7		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(GWDNSLIBSRC))
 
 TARGET1		:= $(BUILDDIR)/gwproxy
 TARGET2		:= $(BUILDDIR)/ip_converter
@@ -20,6 +22,7 @@ TARGET3		:= $(BUILDDIR)/test_inotify
 TARGET4		:= $(BUILDDIR)/dns_resolver
 TARGET5		:= $(BUILDDIR)/dns_client
 TARGET6		:= $(BUILDDIR)/gwsocks5lib
+TARGET7		:= $(BUILDDIR)/gwdnslib
 
 CC		:= gcc
 CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -g3
@@ -40,12 +43,17 @@ $(TARGET2): $(OBJS2)
 $(TARGET3): $(OBJS3)
 $(TARGET4): $(OBJS4)
 $(TARGET5): $(OBJS5)
-$(TARGET6): CFLAGS += -DRUNTEST
+$(TARGET6): CFLAGS += -DRUNTEST  -DENABLE_DUMP
 $(TARGET6): $(OBJS6)
+$(TARGET7): CFLAGS += -DRUNTEST
+$(TARGET7): $(OBJS7)
 
 # test without log: make CFLAGS="-DENABLE_LOG=false" -B test_conventional
 test_conventional: $(TARGET1)
 	$< -t [::1]:8081 -b [::1]:8080 -T 1
+test_socks5_silent: CFLAGS += -DENABLE_DUMP=false -DENABLE_LOG=false
+test_socks5_silent: $(TARGET1)
+	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 500 -w 60 -y 500
 test_socks5_nodump: CFLAGS += -DENABLE_DUMP=false
 test_socks5_nodump: $(TARGET1)
 	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 1 -w 60 2>&1 | grep -v verbose | grep -v debug

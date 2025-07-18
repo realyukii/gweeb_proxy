@@ -29,8 +29,8 @@ static void resolve_dns(struct gwdns_req *req)
 	ret = getaddrinfo(req->domainname, req->port, NULL, &l);
 	if (ret != 0) {
 		pr_err(
-			"failed to resolve domain name: %s\n",
-			gai_strerror(ret)
+			"failed to resolve domain name %s reason: %s\n",
+			req->domainname, gai_strerror(ret)
 		);
 		req->status = ret;
 		return;
@@ -71,6 +71,8 @@ static void *dns_serv_thread(void *args)
 		resolve_dns(r);
 		if (!gwdns_release_req(r))
 			write(r->evfd, &val, sizeof(val));
+		else
+			pr_verbose("orphan request: %p was freed\n", r);
 		pr_dbg("attempting to lock dns_lock\n");
 		pthread_mutex_lock(&dctx->dns_lock);
 		pr_dbg("acquired dns_lock\n");
@@ -114,6 +116,7 @@ int gwdns_init_ctx(struct gwdns_ctx **ctx, struct gwdns_cfg *cfg)
 
 void gwdns_free_ctx(struct gwdns_ctx *ctx)
 {
+	struct gwdns_req *r, *tmp;
 	int i;
 
 	ctx->should_stop = true;
@@ -121,6 +124,13 @@ void gwdns_free_ctx(struct gwdns_ctx *ctx)
 
 	for (i = 0; i < ctx->thread_nr; i++)
 		pthread_join(ctx->dns_t_pool[i], NULL);
+
+	tmp = NULL;
+	for (r = ctx->q.head; r; r = tmp) {
+		tmp = r->next;
+		pr_verbose("free %p uncompleted request of %s\n", r, r->domainname);
+		gwdns_release_req(r);
+	}
 
 	pthread_cond_destroy(&ctx->dns_cond);
 	pthread_mutex_destroy(&ctx->dns_lock);
@@ -176,3 +186,52 @@ bool gwdns_release_req(struct gwdns_req *req)
 
 	return false;
 }
+
+#ifdef RUNTEST
+
+static void gwdns_test_orphan_client()
+{
+	struct gwdns_ctx *ctx;
+	struct gwdns_cfg cfg;
+	struct gwdns_req *r;
+	bool last_holder;
+	uint16_t port;
+	size_t i;
+	int ret;
+
+	cfg.thread_nr = 2;
+	ret = gwdns_init_ctx(&ctx, &cfg);
+	assert(!ret);
+
+	port = htons(80);
+	static const char domain[] = "fb.me";
+	static char randomized_domain[255];
+	int subdomain;
+	srand(5);
+	for (i = 0; i < 1000; i++) {
+		subdomain = rand();
+		sprintf(randomized_domain, "%d.%s", subdomain, domain);
+		r = gwdns_enqueue_req(ctx, randomized_domain, strlen(randomized_domain), port);
+		assert(r);
+
+		last_holder = gwdns_release_req(r);
+		assert(!last_holder);
+	}
+	
+	gwdns_free_ctx(ctx);
+}
+
+static void gwdns_run_tests()
+{
+	gwdns_test_orphan_client();
+	pr_info("[OK] all tests passed!\n");
+}
+
+int main(void)
+{
+	gwdns_run_tests();
+
+	return 0;
+}
+
+#endif
