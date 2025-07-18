@@ -1251,6 +1251,7 @@ static int register_hotreload(struct gwp_pctx *ctx)
 static int spawn_threads(struct gwp_pctx *ctx)
 {
 	size_t i, server_thread_nr;
+	char tname[16];
 	int ret;
 
 	server_thread_nr = ctx->args->server_thread_nr;
@@ -1267,6 +1268,8 @@ static int spawn_threads(struct gwp_pctx *ctx)
 			&ctx->tctx[i].thandle, NULL,
 			tcp_serv_thread, &ctx->tctx[i]
 		);
+		snprintf(tname, sizeof(tname), "tcp-serv-%ld", i);
+		pthread_setname_np(ctx->tctx[i].thandle, tname);
 	}
 
 	ret = register_hotreload(ctx);

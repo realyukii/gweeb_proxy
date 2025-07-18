@@ -86,6 +86,7 @@ static void *dns_serv_thread(void *args)
 int gwdns_init_ctx(struct gwdns_ctx **ctx, struct gwdns_cfg *cfg)
 {
 	struct gwdns_ctx *dctx;
+	char tname[255];
 	int i;
 
 	dctx = malloc(sizeof(*dctx));
@@ -105,10 +106,13 @@ int gwdns_init_ctx(struct gwdns_ctx **ctx, struct gwdns_cfg *cfg)
 	dctx->q.head = NULL;
 	dctx->should_stop = false;
 
-	for (i = 0; i < cfg->thread_nr; i++)
+	for (i = 0; i < cfg->thread_nr; i++) {
 		pthread_create(
 			&dctx->dns_t_pool[i], NULL, dns_serv_thread, dctx
 		);
+		snprintf(tname, sizeof(tname), "dns-serv-%d", i);
+		pthread_setname_np(dctx->dns_t_pool[i], tname);
+	}
 
 	*ctx = dctx;
 	return 0;
@@ -210,7 +214,7 @@ static void gwdns_test_orphan_client()
 	srand(5);
 	for (i = 0; i < 1000; i++) {
 		subdomain = rand();
-		sprintf(randomized_domain, "%d.%s", subdomain, domain);
+		snprintf(randomized_domain, sizeof(randomized_domain), "%d.%s", subdomain, domain);
 		r = gwdns_enqueue_req(ctx, randomized_domain, strlen(randomized_domain), port);
 		assert(r);
 
