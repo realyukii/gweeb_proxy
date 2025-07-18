@@ -129,19 +129,6 @@ struct socks5_userpwd {
 	char rest_bytes[];
 };
 
-struct userpwd_pair {
-	char *username;
-	char *password;
-	uint8_t ulen;
-	uint8_t plen;
-};
-
-struct userpwd_list {
-	int nr_entry;
-	struct userpwd_pair *arr;
-	struct userpwd_pair *prev_arr;
-};
-
 /*
 * Initialize SOCKS5 instance.
 * the caller MUST free the initialized pointer using socks5_free_ctx function.
