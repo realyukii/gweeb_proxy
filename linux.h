@@ -10,6 +10,9 @@
 
 #define MAX_LEN 255
 
+#ifndef LINUX_H
+#define LINUX_H
+
 struct userpwd_pair {
 	char *username;
 	char *password;
@@ -70,3 +73,6 @@ int parse_auth_file(int filefd, struct userpwd_list *l, char **buf);
 void __pr_log(unsigned lvl, const char *fmt, ...);
 
 void generate_current_time(char *buf);
+
+
+#endif // LINUX_H
