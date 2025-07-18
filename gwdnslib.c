@@ -23,7 +23,8 @@ static void dequeue_req(struct dns_queue *q)
 
 static void resolve_dns(struct gwdns_req *req)
 {
-	struct addrinfo *l;
+	struct addrinfo *l, *a;
+	bool found = false;
 	int ret;
 
 	ret = getaddrinfo(req->domainname, req->port, NULL, &l);
@@ -36,9 +37,18 @@ static void resolve_dns(struct gwdns_req *req)
 		return;
 	}
 
-	req->status = 0;
+	// there's no ipv6 version for sysctl net.ipv4.ip_local_port_range="4000 65535"
+	// -> force IPv4 connection
+	for (a = l; a; a = a->ai_next) {
+		if (a->ai_family == AF_INET) {
+			*(struct sockaddr_in *)&req->result = *(struct sockaddr_in *)a->ai_addr;
+			found = true;
+			VT_HEXDUMP(&req->result, sizeof(req->result));
+			break;
+		}
+	}
 
-	memcpy(&req->result, l->ai_addr, l->ai_addrlen);
+	req->status = found ? 0 : -EHOSTUNREACH;
 	freeaddrinfo(l);
 }
 
@@ -69,10 +79,16 @@ static void *dns_serv_thread(void *args)
 		dequeue_req(&dctx->q);
 		pthread_mutex_unlock(&dctx->dns_lock);
 		resolve_dns(r);
-		if (!gwdns_release_req(r))
-			write(r->evfd, &val, sizeof(val));
-		else
-			pr_verbose("orphan request: %p was freed\n", r);
+		eventfd_write(r->evfd, 1);
+		gwdns_release_req(r);
+		// if (!gwdns_release_req(r)) {
+			// sched_yield();
+			
+			// use-after-free
+			// write(r->evfd, &val, sizeof(val));
+		// } else {
+		// 	pr_verbose("orphan request: %p was freed\n", r);
+		// }
 		pr_dbg("attempting to lock dns_lock\n");
 		pthread_mutex_lock(&dctx->dns_lock);
 		pr_dbg("acquired dns_lock\n");

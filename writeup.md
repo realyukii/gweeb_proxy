@@ -153,3 +153,22 @@ reproduce segfault (make sure the user auth method is no auth, the payload is no
 x=2; for i in $(seq 1 $x); do bash ./test_disconnect.sh; done
 
 https://gist.github.com/realyukii/7f9271002fd9c0f308069858bdc8204e
+
+
+while stress-testing, it's recommended to monitor and check system resources usage on:
+- vmstat
+- htop
+
+for networking-specific tools:
+- nethogs
+- nload
+
+today's debugging:
+systemd-run --scope -p CPUQuota=500% -p MemoryHigh=10G -p MemoryMax=10G valgrind --exit-on-first-error=yes --error-exitcode=255 build/gwproxy -g $((1024 * 1024 * 10)) -s -b [::]:1080 -T 1 -y 1
+
+sudo strace -x -f -e trace=%net,epoll_wait,epoll_ctl,close -p 14998
+strace -x -f -e trace=%net,epoll_wait,epoll_ctl,close -p 
+
+uftrace record -F process_event --no-sched-preempt --no-sched -a -- build/gwproxy -s -b [::]:1080 -T 1 -y 1
+
+strace -o /tmp/strace.out -x -f -e 'trace=!getpid,gettid,rt_sigprocmask,read,write,futex,ioctl,mmap,munmap,openat' -p 30303

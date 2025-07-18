@@ -321,7 +321,7 @@ static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
 			struct sockaddr_storage *dst)
 {
 	struct gwp_conn *t = &pc->target;
-
+	assert(t->sockfd == -1);
 	int ret = set_target(pc, dst);
 	if (ret < 0)
 		return -EXIT_FAILURE;
@@ -695,10 +695,21 @@ static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 		pc->client.addrstr
 	);
 
-	if (pc->req)
+	if (pc->req) {
+		/*
+		* the event fd MUST be closed,
+		* there's no guarantee gwdns_release_req
+		* will close it immediately after the call.
+		*/
+		epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, pc->req->evfd, NULL);
 		gwdns_release_req(pc->req);
-	if (pc->target.sockfd != -1)
+	}
+
+	// printf("sockfd target: %d client: %d, socks5 state: %d\n", pc->target.sockfd, pc->client.sockfd, pc->conn_ctx->state);
+	if (pc->target.sockfd != -1) {
+		epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, pc->target.sockfd, NULL);
 		close(pc->target.sockfd);
+	}
 	if (ctx->pctx->args->socks5_mode)
 		socks5_free_conn(pc->conn_ctx);
 	close(pc->client.sockfd);
@@ -794,6 +805,7 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 			);
 			break;
 		}
+		// printf("ready_nr: %d\n", ready_nr);
 
 		for (i = 0; i < ready_nr; i++) {
 			ret = process_event(ctx, &evs[i]);
@@ -951,7 +963,6 @@ static int socks5_do_send(struct gwp_tctx *ctx)
 
 static int socks5_prepare_connect(struct gwp_tctx* ctx)
 {
-	struct sockaddr_storage addr;
 	struct atyp_domain *domain;
 	struct gwp_pair_conn *pc;
 	struct socks5_addr *sa;
@@ -968,10 +979,15 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 	}
 
 	sa = &pc->conn_ctx->target_addr;
-	domain = &sa->addr.domain;
-	memcpy(&port, (void *)(domain->name + domain->len), 2);
+
+	// if (sa->type != SOCKS5_DOMAIN) {
+	// 	VT_HEXDUMP(sa, sizeof(*sa));
+	// 	abort();
+	// }
 
 	if (sa->type == SOCKS5_DOMAIN) {
+		domain = &sa->addr.domain;
+		memcpy(&port, (void *)(domain->name + domain->len), 2);
 		req = gwdns_enqueue_req(
 			ctx->pctx->dns_ctx,
 			domain->name, domain->len, port
@@ -983,9 +999,12 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 		ret = register_events(
 			req->evfd, ctx->epfd, EPOLLIN, pc, GWP_EV_DOMAIN
 		);
+		pc->conn_ctx->state = SOCKS5_CONNECT_WAIT_TARGET;
 		if (ret)
 			return ret;
-	} else {
+	} else if (pc->target.sockfd == -1) {
+		struct sockaddr_storage addr;
+		assert(pc->conn_ctx->state == SOCKS5_CONNECT);
 		memset(&addr, 0, sizeof(addr));
 		socks5_convert_addr(sa, &addr);
 		ret = prepare_forward(ctx, pc, &addr);
@@ -1011,6 +1030,8 @@ static int socks5_handle_default(struct gwp_tctx* ctx)
 
 	if (conn->state == SOCKS5_CONNECT)
 		ret = socks5_prepare_connect(ctx);
+	else if (conn->state == SOCKS5_CONNECT_WAIT_TARGET)
+		return 0;
 	else
 		ret = socks5_do_send(ctx);
 
@@ -1053,6 +1074,13 @@ static int socks5_handle_resolved_domain(struct gwp_tctx *ctx)
 	if (ret)
 		return ret;
 
+	// 1. SOCKS5 ATYP DOMAIN
+	// 2. Resolve (get eventfd)
+	// 3. Disconnect (cleanup, pc -> invalid)
+	// 4. eventfd POLLIN
+
+	epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, pc->req->evfd, NULL);
+
 	gwdns_release_req(pc->req);
 
 	pc->req = NULL;
@@ -1069,6 +1097,12 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	ctx->pc = pc;
 	ctx->epev = ev;
 
+	// __asm__ volatile (
+	// 	"syscall"
+	// 	:
+	// 	: "a"(999), "D" (pc->target.sockfd), "S" (pc->client.sockfd), "d" (ev_bit)
+	// );
+
 	switch (ev_bit) {
 	case GWP_EV_RELOAD_CREDS:
 		socks5_reload_creds_file(ctx->pctx->socks5_ctx);
@@ -1079,6 +1113,7 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 			goto terminate_and_recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
+		// printf("epoll event: %d\n", ctx->epev);
 		ret = socks5_handle_target(ctx);
 		if (ret)
 			goto terminate_and_recall_epoll_wait;

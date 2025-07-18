@@ -25,10 +25,10 @@ TARGET6		:= $(BUILDDIR)/gwsocks5lib
 TARGET7		:= $(BUILDDIR)/gwdnslib
 
 CC		:= gcc
-CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -Os
+CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -O0 -g3
 LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
 
-BUFF_SIZE = $$((1024 * 1024 * 10))
+BUFF_SIZE = $$((1024 * 5))
 
 all: $(TARGET1) $(TARGET2) $(TARGET3) $(TARGET4) $(TARGET5) $(TARGET6)
 
@@ -53,7 +53,7 @@ test_conventional: $(TARGET1)
 	$< -t [::1]:8081 -b [::1]:8080 -T 1
 test_socks5_silent: CFLAGS += -DENABLE_DUMP=false -DENABLE_LOG=false
 test_socks5_silent: $(TARGET1)
-	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 500 -w 60 -y 500
+	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 1 -w 60 -y 1
 test_socks5_nodump: CFLAGS += -DENABLE_DUMP=false
 test_socks5_nodump: $(TARGET1)
 	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 1 -w 60 2>&1 | grep -v verbose | grep -v debug
@@ -61,7 +61,7 @@ test_socks5: CFLAGS += -DENABLE_LOG=false -DENABLE_DUMP=true
 test_socks5: $(TARGET1)
 	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 1 -w 60
 test_socks5_valgrind: $(TARGET1)
-	valgrind --leak-check=full --show-leak-kinds=all --leak-resolution=high --log-file=leaks.log $< -s -b [::]:1080 -T 50 -y 50 -w 60
+	valgrind --leak-check=full --show-leak-kinds=all --leak-resolution=high --log-file=leaks.log $< -s -b [::]:1080 -T 1 -y 1 -w 60
 test_socks5_strace: CFLAGS += -DENABLE_LOG=false
 test_socks5_strace: $(TARGET1)
 	strace -x -f $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60

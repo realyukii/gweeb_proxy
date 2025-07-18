@@ -13,6 +13,7 @@
 #include <assert.h>
 
 #include "linux.h"
+#include "general.h"
 
 struct gwdns_req {
 	struct sockaddr_storage result;
