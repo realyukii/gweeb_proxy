@@ -53,6 +53,8 @@ void __pr_log(unsigned lvl, const char *fmt, ...)
 	case VERBOSE:
 		level = vrbs;
 		break;
+	default:
+		return;
 	}
 
 	vsnprintf(localbuf, sizeof(localbuf), fmt, args);

@@ -90,6 +90,8 @@ void get_addrstr(struct sockaddr *saddr, char *bufptr)
 		addrfmt = addr6fmt;
 
 		break;
+	default:
+		abort();
 	}
 
 	snprintf(bufptr, ADDRSTR_SZ, addrfmt, addrbuf, port_nr);
