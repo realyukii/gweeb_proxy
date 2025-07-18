@@ -700,16 +700,15 @@ static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 		* the event fd MUST be closed,
 		* there's no guarantee gwdns_release_req
 		* will close it immediately after the call.
+		*
+		* this also applied for socks5_handle_resolved_domain function.
 		*/
 		epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, pc->req->evfd, NULL);
 		gwdns_release_req(pc->req);
 	}
 
-	// printf("sockfd target: %d client: %d, socks5 state: %d\n", pc->target.sockfd, pc->client.sockfd, pc->conn_ctx->state);
-	if (pc->target.sockfd != -1) {
-		epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, pc->target.sockfd, NULL);
+	if (pc->target.sockfd != -1)
 		close(pc->target.sockfd);
-	}
 	if (ctx->pctx->args->socks5_mode)
 		socks5_free_conn(pc->conn_ctx);
 	close(pc->client.sockfd);
@@ -805,7 +804,6 @@ static int start_tcp_serv(struct gwp_tctx *ctx)
 			);
 			break;
 		}
-		// printf("ready_nr: %d\n", ready_nr);
 
 		for (i = 0; i < ready_nr; i++) {
 			ret = process_event(ctx, &evs[i]);
@@ -980,11 +978,6 @@ static int socks5_prepare_connect(struct gwp_tctx* ctx)
 
 	sa = &pc->conn_ctx->target_addr;
 
-	// if (sa->type != SOCKS5_DOMAIN) {
-	// 	VT_HEXDUMP(sa, sizeof(*sa));
-	// 	abort();
-	// }
-
 	if (sa->type == SOCKS5_DOMAIN) {
 		domain = &sa->addr.domain;
 		memcpy(&port, (void *)(domain->name + domain->len), 2);
@@ -1074,11 +1067,12 @@ static int socks5_handle_resolved_domain(struct gwp_tctx *ctx)
 	if (ret)
 		return ret;
 
-	// 1. SOCKS5 ATYP DOMAIN
-	// 2. Resolve (get eventfd)
-	// 3. Disconnect (cleanup, pc -> invalid)
-	// 4. eventfd POLLIN
-
+	/*
+	* 1. SOCKS5 ATYP DOMAIN
+	* 2. Resolve (get eventfd)
+	* 3. Disconnect (cleanup, pc -> invalid)
+	* 4. eventfd POLLIN
+	*/
 	epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, pc->req->evfd, NULL);
 
 	gwdns_release_req(pc->req);
@@ -1097,12 +1091,6 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 	ctx->pc = pc;
 	ctx->epev = ev;
 
-	// __asm__ volatile (
-	// 	"syscall"
-	// 	:
-	// 	: "a"(999), "D" (pc->target.sockfd), "S" (pc->client.sockfd), "d" (ev_bit)
-	// );
-
 	switch (ev_bit) {
 	case GWP_EV_RELOAD_CREDS:
 		socks5_reload_creds_file(ctx->pctx->socks5_ctx);
@@ -1113,7 +1101,6 @@ static int socks5_proxy_handler(struct gwp_tctx *ctx, void *data,
 			goto terminate_and_recall_epoll_wait;
 		break;
 	case GWP_EV_TARGET:
-		// printf("epoll event: %d\n", ctx->epev);
 		ret = socks5_handle_target(ctx);
 		if (ret)
 			goto terminate_and_recall_epoll_wait;
