@@ -171,6 +171,7 @@ void vt_hexdump(const void *p, size_t size,
 	);
 	free(tmp);
 out:
+	;
 }
 
 #endif
