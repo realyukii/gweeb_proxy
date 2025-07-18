@@ -695,11 +695,8 @@ static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 		pc->client.addrstr
 	);
 
-	if (pc->req) {
-		if (gwdns_release_req(pc->req)) {
-			pr_info("client disconnect and no longer interest\n");
-		}
-	}
+	if (pc->req)
+		gwdns_release_req(pc->req);
 	if (pc->target.sockfd != -1)
 		close(pc->target.sockfd);
 	if (ctx->pctx->args->socks5_mode)
@@ -1046,6 +1043,8 @@ static int socks5_handle_resolved_domain(struct gwp_tctx *ctx)
 
 	pc = ctx->pc;
 	req = pc->req;
+	if (!req)
+		return 0;
 
 	if (req->status)
 		return socks5_reply_err_connect_cmd(ctx, SOCKS5_HOST_UNREACH);
