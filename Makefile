@@ -26,7 +26,7 @@ TARGET7		:= $(BUILDDIR)/gwdnslib
 
 CC		:= gcc
 CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -Os
-# LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
+LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
 
 BUFF_SIZE = $$((1024 * 1024 * 10))
 
@@ -61,7 +61,7 @@ test_socks5: CFLAGS += -DENABLE_LOG=false -DENABLE_DUMP=true
 test_socks5: $(TARGET1)
 	$< -g $(BUFF_SIZE) -s -b [::]:1080 -T 1 -w 60
 test_socks5_valgrind: $(TARGET1)
-	valgrind --leak-check=full --leak-resolution=high --log-file=leaks.log $< -s -b [::]:1080 -T 50 -y 50 -w 60
+	valgrind --leak-check=full --show-leak-kinds=all --leak-resolution=high --log-file=leaks.log $< -s -b [::]:1080 -T 50 -y 50 -w 60
 test_socks5_strace: CFLAGS += -DENABLE_LOG=false
 test_socks5_strace: $(TARGET1)
 	strace -x -f $< -f ./auth.db -s -b [::]:1080 -T 1 -w 60

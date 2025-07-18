@@ -151,3 +151,5 @@ strace -x -f -e trace=%net,read,write sh test_disconnect.sh
 
 reproduce segfault (make sure the user auth method is no auth, the payload is not using username/password auth method)
 x=2; for i in $(seq 1 $x); do bash ./test_disconnect.sh; done
+
+https://gist.github.com/realyukii/7f9271002fd9c0f308069858bdc8204e
