@@ -374,7 +374,7 @@ int socks5_process_data(struct socks5_conn *conn, const void *in, size_t *in_len
 		.total_advance = 0,
 		.total_out = 0
 	};
-	int r = 0;
+	int r;
 
 retry:
 	switch (conn->state) {
@@ -388,8 +388,8 @@ retry:
 		r = socks5_handle_request(&args);
 		break;
 	case SOCKS5_CONNECT:
-		goto exit;
 	case SOCKS5_CONNECT_WAIT_TARGET:
+		r = 0;
 		goto exit;
 	default:
 		pr_dbg("unhandled state: %d\n", conn->state);
