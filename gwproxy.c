@@ -9,6 +9,7 @@
 #include <sys/resource.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 #include <assert.h>
 
@@ -23,7 +24,7 @@
 #define DEFAULT_PREALLOC_CONN 100
 #define DEFAULT_BUFF_SZ 1024
 
-#define ALL_EV_BITS (GWP_EV_STOP | GWP_EV_ACCEPT | GWP_EV_CLIENT | GWP_EV_TARGET)
+#define ALL_EV_BITS (GWP_EV_STOP | GWP_EV_ACCEPT | GWP_EV_CLIENT | GWP_EV_TARGET | GWP_EV_TARGET_TIMEOUT)
 #define GET_EV_BIT(X) ((X) & ALL_EV_BITS)
 #define CLEAR_EV_BIT(X) ((X) & ~ALL_EV_BITS)
 
@@ -62,8 +63,9 @@ enum gwp_ev_bit {
 	GWP_EV_ACCEPT		= (0x2ULL << 48ULL),
 	GWP_EV_CLIENT		= (0x3ULL << 48ULL),
 	GWP_EV_TARGET		= (0x4ULL << 48ULL),
-	GWP_EV_DOMAIN		= (0x5ULL << 48ULL),
-	GWP_EV_RELOAD_CREDS	= (0x6ULL << 48ULL)
+	GWP_EV_TARGET_TIMEOUT	= (0x5ULL << 48ULL),
+	GWP_EV_DOMAIN		= (0x6ULL << 48ULL),
+	GWP_EV_RELOAD_CREDS	= (0x7ULL << 48ULL)
 };
 
 struct gwp_pctx *gctx;
@@ -81,6 +83,7 @@ struct gwp_conn {
 struct gwp_pair_conn {
 	size_t idx;
 	bool is_target_connected;
+	int timeoutfd;
 	struct gwp_conn client;
 	struct gwp_conn target;
 	struct gwdns_req *req;
@@ -177,7 +180,8 @@ static int mod_events(int fd, int epfd, uint32_t epmask,
 	return custom_epoll_ctl(fd, epfd, epmask, ptr, evmask, EPOLL_CTL_MOD);
 }
 
-static int set_target(struct gwp_pair_conn *pc, struct sockaddr_storage *sockaddr)
+static int set_target(struct gwp_tctx *ctx, struct gwp_pair_conn *pc,
+			struct sockaddr_storage *sockaddr)
 {
 	struct gwp_conn *t;
 	int ret, tsock;
@@ -202,8 +206,18 @@ static int set_target(struct gwp_pair_conn *pc, struct sockaddr_storage *sockadd
 	ret = connect(tsock, (struct sockaddr *)sockaddr, sizeof(*sockaddr));
 	if (ret < 0) {
 		ret = errno;
-		if (ret == EINPROGRESS)
+		if (ret == EINPROGRESS) {
+			size_t timeout = ctx->pctx->args->timeout;
+			if (timeout) {
+				const struct itimerspec it = {
+					.it_value = {
+						.tv_sec = timeout
+					}
+				};
+				timerfd_settime(pc->timeoutfd, 0, &it, NULL);
+			}
 			return 0;
+		}
 		pr_err(
 			"failed to connect to address %s: %s\n",
 			t->addrstr, strerror(ret)
@@ -322,7 +336,7 @@ static int prepare_forward(struct gwp_tctx *tctx, struct gwp_pair_conn *pc,
 {
 	struct gwp_conn *t = &pc->target;
 	assert(t->sockfd == -1);
-	int ret = set_target(pc, dst);
+	int ret = set_target(tctx, pc, dst);
 	if (ret < 0)
 		return -EXIT_FAILURE;
 
@@ -660,7 +674,26 @@ static int alloc_new_session(struct gwp_tctx *ctx, struct sockaddr *in, int cfd)
 			goto exit_free_recv_buff;
 	}
 
+	if (args->timeout) {
+		s->timeoutfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+		if (s->timeoutfd < 0) {
+			pr_err(
+				"failed to set timer for timeout: %s\n",
+				strerror(errno)
+			);
+			goto exit_free_recv_buff;
+		}
+		ret = register_events(
+			s->timeoutfd, ctx->epfd, EPOLLIN, s, GWP_EV_TARGET_TIMEOUT
+		);
+		if (ret)
+			goto exit_close_timerfd;
+	} else
+		s->timeoutfd = -1;
+
 	return 0;
+exit_close_timerfd:
+	close(s->timeoutfd);
 exit_free_recv_buff:
 	free(s->target.recvbuf);
 	free(s->client.recvbuf);
@@ -707,6 +740,8 @@ static void _cleanup_pc(struct gwp_tctx *ctx, struct gwp_pair_conn *pc)
 		gwdns_release_req(pc->req);
 	}
 
+	if (pc->timeoutfd != -1)
+		close(pc->timeoutfd);
 	if (pc->target.sockfd != -1)
 		close(pc->target.sockfd);
 	if (ctx->pctx->args->socks5_mode)
@@ -753,6 +788,13 @@ static int process_event(struct gwp_tctx *ctx, struct epoll_event *ev)
 	data = ev->data.ptr;
 	switch (ev_bit) {
 	case GWP_EV_STOP:
+		break;
+	case GWP_EV_TARGET_TIMEOUT:
+		pr_warn(
+			"connection to %s timed out after %d seconds\n",
+			ctx->pc->target.addrstr, ctx->pctx->args->timeout
+		);
+		cleanup_pc(ctx, data);
 		break;
 	case GWP_EV_ACCEPT:
 		accept_new_client(ctx);
