@@ -136,3 +136,39 @@ test memory error and memory leak with valgrind:
 ```shell
 valgrind --leak-check=full --show-leak-kinds=all --leak-resolution=high --log-file=leaks.log ./build/dns_resolver -b [::]:6969 -t 1
 ```
+
+profiles CPU/cache performance:
+```
+valgrind --tool=callgrind build/gwproxy -f ./auth.db -s -b [::]:1080 -T 1 -w 60
+```
+
+print function call trace with arguments and its return value (require -pg, see https://github.com/namhyung/uftrace/discussions/2012)
+```
+uftrace live --no-pager --no-libcall -a -- build/gwproxy -s -b [::]:1080 -T 1 -w 60
+```
+
+strace -x -f -e trace=%net,read,write sh test_disconnect.sh 
+
+reproduce segfault (make sure the user auth method is no auth, the payload is not using username/password auth method)
+x=2; for i in $(seq 1 $x); do bash ./test_disconnect.sh; done
+
+https://gist.github.com/realyukii/7f9271002fd9c0f308069858bdc8204e
+
+
+while stress-testing, it's recommended to monitor and check system resources usage on:
+- vmstat
+- htop
+
+for networking-specific tools:
+- nethogs
+- nload
+
+today's debugging:
+systemd-run --scope -p CPUQuota=500% -p MemoryHigh=10G -p MemoryMax=10G valgrind --exit-on-first-error=yes --error-exitcode=255 build/gwproxy -g $((1024 * 1024 * 10)) -s -b [::]:1080 -T 1 -y 1
+
+sudo strace -x -f -e trace=%net,epoll_wait,epoll_ctl,close -p 14998
+strace -x -f -e trace=%net,epoll_wait,epoll_ctl,close -p 
+
+uftrace record -F process_event --no-sched-preempt --no-sched -a -- build/gwproxy -s -b [::]:1080 -T 1 -y 1
+
+strace -o /tmp/strace.out -x -f -e 'trace=!getpid,gettid,rt_sigprocmask,read,write,futex,ioctl,mmap,munmap,openat' -p 30303

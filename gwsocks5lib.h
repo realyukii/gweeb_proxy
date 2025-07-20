@@ -41,6 +41,7 @@ enum socks5_state {
 	SOCKS5_AUTH,
 	SOCKS5_REQUEST,
 	SOCKS5_CONNECT,
+	SOCKS5_CONNECT_WAIT_TARGET,
 	SOCKS5_FORWARDING
 };
 
@@ -55,11 +56,6 @@ enum auth_type {
 	// GSSAPI, not supported yet
 	USERNAME_PWD = 0x2,
 	NONE = 0xFF
-};
-
-struct socks5_conn {
-	enum socks5_state state;
-	struct socks5_ctx *ctx;
 };
 
 struct socks5_cfg {
@@ -93,9 +89,9 @@ struct socks5_handshake {
 struct socks5_addr {
 	/* see the available type in enum addr_type */
 	uint8_t type;
-	union {
+	union saddr {
 		uint8_t ipv4[4];
-		struct {
+		struct atyp_domain {
 			uint8_t len;
 			char name[MAX_DOMAIN_LEN];
 		} domain;
@@ -104,15 +100,17 @@ struct socks5_addr {
 	uint16_t port;
 } __attribute__((packed));
 
+struct socks5_conn {
+	enum socks5_state state;
+	struct socks5_ctx *ctx;
+	struct socks5_addr target_addr;
+};
+
 struct socks5_request {
 	uint8_t ver;
 	uint8_t cmd;
 	uint8_t rsv;
 	struct socks5_addr dst_addr;
-	/*
-	* since addr member of struct dst_addr use union,
-	* the destination port is not specified explicitly as a struct member.
-	*/
 };
 
 struct socks5_reply {
@@ -130,19 +128,6 @@ struct socks5_userpwd {
 	uint8_t ver;
 	uint8_t ulen;
 	char rest_bytes[];
-};
-
-struct userpwd_pair {
-	char *username;
-	char *password;
-	uint8_t ulen;
-	uint8_t plen;
-};
-
-struct userpwd_list {
-	int nr_entry;
-	struct userpwd_pair *arr;
-	struct userpwd_pair *prev_arr;
 };
 
 /*
@@ -182,13 +167,13 @@ void socks5_free_conn(struct socks5_conn *conn);
 * @return zero on success, or a negative integer on failure.
 */
 int socks5_process_data(struct socks5_conn *conn,
-			const void *in, unsigned *in_len, void *out, unsigned *out_len);
+			const void *in, size_t *in_len, void *out, size_t *out_len);
 
 /*
 * Craft response to CONNECT request with given address and reply code.
 */
-int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr,
-				uint8_t rep_code, void *replybuf, unsigned *replylen);
+int socks5_craft_connect_reply(struct socks5_conn *conn, struct socks5_addr *addr,
+				uint8_t rep_code, void *replybuf, size_t *replylen);
 
 /*
 * Reload username/password credential.
@@ -199,3 +184,7 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *addr
 * (you can ignore if you want, it will restore previous value).
 */
 int socks5_reload_creds_file(struct socks5_ctx *ctx);
+
+void socks5_convert_addr(struct socks5_addr *sa, struct sockaddr_storage *ss);
+
+void addr_convert_socks5(struct socks5_addr *sa, struct sockaddr_storage *ss);

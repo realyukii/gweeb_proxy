@@ -10,6 +10,9 @@
 
 #define MAX_LEN 255
 
+#ifndef LINUX_H
+#define LINUX_H
+
 struct userpwd_pair {
 	char *username;
 	char *password;
@@ -31,12 +34,12 @@ struct userpwd_list {
 #define WARN 2
 #define ERROR 3
 #define DEBUG 4
+#define VERBOSE 5
 
 #if ENABLE_LOG
 #define pr_log(LVL, FMT, ...) 				\
 do {							\
-	if (ENABLE_LOG)					\
-		__pr_log(LVL, FMT, ##__VA_ARGS__);	\
+	__pr_log(LVL, FMT, ##__VA_ARGS__);		\
 } while (0);
 #else 
 #define pr_log(LVL, FMT, ...) {}
@@ -46,6 +49,7 @@ do {							\
 #define pr_info(FMT, ...) pr_log(INFO, FMT, ##__VA_ARGS__)
 #define pr_warn(FMT, ...) pr_log(WARN, FMT, ##__VA_ARGS__)
 #define pr_err(FMT, ...) pr_log(ERROR, FMT, ##__VA_ARGS__)
+#define pr_verbose(FMT, ...) pr_log(VERBOSE, FMT, ##__VA_ARGS__)
 
 /*
 * Parse auth file.
@@ -69,3 +73,6 @@ int parse_auth_file(int filefd, struct userpwd_list *l, char **buf);
 void __pr_log(unsigned lvl, const char *fmt, ...);
 
 void generate_current_time(char *buf);
+
+
+#endif // LINUX_H

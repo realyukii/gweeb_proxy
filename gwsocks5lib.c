@@ -6,25 +6,25 @@
 #define HANDSHAKE_LEN 2
 #define REPLY_REQ_IPV6_LEN (1 + 1 + 1 + 1 + 16 + 2)
 #define MAX_USERPWD_PKT (1 + 1 + 255 + 1 + 255)
-
+#define ERR_REPLY_IPv4_LEN (4 + 4 + 2)
 struct data_args {
 	struct socks5_conn *conn;
 	const void *in;
-	unsigned *in_len;
+	size_t *in_len;
 	void *out;
-	unsigned *out_len;
-	unsigned total_advance;
-	unsigned total_out;
+	size_t *out_len;
+	size_t total_advance;
+	size_t total_out;
 };
 
-static void append_outbuf(struct data_args *args, unsigned len)
+static void append_outbuf(struct data_args *args, size_t len)
 {
 	args->out += args->total_out;
 	args->total_out += len;
 	*args->out_len -= len;
 }
 
-static void advance_inbuf(struct data_args *args, unsigned len)
+static void advance_inbuf(struct data_args *args, size_t len)
 {
 	assert(len <= *args->in_len);
 	args->in += len;
@@ -43,8 +43,9 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 
 	afd = open(ctx->creds.auth_file, O_RDONLY);
 	if (afd < 0) {
+		ret = -errno;
 		pr_err("failed to load %s file\n", ctx->creds.auth_file);
-		return -errno;
+		goto exit_free_str;
 	}
 
 	ctx->creds.userpwd_buf = NULL;
@@ -63,17 +64,18 @@ static int socks5_load_creds_file(struct socks5_ctx *ctx, const char *auth_file)
 	return 0;
 exit_close_filefd:
 	close(afd);
+exit_free_str:
+	free((void *)ctx->creds.auth_file);
 	return ret;
 }
 
 static int socks5_prepare_hotreload(struct socks5_ctx *ctx)
 {
-	int ret, ifd, epfd;
-	struct epoll_event ev;
+	int ret;
 	struct socks5_creds *ac;
 
-	ifd = inotify_init1(IN_NONBLOCK);
-	if (ifd < 0) {
+	ret = inotify_init1(IN_NONBLOCK);
+	if (ret < 0) {
 		pr_err(
 			"failed to create inotify file descriptor: %s\n",
 			strerror(errno)
@@ -82,42 +84,18 @@ static int socks5_prepare_hotreload(struct socks5_ctx *ctx)
 	}
 
 	ac = &ctx->creds;
-	ret = inotify_add_watch(ifd, ac->auth_file, IN_CLOSE_WRITE);
+	ac->ifd = ret;
+	ret = inotify_add_watch(ret, ac->auth_file, IN_CLOSE_WRITE);
 	if (ret < 0) {
 		pr_err(
 			"failed to add file to inotify watch: %s\n",
 			strerror(errno)
 		);
-		goto exit_close_ifd;
+		close(ac->ifd);
+		return -EXIT_FAILURE;
 	}
-
-	epfd = epoll_create(1);
-	if (epfd < 0) {
-		pr_err(
-			"failed to create epoll file descriptor: %s\n",
-			strerror(errno)
-		);
-		goto exit_close_ifd;
-	}
-
-	ev.events = EPOLLIN;
-	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, ifd, &ev);
-	if (ret < 0) {
-		pr_err(
-			"failed to add inotifyfd to epoll: %s\n",
-			strerror(errno)
-		);
-		goto exit_close_epfd;
-	}
-
-	ac->ifd = ifd;
 
 	return 0;
-exit_close_epfd:
-	close(epfd);
-exit_close_ifd:
-	close(ifd);
-	return -EXIT_FAILURE;
 }
 
 static int socks5_init_creds(struct socks5_ctx *ctx, const char *auth_file)
@@ -135,7 +113,7 @@ static int socks5_handle_greeting(struct data_args *args)
 {
 	uint8_t chosen_method;
 	const uint8_t *ptr;
-	unsigned exp_len, required_len = 2;
+	size_t exp_len, required_len = 2;
 	bool acceptable;
 	const unsigned char *in = args->in;
 	struct socks5_handshake *out = args->out;
@@ -146,7 +124,7 @@ static int socks5_handle_greeting(struct data_args *args)
 
 	if (in[0] != 0x5)
 		return -EINVAL;
-	
+
 	if (in[1] == 0x0)
 		return -EINVAL;
 
@@ -188,15 +166,14 @@ static int socks5_handle_auth(struct data_args *args)
 	char *out = args->out;
 	bool is_authenticated;
 	uint8_t *plen;
-	unsigned exp_len = 2, required_len = 2;
+	size_t exp_len = 2, required_len = 2;
 	int i, ret;
 
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
-	// if (in->ver != 1) {
-	// 	return -EINVAL;
-	// }
+	if (in->ver != 1)
+		return -EINVAL;
 
 	exp_len += in->ulen + 1;
 	if (*args->in_len < exp_len)
@@ -240,6 +217,7 @@ static int socks5_handle_auth(struct data_args *args)
 	out[0] = 0x1;
 	out[1] = is_authenticated;
 	append_outbuf(args, required_len);
+	args->conn->state = SOCKS5_REQUEST;
 
 	return 0;
 }
@@ -253,7 +231,7 @@ static void set_err_reply(struct socks5_reply *out, uint8_t rep_code)
 	out->rsv = 0x0;
 	out->bnd_addr.type = SOCKS5_IPv4;
 	memset(out->bnd_addr.addr.ipv4, 0, 4);
-	memcpy((void *)(out->bnd_addr.addr.ipv4 + 4), &port, 2);
+	memcpy(out->bnd_addr.addr.ipv4 + 4, &port, 2);
 }
 
 static int socks5_handle_request(struct data_args *args)
@@ -262,7 +240,7 @@ static int socks5_handle_request(struct data_args *args)
 	struct socks5_reply *out = args->out;
 	const struct socks5_request *in = args->in;
 	enum socks5_state state;
-	unsigned exp_len = 4, required_len = 4 + 4 + 2;
+	size_t exp_len = 4, required_len = ERR_REPLY_IPv4_LEN;
 
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
@@ -318,6 +296,7 @@ static int socks5_handle_request(struct data_args *args)
 	if (*args->in_len < exp_len)
 		return -EAGAIN;
 
+	memcpy(&args->conn->target_addr, &in->dst_addr, exp_len - 3);
 	advance_inbuf(args, exp_len);
 
 	args->conn->state = state;
@@ -327,8 +306,10 @@ static int socks5_handle_request(struct data_args *args)
 
 int socks5_reload_creds_file(struct socks5_ctx *ctx)
 {
-	int ret;
 	struct socks5_creds *ac = &ctx->creds;
+	struct inotify_event iev[2];
+	int ret;
+
 	if (ac->userpwd_l.nr_entry) {
 		ac->userpwd_l.prev_arr = ac->userpwd_l.arr;
 		ac->prev_userpwd_buf = ac->userpwd_buf;
@@ -339,6 +320,8 @@ int socks5_reload_creds_file(struct socks5_ctx *ctx)
 		free(ac->userpwd_l.prev_arr);
 		free(ac->prev_userpwd_buf);
 	}
+
+	read(ac->ifd, &iev, sizeof(iev));
 
 	return ret;
 }
@@ -354,8 +337,10 @@ int socks5_init(struct socks5_ctx **ctx, struct socks5_cfg *p)
 
 	if (p->auth_file) {
 		r = socks5_init_creds(c, p->auth_file);
-		if (r < 0)
+		if (r < 0) {
+			free(c);
 			return r;
+		}
 	} else
 		c->creds.auth_file = NULL;
 
@@ -377,8 +362,8 @@ struct socks5_conn *socks5_alloc_conn(struct socks5_ctx *ctx)
 	return c;
 }
 
-int socks5_process_data(struct socks5_conn *conn, const void *in, unsigned *in_len,
-			void *out, unsigned *out_len)
+int socks5_process_data(struct socks5_conn *conn, const void *in, size_t *in_len,
+			void *out, size_t *out_len)
 {
 	struct data_args args = {
 		.conn = conn,
@@ -402,25 +387,31 @@ retry:
 	case SOCKS5_REQUEST:
 		r = socks5_handle_request(&args);
 		break;
+	case SOCKS5_CONNECT:
+	case SOCKS5_CONNECT_WAIT_TARGET:
+		r = 0;
+		goto exit;
 	default:
+		pr_dbg("unhandled state: %d\n", conn->state);
 		abort();
-		break;
 	}
 
 	if (!r && *args.in_len > 0)
 		goto retry;
 
+exit:
 	*in_len = args.total_advance;
 	*out_len = args.total_out;
 
 	return r;
 }
 
-int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
-				uint8_t rep_code, void *rep_buf, unsigned *rep_len)
+int socks5_craft_connect_reply(struct socks5_conn *conn, struct socks5_addr *sa,
+				uint8_t rep_code, void *rep_buf, size_t *rep_len)
 {
 	struct socks5_reply *rep = rep_buf;
-	unsigned required_len;
+	union saddr *addr = &rep->bnd_addr.addr;
+	size_t required_len;
 	uint8_t dlen;
 
 	required_len = 4;
@@ -438,8 +429,8 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 			*rep_len = required_len;
 			return -ENOBUFS;
 		}
-		memcpy(rep->bnd_addr.addr.ipv4, sa->addr.ipv4, 4);
-		memcpy((void *)(rep->bnd_addr.addr.ipv4 + 4), &sa->port, 2);
+		memcpy(addr->ipv4, sa->addr.ipv4, 4);
+		memcpy(addr->ipv4 + 4, sa->addr.ipv4 + 4, 2);
 		break;
 	case SOCKS5_DOMAIN:
 		dlen = sa->addr.domain.len;
@@ -448,9 +439,9 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 			*rep_len = required_len;
 			return -ENOBUFS;
 		}
-		rep->bnd_addr.addr.domain.len = dlen;
-		memcpy(rep->bnd_addr.addr.domain.name, sa->addr.domain.name, dlen);
-		memcpy((void *)(rep->bnd_addr.addr.domain.name + dlen), &sa->port, 2);
+		addr->domain.len = dlen;
+		memcpy(addr->domain.name, sa->addr.domain.name, dlen);
+		memcpy(addr->domain.name + dlen, sa->addr.domain.name + dlen, 2);
 		break;
 	case SOCKS5_IPv6:
 		required_len += 16 + 2;
@@ -458,17 +449,58 @@ int socks5_handle_cmd_connect(struct socks5_conn *conn, struct socks5_addr *sa,
 			*rep_len = required_len;
 			return -ENOBUFS;
 		}
-		memcpy(rep->bnd_addr.addr.ipv6, sa->addr.ipv6, 16);
-		memcpy((void *)(rep->bnd_addr.addr.ipv6 + 16), &sa->port, 2);
+		memcpy(addr->ipv6, sa->addr.ipv6, 16);
+		memcpy(addr->ipv6 + 16, sa->addr.ipv6 + 16, 2);
 		break;
 
 	default:
 		return -EINVAL;
 	}
-	conn->state = SOCKS5_FORWARDING;
+
+	if (rep_code == SOCKS5_SUCCEEDED)
+		conn->state = SOCKS5_FORWARDING;
+
 	*rep_len = required_len;
 
 	return 0;
+}
+
+void socks5_convert_addr(struct socks5_addr *sa, struct sockaddr_storage *ss)
+{
+	struct sockaddr_in *in = (struct sockaddr_in *)ss;
+	struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)ss;
+
+	switch (sa->type) {
+	case SOCKS5_IPv4:
+		in->sin_family = AF_INET;
+		memcpy(&in->sin_addr, sa->addr.ipv4, 4);
+		memcpy(&in->sin_port, sa->addr.ipv4 + 4, 2);
+		break;
+	case SOCKS5_IPv6:
+		in6->sin6_family = AF_INET6;
+		memcpy(&in6->sin6_addr, sa->addr.ipv6, 16);
+		memcpy(&in6->sin6_port, sa->addr.ipv6 + 16, 2);
+		break;
+	}
+}
+
+void addr_convert_socks5(struct socks5_addr *sa, struct sockaddr_storage *ss)
+{
+	struct sockaddr_in *in = (struct sockaddr_in *)ss;
+	struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)ss;
+
+	switch (ss->ss_family) {
+	case AF_INET:
+		sa->type = SOCKS5_IPv4;
+		memcpy(&sa->addr.ipv4, &in->sin_addr, 4);
+		memcpy(sa->addr.ipv4 + 4, &in->sin_port, 2);
+		break;
+	case AF_INET6:
+		sa->type = SOCKS5_IPv6;
+		memcpy(sa->addr.ipv6, &in6->sin6_addr, 16);
+		memcpy(sa->addr.ipv6 + 16, &in6->sin6_port, 2);
+		break;
+	}
 }
 
 void socks5_free_ctx(struct socks5_ctx *ctx)
@@ -489,6 +521,8 @@ void socks5_free_conn(struct socks5_conn *c)
 	free(c);
 }
 
+#ifdef RUNTEST
+
 static void socks5_test_creds_file_not_found(void)
 {
 	int r;
@@ -499,7 +533,6 @@ static void socks5_test_creds_file_not_found(void)
 	r = socks5_init(&ctx, &param);
 	assert(r == -ENOENT);
 
-	socks5_free_ctx(ctx);
 	PRTEST_OK();
 }
 
@@ -513,7 +546,6 @@ static void socks5_test_invalid_creds_format(void)
 	r = socks5_init(&ctx, &param);
 	assert(r == -EINVAL);
 
-	socks5_free_ctx(ctx);
 	PRTEST_OK();
 }
 
@@ -541,7 +573,7 @@ do {											\
 		0x5, 0x1, 0x0,	/* VER, NMETHODS, NO AUTH METHOD */			\
 	};										\
 	char _out_buf[HANDSHAKE_LEN];							\
-	unsigned _plen, _olen;								\
+	size_t _plen, _olen;								\
 	_plen = sizeof(_payload_greeting);						\
 	_olen = sizeof(_out_buf);							\
 	_r = socks5_process_data(CONN, _payload_greeting, &_plen, _out_buf, &_olen);	\
@@ -556,7 +588,7 @@ do {											\
 static void socks5_test_invalid_cmd(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
 	char out_buf[1024];
@@ -580,7 +612,7 @@ static void socks5_test_invalid_cmd(void)
 static void socks5_test_invalid_addr_type(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
 	char out_buf[1024];
@@ -604,8 +636,10 @@ static void socks5_test_invalid_addr_type(void)
 static void socks5_test_ipv6_noauth(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	char out_buf[1024];
+	uint16_t port;
+
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0, 0x4, 	// VER, CONNECT CMD, RSV, IPv6 ATYP
 		0x0, 0x0, 0x0, 0x0,
@@ -630,17 +664,19 @@ static void socks5_test_ipv6_noauth(void)
 	/* .. pretend perform connect syscall ... */
 
 	struct socks5_addr saddr = {
-		.type = 0x4,
-		.port = htons(5081),
+		.type = SOCKS5_IPv6,
 		.addr.ipv6 = {
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
-			0x0, 0x0, 0x0, 0x1
+			0x0, 0x0, 0x0, 0x1,
 		}
 	};
+	port = htons(5081);
+	memcpy(((void *)(&saddr.addr.ipv6) + 16), &port, 2);
+
 	olen = sizeof(out_buf);
-	r = socks5_handle_cmd_connect(conn, &saddr, 0, out_buf, &olen);
+	r = socks5_craft_connect_reply(conn, &saddr, 0, out_buf, &olen);
 	assert(!r);
 	assert(olen == REPLY_REQ_IPV6_LEN);
 
@@ -649,7 +685,7 @@ static void socks5_test_ipv6_noauth(void)
 	assert(out_buf[2] == 0x0);				// RSV
 	assert(out_buf[3] == 0x4);				// ATYP IPv6
 	assert(!memcmp(&out_buf[4], saddr.addr.ipv6, 16));	// BND ADDR ::1
-	assert(!memcmp(&out_buf[20], "\x13\xd9", 2));		// BND PORT 5081
+	assert(!memcmp(&out_buf[20], &port, 2));		// BND PORT 5081
 
 	socks5_free_conn(conn);
 	socks5_free_ctx(ctx);
@@ -660,7 +696,7 @@ static void socks5_test_ipv6_noauth(void)
 static void socks5_test_short_recv(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	char out_buf[1024];
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0,		// VER, NMETHODS, METHOD NO AUTH
@@ -723,7 +759,6 @@ static void socks5_test_short_recv(void)
 
 	struct socks5_addr saddr = {
 		.type = 0x4,
-		.port = htons(5081),
 		.addr.ipv6 = {
 			0x0, 0x0, 0x0, 0x0,
 			0x0, 0x0, 0x0, 0x0,
@@ -732,7 +767,7 @@ static void socks5_test_short_recv(void)
 		}
 	};
 	olen = sizeof(out_buf);
-	r = socks5_handle_cmd_connect(conn, &saddr, 0, out_buf, &olen);
+	r = socks5_craft_connect_reply(conn, &saddr, 0, out_buf, &olen);
 	assert(!r);
 	assert(conn->state == SOCKS5_FORWARDING);
 
@@ -745,16 +780,16 @@ static void socks5_test_short_recv(void)
 static void socks5_test_two_state_at_once(void)
 {
 	int r;
-	unsigned plen, olen;
+	size_t plen, olen;
 	char out_buf[1024];
 	const uint8_t payload[] = {
 		0x5, 0x1, 0x0,		// VER, NMETHODS, METHOD NO AUTH
-		0x5, 0x1, 0x0, 0x2, 	// VER, CONNECT CMD, RSV, invalid ATYP
+		0x5, 0x1, 0x0, 0x4, 	// VER, CONNECT CMD, RSV, IPv6 ATYP
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x0,
 		0x0, 0x0, 0x0, 0x1,	// address ::1
-		0x1f, 0x91		// port 8081
+		0x1f, 0x91, 0x1		// port 8081
 	};
 	struct socks5_conn *conn;
 	struct socks5_ctx *ctx;
@@ -765,9 +800,15 @@ static void socks5_test_two_state_at_once(void)
 	plen = sizeof(payload);
 	olen = sizeof(out_buf);
 	r = socks5_process_data(conn, payload, &plen, out_buf, &olen);
-	assert(r == -EINVAL);
-	assert(olen == 12);
-	assert(conn->state == SOCKS5_REQUEST);
+	assert(!r);
+	assert(olen == 2);
+	assert(plen == 3 + 4 + 16 + 2);
+	assert(conn->state == SOCKS5_CONNECT);
+
+	assert(out_buf[0] == 0x5);
+	assert(out_buf[1] == 0x0);
+
+	assert(!memcmp(&conn->target_addr, payload + 6, 1 + 16 + 2));
 
 	socks5_free_conn(conn);
 	socks5_free_ctx(ctx);
@@ -795,3 +836,5 @@ int main()
 
 	return 0;
 }
+
+#endif
