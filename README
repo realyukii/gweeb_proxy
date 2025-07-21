@@ -32,10 +32,9 @@ Key Features of The Program:
 	* specifying local address and local port is required
 	* on socks5 mode: authentication method with username/password
 	* on simple mode: specifying remote address and remote port for target is required
+	* controllable client and target (recv/send) buffer size, convenient for testing performance.
 
 Features in my Wish list:
-- a switch on cmdline option that allow to pick epoll or io uring (with benefit of zero copy?!)
-- controllable client and target (recv/send) buffer size, convenient for testing performance.
 - built-in DNS cache
 - connect race for when domain name is provided
 - corner cases
@@ -54,7 +53,7 @@ use mutex for locking mechanism, thus didn't have to fear about race condition.
 since the codebase use atomic data type, it require the compiler to follow C11 standard to be able to compile.
 
 4. use refcount!
-you don't have to worry about use-after-free with this mechanism! it started being supported in commit x
+you don't have to worry about use-after-free with this mechanism!
 
 5. queue data structure
 the codebase use queue to create producer/consumer pattern for submitting new dns query request, the consumer is the domain resolver thread
