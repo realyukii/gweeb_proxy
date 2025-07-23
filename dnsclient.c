@@ -208,7 +208,6 @@ static int parse_cmdline_args(GWDnsClient_Cfg *cfg, int argc, char **argv)
 
 	addr = (void *)&cfg->addr;
 	addr->sin_port = htons(port);
-	addr->sin_family = AF_INET;
 	ret = inet_pton(AF_INET, argv[1], &addr->sin_addr);
 	if (!ret) {
 		fprintf(
@@ -225,6 +224,7 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 {
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
+	struct sockaddr_in *in;
 	uint8_t bigbuff[1024];
 	struct io_uring ring;
 	char respbuf[1024];
@@ -234,8 +234,8 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	unsigned head;
 	unsigned i;
 
+	in = (struct sockaddr_in *)&cfg->addr;
 	size_t off = 0, cap = 1024;
-	for (size_t l = 0; l < cfg->domain_nr; l++) {
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sockfd < 0) {
 		ret = errno;
@@ -246,6 +246,7 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 		);
 		return ret;
 	}
+	for (size_t l = 0; l < cfg->domain_nr; l++) {
 
 	sqe_nr = 0;
 	ret = io_uring_queue_init(8, &ring, 0);
@@ -256,7 +257,8 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	if (!sqe)
 		return -1;
 	sqe_nr++;
-	io_uring_prep_connect(sqe, sockfd, (struct sockaddr *)&cfg->addr, sizeof(cfg->addr));
+	in->sin_family = AF_INET;
+	io_uring_prep_connect(sqe, sockfd, (struct sockaddr *)in, sizeof(*in));
 	sqe->flags |= IOSQE_IO_LINK;
 	io_uring_sqe_set_data64(sqe, 1);
 
@@ -283,13 +285,20 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	io_uring_sqe_set_data64(sqe, 3);
 	sqe->flags |= IOSQE_IO_LINK;
 
-	sqe = io_uring_get_sqe(&ring);
-	if (!sqe)
-		return -1;
-	sqe_nr++;
-	io_uring_prep_close(sqe, sockfd);
-	io_uring_sqe_set_data64(sqe, 4);
-	sqe->flags |= IOSQE_IO_LINK;
+	/*
+	* https://blog.cloudflare.com/everything-you-ever-wanted-to-know-about-udp-sockets-but-were-afraid-to-ask-part-1/
+	* https://linux.die.net/man/2/connect
+	* I'm not sure what this statement means:
+	* Generally, connection-based protocol sockets may successfully connect() only once; connectionless protocol sockets may use connect() multiple times to change their association. Connectionless sockets may dissolve the association by connecting to an address with the sa_family member of sockaddr set to AF_UNSPEC (supported on Linux since kernel 2.2). 
+	*/
+	// sqe = io_uring_get_sqe(&ring);
+	// if (!sqe)
+	// 	return -1;
+	// sqe_nr++;
+	// in->sin_family = AF_UNSPEC;
+	// io_uring_prep_connect(sqe, sockfd, (struct sockaddr *)in, sizeof(*in));
+	// sqe->flags |= IOSQE_IO_LINK;
+	// io_uring_sqe_set_data64(sqe, 4);
 	
 	ret = io_uring_submit_and_wait(&ring, sqe_nr);
 	if (ret < 0)
@@ -306,6 +315,7 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	io_uring_cq_advance(&ring, i);
 	}
 
+	close(sockfd);
 	io_uring_queue_exit(&ring);
 
 	return 0;
