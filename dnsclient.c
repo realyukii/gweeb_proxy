@@ -78,6 +78,11 @@ struct dns_query_pkt {
 	uint8_t body[1024];
 };
 
+struct query_buffer {
+		uint8_t bigbuff[1024];
+		char respbuf[1024];
+};
+
 typedef struct {
 	struct sockaddr_storage addr;
 	char **domain;
@@ -146,10 +151,10 @@ static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
  */
 static ssize_t construct_question(uint16_t id, uint8_t *buffer, size_t len, char *domain, uint16_t qtype, uint16_t qclass)
 {
-	struct dns_query_pkt pkt;
 	struct dns_header_pkt *hdr;
-	ssize_t bw;
+	struct dns_query_pkt pkt;
 	size_t required_len;
+	ssize_t bw;
 
 	hdr = &pkt.hdr;
 	memset(hdr, 0, sizeof(*hdr));
@@ -225,22 +230,48 @@ static int parse_cmdline_args(GWDnsClient_Cfg *cfg, int argc, char **argv)
 	return 0;
 }
 
+static int send_query(struct io_uring *ring, int sockfd, char *domain, uint8_t *bigbuff, size_t bigbuff_len, char *respbuf, size_t respbuf_len)
+{
+	struct io_uring_sqe *sqe;
+	ssize_t send_len;
+	int rval;
+
+	rval = rand();
+	send_len = construct_question(
+		(uint16_t)rval, bigbuff, bigbuff_len, domain, TYPE_A, CLASS_IN
+	);
+	if (send_len < 0)
+		return -1;
+
+	sqe = io_uring_get_sqe(ring);
+	if (!sqe)
+		return -1;
+	io_uring_prep_send(sqe, sockfd, bigbuff, send_len, 0);
+	io_uring_sqe_set_data64(sqe, 2);
+	sqe->flags |= IOSQE_IO_LINK;
+
+	sqe = io_uring_get_sqe(ring);
+	if (!sqe)
+		return -1;
+	io_uring_prep_recv(sqe, sockfd, respbuf, respbuf_len, 0);
+	io_uring_sqe_set_data64(sqe, 3);
+	sqe->flags |= IOSQE_IO_LINK;
+
+	return 0;
+}
+
 static int send_queries(GWDnsClient_Cfg *cfg)
 {
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
 	struct sockaddr_in *in;
 	struct io_uring ring;
-	ssize_t send_len;
 	int ret, sockfd;
 	uint8_t sqe_nr;
 	unsigned head;
 	size_t l, idx;
 
-	struct {
-		uint8_t bigbuff[1024];
-		char respbuf[1024];
-	} *arr = malloc(sizeof(*arr) * cfg->domain_nr);
+	struct query_buffer *arr = malloc(sizeof(*arr) * cfg->domain_nr);
 	if (!arr)
 		return -ENOMEM;
 
@@ -268,31 +299,11 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	sqe->flags |= IOSQE_IO_LINK;
 	io_uring_sqe_set_data64(sqe, 1);
 
+	printf("domain_nr=%ld\n", cfg->domain_nr);
 	for (l = 0; l < cfg->domain_nr; l++) {
-		uint8_t *bigbuff = (uint8_t *)arr[l].bigbuff;
-		char *respbuf = arr[l].respbuf;
-
-		send_len = construct_question(
-			0xABC + l, bigbuff, sizeof(arr[l].bigbuff), cfg->domain[l], TYPE_A, CLASS_IN
-		);
-		if (send_len < 0)
+		if (send_query(&ring, sockfd, cfg->domain[l], (uint8_t *)arr[l].bigbuff, sizeof(arr[l].bigbuff), arr[l].respbuf, sizeof(arr[l].respbuf)))
 			return -1;
-
-		sqe = io_uring_get_sqe(&ring);
-		if (!sqe)
-			return -1;
-		sqe_nr++;
-		io_uring_prep_send(sqe, sockfd, bigbuff, send_len, 0);
-		io_uring_sqe_set_data64(sqe, 2);
-		sqe->flags |= IOSQE_IO_LINK;
-
-		sqe = io_uring_get_sqe(&ring);
-		if (!sqe)
-			return -1;
-		sqe_nr++;
-		io_uring_prep_recv(sqe, sockfd, respbuf, sizeof(arr[l].respbuf), 0);
-		io_uring_sqe_set_data64(sqe, 3);
-		sqe->flags |= IOSQE_IO_LINK;
+		sqe += 2;
 	}
 
 	sqe = io_uring_get_sqe(&ring);
@@ -329,6 +340,8 @@ int main(int argc, char **argv)
 {
 	GWDnsClient_Cfg cfg;
 	int ret;
+
+	srand(time(NULL));
 
 	ret = parse_cmdline_args(&cfg, argc, argv);
 	if (ret)
