@@ -265,9 +265,6 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 		);
 		if (send_len < 0)
 			return -1;
-		VT_HEXDUMP(&bigbuff[off], send_len);
-		off += send_len;
-		
 
 		sqe = io_uring_get_sqe(&ring);
 		if (!sqe)
@@ -276,6 +273,7 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 		io_uring_prep_send(sqe, sockfd, &bigbuff[off], send_len, 0);
 		io_uring_sqe_set_data64(sqe, 60 + i);
 		sqe->flags |= IOSQE_IO_LINK;
+		off += send_len;
 	}
 
 	sqe = io_uring_get_sqe(&ring);
