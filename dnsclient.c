@@ -234,6 +234,8 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	unsigned head;
 	unsigned i;
 
+	size_t off = 0, cap = 1024;
+	for (size_t l = 0; l < cfg->domain_nr; l++) {
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sockfd < 0) {
 		ret = errno;
@@ -258,10 +260,8 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	sqe->flags |= IOSQE_IO_LINK;
 	io_uring_sqe_set_data64(sqe, 1);
 
-	size_t off = 0, cap = 1024;
-	for (size_t i = 0; i < cfg->domain_nr; i++) {
 		send_len = construct_question(
-			0xABC + i, &bigbuff[off], cap - off, cfg->domain[i], TYPE_A, CLASS_IN
+			0xABC + l, &bigbuff[off], cap - off, cfg->domain[l], TYPE_A, CLASS_IN
 		);
 		if (send_len < 0)
 			return -1;
@@ -271,10 +271,9 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 			return -1;
 		sqe_nr++;
 		io_uring_prep_send(sqe, sockfd, &bigbuff[off], send_len, 0);
-		io_uring_sqe_set_data64(sqe, 60 + i);
+		io_uring_sqe_set_data64(sqe, 60 + l);
 		sqe->flags |= IOSQE_IO_LINK;
 		off += send_len;
-	}
 
 	sqe = io_uring_get_sqe(&ring);
 	if (!sqe)
@@ -305,6 +304,8 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	}
 
 	io_uring_cq_advance(&ring, i);
+	}
+
 	io_uring_queue_exit(&ring);
 
 	return 0;
