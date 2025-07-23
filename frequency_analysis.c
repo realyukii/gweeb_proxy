@@ -20,18 +20,25 @@ int main(void)
 	prev = rand();
 	counter = 0;
 	while (1) {
+		counter++;
 		cur = rand();
 		u16cur = cur & 0xFFFF;
 		u16prev = prev & 0xFFFF;
-		if (u16cur == u16prev) {
+		if (u16cur == u16prev && counter == 1) {
+			printf("\e[1;1H\e[2J");
 			printf(
 				"current and previous value collide "
 				"after %lld times of iteration: %" PRIu16 "\n",
 				counter, u16cur
 			);
+			printf(
+				"what the fuck? "
+				"collide immediately in the next iteration "
+				"of the total 0xFFFF iteration?!!\n"
+			);
 			counter = 0;
-		}
-		counter++;
+		} else if (counter == 0xFFFF)
+			counter = 0;
 		prev = cur;
 	}
 	
