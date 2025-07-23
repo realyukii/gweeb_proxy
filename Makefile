@@ -25,8 +25,8 @@ TARGET6		:= $(BUILDDIR)/gwsocks5lib
 TARGET7		:= $(BUILDDIR)/gwdnslib
 
 CC		:= gcc
-CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -O0 -g3
-LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
+CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -Os -g3
+# LDFLAGS		:= -fsanitize=address -lasan -fsanitize=undefined
 
 BUFF_SIZE = $$((1024 * 5))
 
