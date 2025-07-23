@@ -9,6 +9,48 @@
 #include <liburing.h>
 #include "general.h"
 
+#ifndef __packed
+#define __packed __attribute__((__packed__))
+#endif
+
+/*
+ * 4. MESSAGES
+ * 4.1. Format
+ *
+ * All communications inside of the domain protocol are carried in a single
+ * format called a message. The top-level format of a message is divided
+ * into 5 sections (some of which may be empty in certain cases), shown below:
+ *
+ *     +---------------------+
+ *     |        Header       |
+ *     +---------------------+
+ *     |       Question      | the question for the name server
+ *     +---------------------+
+ *     |        Answer       | RRs answering the question
+ *     +---------------------+
+ *     |      Authority      | RRs pointing toward an authority
+ *     +---------------------+
+ *     |      Additional     | RRs holding additional information
+ *     +---------------------+
+ *
+ * These sections are defined in RFC 1035 §4.1. The Header section is always
+ * present and includes fields that specify which of the other sections follow,
+ * as well as metadata such as whether the message is a query or response,
+ * the opcode, etc.
+ */
+
+/**
+ * DNS OPCODE values (4-bit field in DNS header)
+ * from RFC 1035 §4.1.1
+ */
+typedef enum {
+	OPCODE_QUERY		= 0,	// Standard query (QUERY)
+	OPCODE_IQUERY		= 1,	// Inverse query (IQUERY)
+	OPCODE_STATUS		= 2,	// Server status request (STATUS)
+	OPCODE_RESERVED_MIN	= 3,	// Reserved for future use (inclusive)
+	OPCODE_RESERVED_MAX	= 15	// Reserved for future use (inclusive)
+} gwdns_op;
+
 typedef enum {
 	TYPE_A		= 1,	// a host address
 	TYPE_NS		= 2,	// an authoritative name server
@@ -27,36 +69,20 @@ typedef enum {
 	QTYPE_AXFR	= 252,	// A request for a transfer of an entire zone
 	QTYPE_MAILB	= 253,	// A request for mailbox-related records (MB, MG or MR)
 	QTYPE_ALL	= 255	// A request for all records
-} DnsType;
-
-#ifndef __packed
-#define __packed __attribute__((__packed__))
-#endif
-
-/**
- * DNS OPCODE values (4-bit field in DNS header)
- * from RFC 1035 §4.1.1
- */
-typedef enum {
-	OPCODE_QUERY		= 0,	// Standard query (QUERY)
-	OPCODE_IQUERY		= 1,	// Inverse query (IQUERY)
-	OPCODE_STATUS		= 2,	// Server status request (STATUS)
-	OPCODE_RESERVED_MIN	= 3,	// Reserved for future use (inclusive)
-	OPCODE_RESERVED_MAX	= 15	// Reserved for future use (inclusive)
-} DnsOpCode;
+} gwdns_type;
 
 typedef enum {
 	CLASS_IN	= 1,	// Internet
 	CLASS_CH	= 3,	// CHAOS class
 	CLASS_HS	= 4,	// Hesiod
 	QCLASS_ANY	= 255	// ANY class (matches any class)
-} DnsClass;
+} gwdns_class;
 
-struct dns_flags {
+struct gwdns_flags {
 	uint8_t rd	: 1;	/* recursion desired */
 	uint8_t tc	: 1;	/* truncated */
 	uint8_t aa	: 1;	/* authoritative answer */
-	DnsOpCode opcode: 4;	/* query type */
+	gwdns_op opcode	: 4;	/* query type */
 	uint8_t qr	: 1;	/* 0 = query, 1 = response */
 
 	uint8_t rcode	: 4;	/* response code */
@@ -64,30 +90,39 @@ struct dns_flags {
 	uint8_t ra	: 1;	/* recursion available */
 } __packed;
 
-struct dns_header_pkt {
+struct gwdns_header_pkt {
 	uint16_t id;
-	struct dns_flags flags;
+	struct gwdns_flags flags;
 	uint16_t qdcount;
 	uint16_t ancount;
 	uint16_t nscount;
 	uint16_t arcount;
 } __packed;
 
-struct dns_query_pkt {
-	struct dns_header_pkt hdr;
+struct gwdns_query_pkt {
+	struct gwdns_header_pkt hdr;
 	uint8_t body[1024];
 };
 
 struct query_buffer {
-		uint8_t bigbuff[1024];
-		char respbuf[1024];
+	uint8_t sendbuf[1024];
+	char recvbuf[1024];
 };
 
 typedef struct {
 	struct sockaddr_storage addr;
 	char **domain;
 	size_t domain_nr;
-} GWDnsClient_Cfg;
+} gwdns_client_cfg;
+
+typedef struct {
+	uint16_t txid;
+	uint8_t *dst_buffer;
+	size_t dst_len;
+	char *domain;
+	uint16_t qtype;
+	uint16_t qclass;
+} gwdns_question_part;
 
 static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
 {
@@ -124,47 +159,27 @@ static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
 	return total;
 }
 
-/*
- * 4. MESSAGES
- * 4.1. Format
- *
- * All communications inside of the domain protocol are carried in a single
- * format called a message. The top-level format of a message is divided
- * into 5 sections (some of which may be empty in certain cases), shown below:
- *
- *     +---------------------+
- *     |        Header       |
- *     +---------------------+
- *     |       Question      | the question for the name server
- *     +---------------------+
- *     |        Answer       | RRs answering the question
- *     +---------------------+
- *     |      Authority      | RRs pointing toward an authority
- *     +---------------------+
- *     |      Additional     | RRs holding additional information
- *     +---------------------+
- *
- * These sections are defined in RFC 1035 §4.1. The Header section is always
- * present and includes fields that specify which of the other sections follow,
- * as well as metadata such as whether the message is a query or response,
- * the opcode, etc.
- */
-static ssize_t construct_question(uint16_t id, uint8_t *buffer, size_t len, char *domain, uint16_t qtype, uint16_t qclass)
+static ssize_t construct_question(gwdns_question_part *question)
 {
-	struct dns_header_pkt *hdr;
-	struct dns_query_pkt pkt;
+	struct gwdns_header_pkt *hdr;
+	struct gwdns_query_pkt pkt;
 	size_t required_len;
 	ssize_t bw;
 
 	hdr = &pkt.hdr;
 	memset(hdr, 0, sizeof(*hdr));
-	hdr->id = id;
+	/*
+	* TODO: how to make sure the txid didn't collide with other queries?
+	* let the caller decide? provide an interface/helper function that
+	* the caller can call it later to validate and check this problem?
+	*/
+	hdr->id = (uint16_t)rand();
 	hdr->flags.aa = false;
 	hdr->flags.opcode = OPCODE_QUERY;
 	hdr->flags.rd = true;
 
-	qtype = htons(qtype);
-	qclass = htons(qclass);
+	question->qtype = htons(TYPE_A);
+	question->qclass = htons(CLASS_IN);
 
 	hdr->qdcount = htons(1);
 
@@ -172,26 +187,26 @@ static ssize_t construct_question(uint16_t id, uint8_t *buffer, size_t len, char
 	* pkt.body is interpreted as question section
 	* for layout and format, see RFC 1035 4.1.2. Question section format
 	*/
-	bw = construct_qname(pkt.body, sizeof(pkt.body) - 3, domain);
+	bw = construct_qname(pkt.body, sizeof(pkt.body) - 3, question->domain);
 	if (bw < 0)
 		return bw;
 
 	pkt.body[bw++] = 0x0;
-	memcpy(&pkt.body[bw], &qtype, 2);
+	memcpy(&pkt.body[bw], &question->qtype, 2);
 	bw += 2;
-	memcpy(&pkt.body[bw], &qclass, 2);
+	memcpy(&pkt.body[bw], &question->qclass, 2);
 	bw += 2;
 
 	required_len = sizeof(pkt.hdr) + bw;
-	if (len < required_len)
+	if (question->dst_len < required_len)
 		return -ENOBUFS;
 
-	memcpy(buffer, &pkt, required_len);
+	memcpy(question->dst_buffer, &pkt, required_len);
 
 	return required_len;
 }
 
-static int parse_cmdline_args(GWDnsClient_Cfg *cfg, int argc, char **argv)
+static int parse_cmdline_args(gwdns_client_cfg *cfg, int argc, char **argv)
 {
 	int port, ret;
 	struct sockaddr_in *addr;
@@ -230,37 +245,41 @@ static int parse_cmdline_args(GWDnsClient_Cfg *cfg, int argc, char **argv)
 	return 0;
 }
 
-static int send_query(struct io_uring *ring, int sockfd, char *domain, uint8_t *bigbuff, size_t bigbuff_len, char *respbuf, size_t respbuf_len)
+static int send_query(
+	struct io_uring *ring, int sockfd,
+	char *domain, uint8_t *sendbuf, size_t sendbuf_len,
+	char *recvbuf, size_t recvbuf_len
+)
 {
 	struct io_uring_sqe *sqe;
-	ssize_t send_len;
-	int rval;
+	gwdns_question_part q;
+	ssize_t payload_len;
 
-	rval = rand();
-	send_len = construct_question(
-		(uint16_t)rval, bigbuff, bigbuff_len, domain, TYPE_A, CLASS_IN
-	);
-	if (send_len < 0)
+	q.domain = domain;
+	q.dst_buffer = sendbuf;
+	q.dst_len = sendbuf_len;
+	payload_len = construct_question(&q);
+	if (payload_len < 0)
 		return -1;
 
 	sqe = io_uring_get_sqe(ring);
 	if (!sqe)
 		return -1;
-	io_uring_prep_send(sqe, sockfd, bigbuff, send_len, 0);
+	io_uring_prep_send(sqe, sockfd, sendbuf, payload_len, 0);
 	io_uring_sqe_set_data64(sqe, 2);
 	sqe->flags |= IOSQE_IO_LINK;
 
 	sqe = io_uring_get_sqe(ring);
 	if (!sqe)
 		return -1;
-	io_uring_prep_recv(sqe, sockfd, respbuf, respbuf_len, 0);
+	io_uring_prep_recv(sqe, sockfd, recvbuf, recvbuf_len, 0);
 	io_uring_sqe_set_data64(sqe, 3);
 	sqe->flags |= IOSQE_IO_LINK;
 
 	return 0;
 }
 
-static int send_queries(GWDnsClient_Cfg *cfg)
+static int send_queries(gwdns_client_cfg *cfg)
 {
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
@@ -300,10 +319,15 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	io_uring_sqe_set_data64(sqe, 1);
 
 	for (l = 0; l < cfg->domain_nr; l++) {
+		uint8_t *sendbuf = (uint8_t *)arr[l].sendbuf;
+		size_t sendbuf_len = sizeof(arr[l].sendbuf);
+		size_t recvbuf_len = sizeof(arr[l].recvbuf);
+		char *recvbuf = arr[l].recvbuf;
+		char *domain = cfg->domain[l];
+
 		ret = send_query(
-			&ring, sockfd, cfg->domain[l],
-			(uint8_t *)arr[l].bigbuff, sizeof(arr[l].bigbuff),
-			arr[l].respbuf, sizeof(arr[l].respbuf)
+			&ring, sockfd, domain,
+			sendbuf, sendbuf_len, recvbuf, recvbuf_len
 		);
 		if (ret)
 			return -1;
@@ -327,8 +351,8 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	io_uring_for_each_cqe(&ring, head, cqe) {
 		printf("cqe->res=%d cqe->user_data=%lld\n", cqe->res, cqe->user_data);
 		if (cqe->user_data == 3) {
-			char *respbuf = arr[idx].respbuf;
-			VT_HEXDUMP(respbuf, cqe->res);
+			char *recvbuf = arr[idx].recvbuf;
+			VT_HEXDUMP(recvbuf, cqe->res);
 			idx++;
 		}
 		l++;
@@ -342,7 +366,7 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 
 int main(int argc, char **argv)
 {
-	GWDnsClient_Cfg cfg;
+	gwdns_client_cfg cfg;
 	int ret;
 
 	srand(time(NULL));
