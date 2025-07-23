@@ -299,11 +299,15 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	sqe->flags |= IOSQE_IO_LINK;
 	io_uring_sqe_set_data64(sqe, 1);
 
-	printf("domain_nr=%ld\n", cfg->domain_nr);
 	for (l = 0; l < cfg->domain_nr; l++) {
-		if (send_query(&ring, sockfd, cfg->domain[l], (uint8_t *)arr[l].bigbuff, sizeof(arr[l].bigbuff), arr[l].respbuf, sizeof(arr[l].respbuf)))
+		ret = send_query(
+			&ring, sockfd, cfg->domain[l],
+			(uint8_t *)arr[l].bigbuff, sizeof(arr[l].bigbuff),
+			arr[l].respbuf, sizeof(arr[l].respbuf)
+		);
+		if (ret)
 			return -1;
-		sqe += 2;
+		sqe_nr += 2;
 	}
 
 	sqe = io_uring_get_sqe(&ring);
