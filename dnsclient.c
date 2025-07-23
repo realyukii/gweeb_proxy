@@ -207,6 +207,7 @@ static int parse_cmdline_args(GWDnsClient_Cfg *cfg, int argc, char **argv)
 	}
 
 	addr = (void *)&cfg->addr;
+	addr->sin_family = AF_INET;
 	addr->sin_port = htons(port);
 	ret = inet_pton(AF_INET, argv[1], &addr->sin_addr);
 	if (!ret) {
@@ -246,18 +247,17 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 		);
 		return ret;
 	}
-	for (size_t l = 0; l < cfg->domain_nr; l++) {
-
 	sqe_nr = 0;
 	ret = io_uring_queue_init(8, &ring, 0);
 	if (ret)
 		return ret;
 
+	for (size_t l = 0; l < cfg->domain_nr; l++) {
+
 	sqe = io_uring_get_sqe(&ring);
 	if (!sqe)
 		return -1;
 	sqe_nr++;
-	in->sin_family = AF_INET;
 	io_uring_prep_connect(sqe, sockfd, (struct sockaddr *)in, sizeof(*in));
 	sqe->flags |= IOSQE_IO_LINK;
 	io_uring_sqe_set_data64(sqe, 1);
