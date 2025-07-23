@@ -39,10 +39,23 @@
  * the opcode, etc.
  */
 
-/**
- * DNS OPCODE values (4-bit field in DNS header)
- * from RFC 1035 §4.1.1
- */
+/* Flag bit position in little-endian machine */
+#define DNS_QR_BIT	15
+#define DNS_OPCODE_BIT	11	// 4-bit field
+#define DNS_AA_BIT	10
+#define DNS_TC_BIT	9
+#define DNS_RD_BIT	8
+#define DNS_RA_BIT	7
+#define DNS_Z_BIT	4	// 3-bit field
+#define DNS_RCODE_BIT	0	// 4-bit field
+
+/* Flag extraction macros for listtle-endian machine */
+#define DNS_QR(flags)		(((flags) >> DNS_QR_BIT) & 0x1)
+#define DNS_OPCODE(flags)
+
+/* Flag construction macros for little-endian machine */
+#define DNS_SET_RD(flags, val)	(flags) = ((flags) & ~(1 << DNS_RD_BIT)) | ((!!(val)) << DNS_RD_BIT)
+
 typedef enum {
 	OPCODE_QUERY		= 0,	// Standard query (QUERY)
 	OPCODE_IQUERY		= 1,	// Inverse query (IQUERY)
@@ -78,21 +91,9 @@ typedef enum {
 	QCLASS_ANY	= 255	// ANY class (matches any class)
 } gwdns_class;
 
-struct gwdns_flags {
-	uint8_t rd	: 1;	/* recursion desired */
-	uint8_t tc	: 1;	/* truncated */
-	uint8_t aa	: 1;	/* authoritative answer */
-	gwdns_op opcode	: 4;	/* query type */
-	uint8_t qr	: 1;	/* 0 = query, 1 = response */
-
-	uint8_t rcode	: 4;	/* response code */
-	uint8_t z	: 3;	/* reserved (must be zero) */
-	uint8_t ra	: 1;	/* recursion available */
-} __packed;
-
 struct gwdns_header_pkt {
 	uint16_t id;
-	struct gwdns_flags flags;
+	uint16_t flags;
 	uint16_t qdcount;
 	uint16_t ancount;
 	uint16_t nscount;
@@ -199,7 +200,7 @@ static int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_seria
 	if (in_len < sizeof(*hdr))
 		return -EAGAIN;
 
-	hdr = in;
+	hdr = (void *)in;
 	if (memcmp(&txid, &hdr->id, sizeof(txid)))
 		return -EINVAL;
 	
@@ -219,6 +220,9 @@ static ssize_t construct_question(gwdns_question_part *question)
 	ssize_t bw;
 
 	hdr = &pkt.hdr;
+	/*
+	* the memset implicitly set opcode to query
+	*/
 	memset(hdr, 0, sizeof(*hdr));
 	/*
 	* TODO: how to make sure the txid didn't collide with other queries?
@@ -226,9 +230,8 @@ static ssize_t construct_question(gwdns_question_part *question)
 	* the caller can call it later to validate and check this problem?
 	*/
 	hdr->id = (uint16_t)rand();
-	hdr->flags.aa = false;
-	hdr->flags.opcode = OPCODE_QUERY;
-	hdr->flags.rd = true;
+	DNS_SET_RD(hdr->flags, true);
+	hdr->flags = htons(hdr->flags);
 
 	question->qtype = htons(TYPE_A);
 	question->qclass = htons(CLASS_IN);
