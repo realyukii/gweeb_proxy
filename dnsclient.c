@@ -276,44 +276,44 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 		sqe->flags |= IOSQE_IO_LINK;
 		off += send_len;
 
-	sqe = io_uring_get_sqe(&ring);
-	if (!sqe)
-		return -1;
-	sqe_nr++;
-	io_uring_prep_recv(sqe, sockfd, respbuf, 1024, 0);
-	io_uring_sqe_set_data64(sqe, 3);
-	sqe->flags |= IOSQE_IO_LINK;
+		sqe = io_uring_get_sqe(&ring);
+		if (!sqe)
+			return -1;
+		sqe_nr++;
+		io_uring_prep_recv(sqe, sockfd, respbuf, 1024, 0);
+		io_uring_sqe_set_data64(sqe, 3);
+		sqe->flags |= IOSQE_IO_LINK;
 
-	/*
-	* https://blog.cloudflare.com/everything-you-ever-wanted-to-know-about-udp-sockets-but-were-afraid-to-ask-part-1/
-	* https://linux.die.net/man/2/connect
-	* I'm not sure what this statement means:
-	* Generally, connection-based protocol sockets may successfully connect() only once; connectionless protocol sockets may use connect() multiple times to change their association. Connectionless sockets may dissolve the association by connecting to an address with the sa_family member of sockaddr set to AF_UNSPEC (supported on Linux since kernel 2.2). 
-	*/
-	// sqe = io_uring_get_sqe(&ring);
-	// if (!sqe)
-	// 	return -1;
-	// sqe_nr++;
-	// in->sin_family = AF_UNSPEC;
-	// io_uring_prep_connect(sqe, sockfd, (struct sockaddr *)in, sizeof(*in));
-	// sqe->flags |= IOSQE_IO_LINK;
-	// io_uring_sqe_set_data64(sqe, 4);
-	
-	printf("sqe_nr=%d\n", sqe_nr);
-	ret = io_uring_submit_and_wait(&ring, sqe_nr);
-	if (ret < 0)
-		return ret;
+		/*
+		* https://blog.cloudflare.com/everything-you-ever-wanted-to-know-about-udp-sockets-but-were-afraid-to-ask-part-1/
+		* https://linux.die.net/man/2/connect
+		* I'm not sure what this statement means:
+		* Generally, connection-based protocol sockets may successfully connect() only once; connectionless protocol sockets may use connect() multiple times to change their association. Connectionless sockets may dissolve the association by connecting to an address with the sa_family member of sockaddr set to AF_UNSPEC (supported on Linux since kernel 2.2). 
+		*/
+		// sqe = io_uring_get_sqe(&ring);
+		// if (!sqe)
+		// 	return -1;
+		// sqe_nr++;
+		// in->sin_family = AF_UNSPEC;
+		// io_uring_prep_connect(sqe, sockfd, (struct sockaddr *)in, sizeof(*in));
+		// sqe->flags |= IOSQE_IO_LINK;
+		// io_uring_sqe_set_data64(sqe, 4);
+		
+		printf("sqe_nr=%d\n", sqe_nr);
+		ret = io_uring_submit_and_wait(&ring, sqe_nr);
+		if (ret < 0)
+			return ret;
 
-	i = 0;
-	io_uring_for_each_cqe(&ring, head, cqe) {
-		sqe_nr--;
-		printf("cqe->res=%d cqe->user_data=%lld\n", cqe->res, cqe->user_data);
-		if (cqe->user_data == 3)
-			VT_HEXDUMP(respbuf, cqe->res);
-		i++;
-	}
+		i = 0;
+		io_uring_for_each_cqe(&ring, head, cqe) {
+			sqe_nr--;
+			printf("cqe->res=%d cqe->user_data=%lld\n", cqe->res, cqe->user_data);
+			if (cqe->user_data == 3)
+				VT_HEXDUMP(respbuf, cqe->res);
+			i++;
+		}
 
-	io_uring_cq_advance(&ring, i);
+		io_uring_cq_advance(&ring, i);
 	}
 
 	close(sockfd);
