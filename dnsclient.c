@@ -124,6 +124,24 @@ typedef struct {
 	uint16_t qclass;
 } gwdns_question_part;
 
+/*
+ * 4.1.3. Resource record format
+ *
+ * The answer, authority, and additional sections all share the same
+ * format: a variable number of resource records, where the number of
+ * records is specified in the corresponding count field in the header.
+ */
+typedef struct {
+	uint8_t  *name;		// DOMAIN NAME: variable‑length sequence of labels (length-byte followed by label, ending in 0), possibly compressed
+	uint16_t  type;		// TYPE: two-octet code identifying the RR type (see gwdns_type)
+	uint16_t  class;	// CLASS: two-octet code identifying the RR class (see gwdns_class)
+	uint32_t  ttl;		// TTL: 32-bit unsigned, time to live in seconds
+	uint16_t  rdlength;	// RDLENGTH: length in octets of RDATA
+	uint8_t  *rdata;	// RDATA: variable-length data, format depends on TYPE and CLASS
+} gwdns_serialized_rr;
+
+typedef gwdns_serialized_rr gwdns_serialized_answ;
+
 static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
 {
 	const uint8_t *p = (const uint8_t *)qname;
@@ -157,6 +175,40 @@ static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
 	}
 
 	return total;
+}
+
+/*
+* Serialize DNS server's answer
+*
+* @param txid	test if a transaction id is match with the requested one.
+* @param in	a pointer to buffer that want to be parsed
+* @param out	a pointer to serialized buffer of answer to question
+* @return	zero on success or a negative number on failure
+*
+* possible error are:
+* -EAGAIN in buffer is not sufficient, no bytes are processed, need more data.
+* -EINVAL the content of in buffer is not valid.
+* -ENOMEM failed to allocate dynamic memory.
+* -ENODATA the packet didn't contain any answers.
+*/
+static int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_rr *out)
+{
+	struct gwdns_header_pkt *hdr;
+	size_t i;
+
+	if (in_len < sizeof(*hdr))
+		return -EAGAIN;
+
+	hdr = in;
+	if (memcmp(&txid, &hdr->id, sizeof(txid)))
+		return -EINVAL;
+	
+	/* TODO: test if flag is correctly placed with bitmask */
+
+	if (!hdr->ancount)
+		return -ENODATA;
+
+	return 0;
 }
 
 static ssize_t construct_question(gwdns_question_part *question)
