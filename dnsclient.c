@@ -252,8 +252,6 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	if (ret)
 		return ret;
 
-	for (size_t l = 0; l < cfg->domain_nr; l++) {
-
 	sqe = io_uring_get_sqe(&ring);
 	if (!sqe)
 		return -1;
@@ -262,6 +260,7 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	sqe->flags |= IOSQE_IO_LINK;
 	io_uring_sqe_set_data64(sqe, 1);
 
+	for (size_t l = 0; l < cfg->domain_nr; l++) {
 		send_len = construct_question(
 			0xABC + l, &bigbuff[off], cap - off, cfg->domain[l], TYPE_A, CLASS_IN
 		);
@@ -273,7 +272,7 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 			return -1;
 		sqe_nr++;
 		io_uring_prep_send(sqe, sockfd, &bigbuff[off], send_len, 0);
-		io_uring_sqe_set_data64(sqe, 60 + l);
+		io_uring_sqe_set_data64(sqe, 2);
 		sqe->flags |= IOSQE_IO_LINK;
 		off += send_len;
 
@@ -300,12 +299,14 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	// sqe->flags |= IOSQE_IO_LINK;
 	// io_uring_sqe_set_data64(sqe, 4);
 	
+	printf("sqe_nr=%d\n", sqe_nr);
 	ret = io_uring_submit_and_wait(&ring, sqe_nr);
 	if (ret < 0)
 		return ret;
 
 	i = 0;
 	io_uring_for_each_cqe(&ring, head, cqe) {
+		sqe_nr--;
 		printf("cqe->res=%d cqe->user_data=%lld\n", cqe->res, cqe->user_data);
 		if (cqe->user_data == 3)
 			VT_HEXDUMP(respbuf, cqe->res);
