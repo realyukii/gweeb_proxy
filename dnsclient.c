@@ -230,17 +230,21 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
 	struct sockaddr_in *in;
-	uint8_t bigbuff[1024];
 	struct io_uring ring;
-	char respbuf[1024];
-	size_t off, cap, l;
 	ssize_t send_len;
-	unsigned head, i;
 	int ret, sockfd;
 	uint8_t sqe_nr;
+	unsigned head;
+	size_t l, idx;
+
+	struct {
+		uint8_t bigbuff[1024];
+		char respbuf[1024];
+	} *arr = malloc(sizeof(*arr) * cfg->domain_nr);
+	if (!arr)
+		return -ENOMEM;
 
 	in = (struct sockaddr_in *)&cfg->addr;
-	off = 0, cap = 1024;
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sockfd < 0) {
 		ret = errno;
@@ -265,8 +269,11 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	io_uring_sqe_set_data64(sqe, 1);
 
 	for (l = 0; l < cfg->domain_nr; l++) {
+		uint8_t *bigbuff = (uint8_t *)arr[l].bigbuff;
+		char *respbuf = arr[l].respbuf;
+
 		send_len = construct_question(
-			0xABC + l, &bigbuff[off], cap - off, cfg->domain[l], TYPE_A, CLASS_IN
+			0xABC + l, bigbuff, sizeof(arr[l].bigbuff), cfg->domain[l], TYPE_A, CLASS_IN
 		);
 		if (send_len < 0)
 			return -1;
@@ -275,16 +282,15 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 		if (!sqe)
 			return -1;
 		sqe_nr++;
-		io_uring_prep_send(sqe, sockfd, &bigbuff[off], send_len, 0);
+		io_uring_prep_send(sqe, sockfd, bigbuff, send_len, 0);
 		io_uring_sqe_set_data64(sqe, 2);
 		sqe->flags |= IOSQE_IO_LINK;
-		off += send_len;
 
 		sqe = io_uring_get_sqe(&ring);
 		if (!sqe)
 			return -1;
 		sqe_nr++;
-		io_uring_prep_recv(sqe, sockfd, respbuf, 1024, 0);
+		io_uring_prep_recv(sqe, sockfd, respbuf, sizeof(arr[l].respbuf), 0);
 		io_uring_sqe_set_data64(sqe, 3);
 		sqe->flags |= IOSQE_IO_LINK;
 	}
@@ -302,15 +308,18 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	if (ret < 0)
 		return ret;
 
-	i = 0;
+	idx = l = 0;
 	io_uring_for_each_cqe(&ring, head, cqe) {
 		printf("cqe->res=%d cqe->user_data=%lld\n", cqe->res, cqe->user_data);
-		if (cqe->user_data == 3)
+		if (cqe->user_data == 3) {
+			char *respbuf = arr[idx].respbuf;
 			VT_HEXDUMP(respbuf, cqe->res);
-		i++;
+			idx++;
+		}
+		l++;
 	}
 
-	io_uring_cq_advance(&ring, i);
+	io_uring_cq_advance(&ring, l);
 	io_uring_queue_exit(&ring);
 
 	return 0;
