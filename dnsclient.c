@@ -163,6 +163,10 @@ static ssize_t construct_question(uint16_t id, uint8_t *buffer, size_t len, char
 
 	hdr->qdcount = htons(1);
 
+	/*
+	* pkt.body is interpreted as question section
+	* for layout and format, see RFC 1035 4.1.2. Question section format
+	*/
 	bw = construct_qname(pkt.body, sizeof(pkt.body) - 3, domain);
 	if (bw < 0)
 		return bw;
@@ -229,14 +233,14 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	uint8_t bigbuff[1024];
 	struct io_uring ring;
 	char respbuf[1024];
+	size_t off, cap, l;
 	ssize_t send_len;
+	unsigned head, i;
 	int ret, sockfd;
 	uint8_t sqe_nr;
-	unsigned head;
-	unsigned i;
 
 	in = (struct sockaddr_in *)&cfg->addr;
-	size_t off = 0, cap = 1024;
+	off = 0, cap = 1024;
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sockfd < 0) {
 		ret = errno;
@@ -260,7 +264,7 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 	sqe->flags |= IOSQE_IO_LINK;
 	io_uring_sqe_set_data64(sqe, 1);
 
-	for (size_t l = 0; l < cfg->domain_nr; l++) {
+	for (l = 0; l < cfg->domain_nr; l++) {
 		send_len = construct_question(
 			0xABC + l, &bigbuff[off], cap - off, cfg->domain[l], TYPE_A, CLASS_IN
 		);
@@ -283,25 +287,30 @@ static int send_queries(GWDnsClient_Cfg *cfg)
 		io_uring_prep_recv(sqe, sockfd, respbuf, 1024, 0);
 		io_uring_sqe_set_data64(sqe, 3);
 		sqe->flags |= IOSQE_IO_LINK;
-
-		printf("sqe_nr=%d\n", sqe_nr);
-		ret = io_uring_submit_and_wait(&ring, sqe_nr);
-		if (ret < 0)
-			return ret;
-
-		i = 0;
-		io_uring_for_each_cqe(&ring, head, cqe) {
-			sqe_nr--;
-			printf("cqe->res=%d cqe->user_data=%lld\n", cqe->res, cqe->user_data);
-			if (cqe->user_data == 3)
-				VT_HEXDUMP(respbuf, cqe->res);
-			i++;
-		}
-
-		io_uring_cq_advance(&ring, i);
 	}
 
-	close(sockfd);
+	sqe = io_uring_get_sqe(&ring);
+	if (!sqe)
+		return -1;
+	sqe_nr++;
+	io_uring_prep_close(sqe, sockfd);
+	sqe->flags |= IOSQE_IO_LINK;
+	io_uring_sqe_set_data64(sqe, 4);
+
+	printf("sqe_nr=%d\n", sqe_nr);
+	ret = io_uring_submit_and_wait(&ring, sqe_nr);
+	if (ret < 0)
+		return ret;
+
+	i = 0;
+	io_uring_for_each_cqe(&ring, head, cqe) {
+		printf("cqe->res=%d cqe->user_data=%lld\n", cqe->res, cqe->user_data);
+		if (cqe->user_data == 3)
+			VT_HEXDUMP(respbuf, cqe->res);
+		i++;
+	}
+
+	io_uring_cq_advance(&ring, i);
 	io_uring_queue_exit(&ring);
 
 	return 0;
