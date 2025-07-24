@@ -184,4 +184,6 @@ int init_gwdns_resolv(gwdns_resolv_ctx *ctx, gwdns_resolv_param *param);
 */
 int deinit_gwdns_resolv(gwdns_resolv_ctx *ctx);
 
-int gwdns_resolv_addr(char **domain, gwdns_resolv_hint *hint, gwdns_resolv_ctx *ctx);
+ssize_t construct_question(gwdns_question_part *question);
+
+int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_answ *out);

@@ -94,7 +94,7 @@ static ssize_t calculate_question_len(uint8_t *in, size_t in_len)
 * -ENODATA the packet didn't contain any answers.
 * -EPROTO the DNS server can't understand your question
 */
-static int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_answ *out)
+int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_answ *out)
 {
 	struct gwdns_header_pkt *hdr;
 	size_t advance_len, first_len;
@@ -175,7 +175,7 @@ static int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_seria
 	return 0;
 }
 
-static ssize_t construct_question(gwdns_question_part *question)
+ssize_t construct_question(gwdns_question_part *question)
 {
 	struct gwdns_header_pkt *hdr;
 	struct gwdns_query_pkt pkt;
@@ -221,105 +221,4 @@ static ssize_t construct_question(gwdns_question_part *question)
 	memcpy(question->dst_buffer, &pkt, required_len);
 
 	return required_len;
-}
-
-static int send_query(struct io_uring *ring, int sockfd, char *domain, gwdns_question_buffer *buff)
-{
-	struct io_uring_sqe *sqe;
-	gwdns_question_part q;
-	ssize_t payload_len;
-
-	q.domain = domain;
-	q.dst_buffer = buff->question;
-	q.dst_len = UDP_MSG_LIMIT;
-	payload_len = construct_question(&q);
-	if (payload_len < 0)
-		return -1;
-
-	sqe = io_uring_get_sqe(ring);
-	if (!sqe)
-		return -1;
-	io_uring_prep_send(sqe, sockfd, buff->question, payload_len, 0);
-	io_uring_sqe_set_data64(sqe, 2);
-	sqe->flags |= IOSQE_IO_LINK;
-
-	sqe = io_uring_get_sqe(ring);
-	if (!sqe)
-		return -1;
-	io_uring_prep_recv(sqe, sockfd, buff->answr, UDP_MSG_LIMIT, 0);
-	uint64_t u64 = 0;
-	memcpy(&u64, buff->question, sizeof(uint16_t));
-	u64 |= ID;
-	io_uring_sqe_set_data64(sqe, u64);
-	sqe->flags |= IOSQE_IO_LINK;
-
-	return 0;
-}
-
-int gwdns_resolv_addr(char **domains, gwdns_resolv_hint *hint, gwdns_resolv_ctx *ctx)
-{
-	gwdns_question_buffer *buff;
-	struct io_uring_sqe *sqe;
-	struct io_uring_cqe *cqe;
-	int ret, sockfd;
-	unsigned head;
-	size_t l, idx;
-
-	sockfd = socket(hint->ra_family, SOCK_DGRAM, 0);
-	if (sockfd < 0) {
-		ret = errno;
-		fprintf(
-			stderr,
-			"error while creating socket: %s\n",
-			strerror(ret)
-		);
-		return ret;
-	}
-
-	sqe = io_uring_get_sqe(&ctx->ring);
-	if (!sqe)
-		return -1;
-	ctx->sqe_nr++;
-	io_uring_prep_connect(sqe, sockfd, (struct sockaddr *)&ctx->servers->in, sizeof(ctx->servers->in));
-	sqe->flags |= IOSQE_IO_LINK;
-	io_uring_sqe_set_data64(sqe, 1);
-
-	buff = malloc(sizeof(*buff) * hint->domain_nr);
-	for (l = 0; l < hint->domain_nr; l++) {
-		ret = send_query(&ctx->ring, sockfd, domains[l], &buff[l]);
-		if (ret)
-			return -1;
-		ctx->sqe_nr += 2;
-	}
-
-	sqe = io_uring_get_sqe(&ctx->ring);
-	if (!sqe)
-		return -1;
-	ctx->sqe_nr++;
-	io_uring_prep_close(sqe, sockfd);
-	sqe->flags |= IOSQE_IO_LINK;
-	io_uring_sqe_set_data64(sqe, 4);
-
-	printf("ctx->sqe_nr=%d\n", ctx->sqe_nr);
-	ret = io_uring_submit_and_wait(&ctx->ring, ctx->sqe_nr);
-	if (ret < 0)
-		return ret;
-
-	idx = l = 0;
-	io_uring_for_each_cqe(&ctx->ring, head, cqe) {
-		ctx->sqe_nr--;
-		printf("cqe->res=%d cqe->user_data=%llx\n", cqe->res, CLEAR_ID(cqe->user_data));
-		if (EXTRACT_ID(cqe->user_data) == ID) {
-			cqe->user_data = CLEAR_ID(cqe->user_data);
-			ret = serialize_answ((uint16_t)cqe->user_data, (uint8_t *)buff[idx].answr, cqe->res, NULL);
-			printf("serialize return: %d\n", ret);
-			idx++;
-		}
-		l++;
-	}
-
-	io_uring_cq_advance(&ctx->ring, l);
-	free(buff);
-
-	return 0;
 }
