@@ -40,18 +40,21 @@
  */
 
 /* Flag bit position in little-endian machine */
-#define DNS_QR_BIT	15
-#define DNS_OPCODE_BIT	11	// 4-bit field
-#define DNS_AA_BIT	10
-#define DNS_TC_BIT	9
-#define DNS_RD_BIT	8
-#define DNS_RA_BIT	7
-#define DNS_Z_BIT	4	// 3-bit field
-#define DNS_RCODE_BIT	0	// 4-bit field
+#define DNS_QR_BIT		0xF
+#define DNS_OPCODE_BIT		0xB	// 4-bit field
+#define DNS_AA_BIT		0xA
+#define DNS_TC_BIT		0x9
+#define DNS_RD_BIT		0x8
+#define DNS_RA_BIT		0x7
+#define DNS_Z_BIT		0x4	// 3-bit field
+#define DNS_RCODE_BIT		0x0	// 4-bit field
+#define DNS_COMPRESSION_BIT	(0x3 << 0xE)
 
 /* Flag extraction macros for listtle-endian machine */
 #define DNS_QR(flags)		(((flags) >> DNS_QR_BIT) & 0x1)
-#define DNS_OPCODE(flags)
+#define DNS_OPCODE(flags)	(((flags) >> DNS_OPCODE_BIT) & 0xF)
+#define DNS_RCODE(flags)	((flags) & 0xF)
+#define DNS_IS_COMPRESSED(mask) ((mask) & DNS_COMPRESSION_BIT)
 
 /* Flag construction macros for little-endian machine */
 #define DNS_SET_RD(flags, val)	(flags) = ((flags) & ~(1 << DNS_RD_BIT)) | ((!!(val)) << DNS_RD_BIT)
@@ -117,12 +120,9 @@ typedef struct {
 } gwdns_client_cfg;
 
 typedef struct {
-	uint16_t txid;
 	uint8_t *dst_buffer;
 	size_t dst_len;
 	char *domain;
-	uint16_t qtype;
-	uint16_t qclass;
 } gwdns_question_part;
 
 /*
@@ -178,6 +178,26 @@ static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
 	return total;
 }
 
+static ssize_t calculate_question_len(uint8_t *in, size_t in_len)
+{
+	const uint8_t *p = in;
+	size_t tot_len;
+
+	tot_len = 0;
+	while (true) {
+		if (*p == 0x0)
+			break;
+
+		if (tot_len >= in_len)
+			return -ENAMETOOLONG;
+
+		tot_len += *p + 1;
+		p += tot_len;
+	}
+
+	return  tot_len;
+}
+
 /*
 * Serialize DNS server's answer
 *
@@ -191,23 +211,85 @@ static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
 * -EINVAL the content of in buffer is not valid.
 * -ENOMEM failed to allocate dynamic memory.
 * -ENODATA the packet didn't contain any answers.
+* -EPROTO the DNS server can't understand your question
 */
 static int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_rr *out)
 {
 	struct gwdns_header_pkt *hdr;
-	size_t i;
+	size_t rlen, advance_len, first_len;
+	uint16_t raw_flags;
+	int ret;
 
-	if (in_len < sizeof(*hdr))
+	advance_len = rlen = sizeof(*hdr);
+	if (in_len < rlen)
 		return -EAGAIN;
 
 	hdr = (void *)in;
 	if (memcmp(&txid, &hdr->id, sizeof(txid)))
 		return -EINVAL;
-	
-	/* TODO: test if flag is correctly placed with bitmask */
 
+	memcpy(&raw_flags, &in[2], sizeof(raw_flags));
+	raw_flags = ntohs(raw_flags);
+	/* QR MUST 1 = response from dns server */
+	if (!DNS_QR(raw_flags))
+		return -EINVAL;
+
+	/* OPCODE MUST 0 = standard query */
+	if (DNS_OPCODE(raw_flags))
+		return -EINVAL;
+	
+	/* RCODE MUST 0 = No error */
+	if (DNS_RCODE(raw_flags))
+		return -EPROTO;
+
+	// is it safe or recommended to alter the in buffer directly?
+	hdr->ancount = ntohs(hdr->ancount);
 	if (!hdr->ancount)
 		return -ENODATA;
+
+	in += advance_len;
+
+	first_len = 1 + in[0];
+	advance_len = first_len + 1 + 2 + 2;
+	rlen += advance_len;
+	if (in_len < rlen)
+		return -EAGAIN;
+
+	ret = calculate_question_len(in, in_len);
+	if (ret < 0)
+		return -EINVAL;
+
+	advance_len -= first_len;
+	advance_len += ret;
+	rlen += advance_len;
+	if (in_len < rlen)
+		return -EAGAIN;
+
+	in += advance_len;
+	for (size_t i = 0; i < hdr->ancount; i++) {
+		char ipstr[INET_ADDRSTRLEN];
+		uint16_t is_compressed, rdlength;
+
+		memcpy(&is_compressed, in, sizeof(is_compressed));
+		is_compressed = DNS_IS_COMPRESSED(ntohs(is_compressed));
+		assert(is_compressed);
+		in += 2; // NAME
+	
+		in += 2; // TYPE
+		in += 2; // CLASS
+		in += 4; // TTL
+
+		memcpy(&rdlength, in, sizeof(rdlength));
+		rdlength = ntohs(rdlength);
+		assert(rdlength == 4);
+		in += 2;
+
+		inet_ntop(AF_INET, in, ipstr, sizeof(ipstr));
+		printf("%s\n", ipstr);
+		in += rdlength;
+	}
+
+	(void)out;
 
 	return 0;
 }
@@ -216,6 +298,7 @@ static ssize_t construct_question(gwdns_question_part *question)
 {
 	struct gwdns_header_pkt *hdr;
 	struct gwdns_query_pkt pkt;
+	uint16_t qtype, qclass;
 	size_t required_len;
 	ssize_t bw;
 
@@ -229,13 +312,9 @@ static ssize_t construct_question(gwdns_question_part *question)
 	* let the caller decide? provide an interface/helper function that
 	* the caller can call it later to validate and check this problem?
 	*/
-	hdr->id = (uint16_t)rand();
+	hdr->id = htons((uint16_t)rand());
 	DNS_SET_RD(hdr->flags, true);
 	hdr->flags = htons(hdr->flags);
-
-	question->qtype = htons(TYPE_A);
-	question->qclass = htons(CLASS_IN);
-
 	hdr->qdcount = htons(1);
 
 	/*
@@ -247,9 +326,11 @@ static ssize_t construct_question(gwdns_question_part *question)
 		return bw;
 
 	pkt.body[bw++] = 0x0;
-	memcpy(&pkt.body[bw], &question->qtype, 2);
+	qtype = htons(TYPE_A);
+	qclass = htons(CLASS_IN);
+	memcpy(&pkt.body[bw], &qtype, 2);
 	bw += 2;
-	memcpy(&pkt.body[bw], &question->qclass, 2);
+	memcpy(&pkt.body[bw], &qclass, 2);
 	bw += 2;
 
 	required_len = sizeof(pkt.hdr) + bw;
@@ -300,6 +381,10 @@ static int parse_cmdline_args(gwdns_client_cfg *cfg, int argc, char **argv)
 	return 0;
 }
 
+#define ID (0x3ULL << 32ULL)
+#define EXTRACT_ID(mask) ((mask) & ID)
+#define CLEAR_ID(mask) ((mask) & ~ID)
+
 static int send_query(
 	struct io_uring *ring, int sockfd,
 	char *domain, uint8_t *sendbuf, size_t sendbuf_len,
@@ -328,7 +413,10 @@ static int send_query(
 	if (!sqe)
 		return -1;
 	io_uring_prep_recv(sqe, sockfd, recvbuf, recvbuf_len, 0);
-	io_uring_sqe_set_data64(sqe, 3);
+	uint64_t u64 = 0;
+	memcpy(&u64, sendbuf, sizeof(uint16_t));
+	u64 |= ID;
+	io_uring_sqe_set_data64(sqe, u64);
 	sqe->flags |= IOSQE_IO_LINK;
 
 	return 0;
@@ -404,10 +492,12 @@ static int send_queries(gwdns_client_cfg *cfg)
 
 	idx = l = 0;
 	io_uring_for_each_cqe(&ring, head, cqe) {
-		printf("cqe->res=%d cqe->user_data=%lld\n", cqe->res, cqe->user_data);
-		if (cqe->user_data == 3) {
+		printf("cqe->res=%d cqe->user_data=%llx\n", cqe->res, CLEAR_ID(cqe->user_data));
+		if (EXTRACT_ID(cqe->user_data) == ID) {
 			char *recvbuf = arr[idx].recvbuf;
-			VT_HEXDUMP(recvbuf, cqe->res);
+			cqe->user_data = CLEAR_ID(cqe->user_data);
+			ret = serialize_answ((uint16_t)cqe->user_data, (uint8_t *)recvbuf, cqe->res, NULL);
+			printf("serialize return: %d\n", ret);
 			idx++;
 		}
 		l++;
