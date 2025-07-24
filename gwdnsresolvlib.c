@@ -256,9 +256,9 @@ static int send_query(struct io_uring *ring, int sockfd, char *domain, gwdns_que
 	return 0;
 }
 
-int gwdns_resolv_addr(char *domain, gwdns_resolv_hint *hint, gwdns_resolv_ctx *ctx)
+int gwdns_resolv_addr(char **domains, gwdns_resolv_hint *hint, gwdns_resolv_ctx *ctx)
 {
-	gwdns_question_buffer buff;
+	gwdns_question_buffer *buff;
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
 	int ret, sockfd;
@@ -284,10 +284,13 @@ int gwdns_resolv_addr(char *domain, gwdns_resolv_hint *hint, gwdns_resolv_ctx *c
 	sqe->flags |= IOSQE_IO_LINK;
 	io_uring_sqe_set_data64(sqe, 1);
 
-	ret = send_query(&ctx->ring, sockfd, domain, &buff);
-	if (ret)
-		return -1;
-	ctx->sqe_nr += 2;
+	buff = malloc(sizeof(*buff) * hint->domain_nr);
+	for (l = 0; l < hint->domain_nr; l++) {
+		ret = send_query(&ctx->ring, sockfd, domains[l], &buff[l]);
+		if (ret)
+			return -1;
+		ctx->sqe_nr += 2;
+	}
 
 	sqe = io_uring_get_sqe(&ctx->ring);
 	if (!sqe)
@@ -308,7 +311,7 @@ int gwdns_resolv_addr(char *domain, gwdns_resolv_hint *hint, gwdns_resolv_ctx *c
 		printf("cqe->res=%d cqe->user_data=%llx\n", cqe->res, CLEAR_ID(cqe->user_data));
 		if (EXTRACT_ID(cqe->user_data) == ID) {
 			cqe->user_data = CLEAR_ID(cqe->user_data);
-			ret = serialize_answ((uint16_t)cqe->user_data, (uint8_t *)buff.answr, cqe->res, NULL);
+			ret = serialize_answ((uint16_t)cqe->user_data, (uint8_t *)buff[idx].answr, cqe->res, NULL);
 			printf("serialize return: %d\n", ret);
 			idx++;
 		}
@@ -316,5 +319,7 @@ int gwdns_resolv_addr(char *domain, gwdns_resolv_hint *hint, gwdns_resolv_ctx *c
 	}
 
 	io_uring_cq_advance(&ctx->ring, l);
+	free(buff);
+
 	return 0;
 }

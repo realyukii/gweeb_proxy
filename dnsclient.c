@@ -50,17 +50,13 @@ static int parse_cmdline_args(gwdns_client_cfg *cfg, int argc, char **argv)
 static int send_queries(gwdns_client_cfg *cfg, gwdns_resolv_ctx *resolv_ctx)
 {
 	gwdns_resolv_hint hint;
-	size_t l;
 	int ret;
 
 	hint.ra_family = AF_INET;
-	for (l = 0; l < cfg->domain_nr; l++) {
-		ret = gwdns_resolv_addr(cfg->domain[l], &hint, resolv_ctx);
-		if (ret)
-			return ret;
-	}
+	hint.domain_nr = cfg->domain_nr;
+	ret = gwdns_resolv_addr(cfg->domain, &hint, resolv_ctx);
 
-	return 0;
+	return ret;
 }
 
 int main(int argc, char **argv)

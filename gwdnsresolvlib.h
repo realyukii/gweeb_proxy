@@ -166,6 +166,7 @@ typedef struct {
 
 typedef struct {
 	int ra_family;		// for now IPv4-only
+	size_t domain_nr;
 } gwdns_resolv_hint;
 
 // temporary
@@ -183,4 +184,4 @@ int init_gwdns_resolv(gwdns_resolv_ctx *ctx, gwdns_resolv_param *param);
 */
 int deinit_gwdns_resolv(gwdns_resolv_ctx *ctx);
 
-int gwdns_resolv_addr(char *domain, gwdns_resolv_hint *hint, gwdns_resolv_ctx *ctx);
+int gwdns_resolv_addr(char **domain, gwdns_resolv_hint *hint, gwdns_resolv_ctx *ctx);
