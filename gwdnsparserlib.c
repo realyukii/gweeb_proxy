@@ -1,27 +1,4 @@
-#include "gwdnsresolvlib.h"
-
-int init_gwdns_resolv(gwdns_resolv_ctx *ctx, gwdns_resolv_param *param)
-{
-	int ret;
-
-	ret = io_uring_queue_init(8, &ctx->ring, 0);
-	if (ret)
-		return ret;
-
-	ctx->sqe_nr = 0;
-
-	ctx->server_nr = param->server_nr;
-	ctx->servers = param->servers;
-
-	return 0;
-}
-
-int deinit_gwdns_resolv(gwdns_resolv_ctx *ctx)
-{
-	io_uring_queue_exit(&ctx->ring);
-
-	return 0;
-}
+#include "gwdnsparserlib.h"
 
 static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
 {
@@ -79,21 +56,6 @@ static ssize_t calculate_question_len(uint8_t *in, size_t in_len)
 	return  tot_len;
 }
 
-/*
-* Serialize DNS server's answer
-*
-* @param txid	test if a transaction id is match with the requested one.
-* @param in	a pointer to buffer that want to be parsed
-* @param out	a pointer to serialized buffer of answer to question
-* @return	zero on success or a negative number on failure
-*
-* possible error are:
-* -EAGAIN in buffer is not sufficient, no bytes are processed, need more data.
-* -EINVAL the content of in buffer is not valid.
-* -ENOMEM failed to allocate dynamic memory.
-* -ENODATA the packet didn't contain any answers.
-* -EPROTO the DNS server can't understand your question
-*/
 int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_answ *out)
 {
 	struct gwdns_header_pkt *hdr;

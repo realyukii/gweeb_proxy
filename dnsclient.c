@@ -1,12 +1,39 @@
 #define _GNU_SOURCE
 #include "general.h"
-#include "gwdnsresolvlib.h"
+#include "gwdnsparserlib.h"
+
+#define ID (0x3ULL << 32ULL)
+#define EXTRACT_ID(mask) ((mask) & ID)
+#define CLEAR_ID(mask) ((mask) & ~ID)
 
 typedef struct {
 	union gwdns_resolv_addr addr;
 	char **domain;
 	size_t domain_nr;
 } gwdns_client_cfg;
+
+static int init_gwdns_resolv(gwdns_resolv_ctx *ctx, gwdns_resolv_param *param)
+{
+	int ret;
+
+	ret = io_uring_queue_init(8, &ctx->ring, 0);
+	if (ret)
+		return ret;
+
+	ctx->sqe_nr = 0;
+
+	ctx->server_nr = param->server_nr;
+	ctx->servers = param->servers;
+
+	return 0;
+}
+
+static int deinit_gwdns_resolv(gwdns_resolv_ctx *ctx)
+{
+	io_uring_queue_exit(&ctx->ring);
+
+	return 0;
+}
 
 static int parse_cmdline_args(gwdns_client_cfg *cfg, int argc, char **argv)
 {

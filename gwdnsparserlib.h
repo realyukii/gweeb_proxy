@@ -169,21 +169,21 @@ typedef struct {
 	size_t domain_nr;
 } gwdns_resolv_hint;
 
-// temporary
-#define ID (0x3ULL << 32ULL)
-#define EXTRACT_ID(mask) ((mask) & ID)
-#define CLEAR_ID(mask) ((mask) & ~ID)
-
-/*
-* initialize gwdns resolv library.
-*/
-int init_gwdns_resolv(gwdns_resolv_ctx *ctx, gwdns_resolv_param *param);
-
-/*
-* de-initialize gwdns resolv library.
-*/
-int deinit_gwdns_resolv(gwdns_resolv_ctx *ctx);
-
 ssize_t construct_question(gwdns_question_part *question);
 
+/*
+* Serialize DNS server's answer
+*
+* @param txid	test if a transaction id is match with the requested one.
+* @param in	a pointer to buffer that want to be parsed
+* @param out	a pointer to serialized buffer of answer to question
+* @return	zero on success or a negative number on failure
+*
+* possible error are:
+* -EAGAIN in buffer is not sufficient, no bytes are processed, need more data.
+* -EINVAL the content of in buffer is not valid.
+* -ENOMEM failed to allocate dynamic memory.
+* -ENODATA the packet didn't contain any answers.
+* -EPROTO the DNS server can't understand your question
+*/
 int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_answ *out);
