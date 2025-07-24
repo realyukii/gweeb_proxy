@@ -216,12 +216,12 @@ static ssize_t calculate_question_len(uint8_t *in, size_t in_len)
 static int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_rr *out)
 {
 	struct gwdns_header_pkt *hdr;
-	size_t rlen, advance_len, first_len;
+	size_t advance_len, first_len;
 	uint16_t raw_flags;
 	int ret;
 
-	advance_len = rlen = sizeof(*hdr);
-	if (in_len < rlen)
+	advance_len = sizeof(*hdr);
+	if (in_len < advance_len)
 		return -EAGAIN;
 
 	hdr = (void *)in;
@@ -248,11 +248,11 @@ static int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_seria
 		return -ENODATA;
 
 	in += advance_len;
+	in_len -= advance_len;
 
 	first_len = 1 + in[0];
 	advance_len = first_len + 1 + 2 + 2;
-	rlen += advance_len;
-	if (in_len < rlen)
+	if (in_len < advance_len)
 		return -EAGAIN;
 
 	ret = calculate_question_len(in, in_len);
@@ -261,11 +261,11 @@ static int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_seria
 
 	advance_len -= first_len;
 	advance_len += ret;
-	rlen += advance_len;
-	if (in_len < rlen)
+	if (in_len < advance_len)
 		return -EAGAIN;
 
 	in += advance_len;
+	in_len -= advance_len;
 	for (size_t i = 0; i < hdr->ancount; i++) {
 		char ipstr[INET_ADDRSTRLEN];
 		uint16_t is_compressed, rdlength;
