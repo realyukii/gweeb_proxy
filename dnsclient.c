@@ -181,7 +181,7 @@ static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
 static ssize_t calculate_question_len(uint8_t *in, size_t in_len)
 {
 	const uint8_t *p = in;
-	size_t tot_len;
+	size_t tot_len, advance_len;
 
 	tot_len = 0;
 	while (true) {
@@ -191,8 +191,9 @@ static ssize_t calculate_question_len(uint8_t *in, size_t in_len)
 		if (tot_len >= in_len)
 			return -ENAMETOOLONG;
 
-		tot_len += *p + 1;
-		p += tot_len;
+		advance_len = *p + 1;
+		tot_len += advance_len;
+		p += advance_len;
 	}
 
 	return  tot_len;
