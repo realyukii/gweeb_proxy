@@ -103,19 +103,19 @@ typedef enum {
 	QCLASS_ANY	= 255	// ANY class (matches any class)
 } gwdns_class;
 
-struct gwdns_header_pkt {
+typedef struct {
 	uint16_t id;
 	uint16_t flags;
 	uint16_t qdcount;
 	uint16_t ancount;
 	uint16_t nscount;
 	uint16_t arcount;
-} __packed;
+} __packed gwdns_header_pkt;
 
-struct gwdns_query_pkt {
-	struct gwdns_header_pkt hdr;
+typedef struct {
+	gwdns_header_pkt hdr;
 	uint8_t body[1024];
-};
+} gwdns_query_pkt;
 
 typedef struct {
 	uint8_t question[UDP_MSG_LIMIT];
@@ -172,9 +172,9 @@ typedef struct {
 ssize_t construct_question(gwdns_question_part *question);
 
 /*
-* Serialize DNS server's answer
+* Serialize name server's answer
 *
-* @param txid	test if a transaction id is match with the requested one.
+* @param txid	transaction id of question.
 * @param in	a pointer to buffer that want to be parsed
 * @param out	a pointer to serialized buffer of answer to question
 * @return	zero on success or a negative number on failure

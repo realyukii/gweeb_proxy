@@ -58,7 +58,7 @@ static ssize_t calculate_question_len(uint8_t *in, size_t in_len)
 
 int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_answ *out)
 {
-	struct gwdns_header_pkt *hdr;
+	gwdns_header_pkt *hdr;
 	size_t advance_len, first_len;
 	uint16_t raw_flags;
 	int ret;
@@ -139,8 +139,8 @@ int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_a
 
 ssize_t construct_question(gwdns_question_part *question)
 {
-	struct gwdns_header_pkt *hdr;
-	struct gwdns_query_pkt pkt;
+	gwdns_header_pkt *hdr;
+	gwdns_query_pkt pkt;
 	uint16_t qtype, qclass;
 	size_t required_len;
 	ssize_t bw;
