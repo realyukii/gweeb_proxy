@@ -161,9 +161,16 @@ static int resolv_addr(char **domains, gwdns_resolv_hint *hint, gwdns_resolv_ctx
 		ctx->sqe_nr--;
 		printf("cqe->res=%d cqe->user_data=%llx\n", cqe->res, CLEAR_ID(cqe->user_data));
 		if (EXTRACT_ID(cqe->user_data) == ID) {
+			char ipstr[INET_ADDRSTRLEN];
+			gwdns_answ_data d;
+
 			cqe->user_data = CLEAR_ID(cqe->user_data);
-			ret = serialize_answ((uint16_t)cqe->user_data, (uint8_t *)buff[idx].answr, cqe->res, NULL);
-			printf("serialize return: %d\n", ret);
+			ret = serialize_answ((uint16_t)cqe->user_data, (uint8_t *)buff[idx].answr, cqe->res, &d);
+			for (size_t i = 0; i < d.hdr.ancount; i++) {
+				inet_ntop(AF_INET, d.rr_answ[i]->rdata, ipstr, sizeof(ipstr));
+				printf("%s\n", ipstr);
+			}
+			
 			idx++;
 		}
 		l++;

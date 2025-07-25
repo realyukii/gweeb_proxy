@@ -56,10 +56,10 @@ static ssize_t calculate_question_len(uint8_t *in, size_t in_len)
 	return  tot_len;
 }
 
-int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_answ *out)
+int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_answ_data *out)
 {
-	gwdns_header_pkt *hdr;
 	size_t advance_len, first_len;
+	gwdns_header_pkt *hdr;
 	uint16_t raw_flags;
 	int ret;
 
@@ -109,30 +109,40 @@ int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_a
 
 	in += advance_len;
 	in_len -= advance_len;
+
+	/* TODO: for now it's always assume the size is 4 bytes long (IPv4) */
+	out->hdr.ancount = hdr->ancount;
+	out->rr_answ = malloc(hdr->ancount * sizeof(uint8_t *));
 	for (size_t i = 0; i < hdr->ancount; i++) {
-		char ipstr[INET_ADDRSTRLEN];
 		uint16_t is_compressed, rdlength;
+		gwdns_serialized_answ *item = malloc(sizeof(gwdns_serialized_answ));
+		if (!item)
+			return -ENOMEM;
+
+		out->rr_answ[i] = item;
 
 		memcpy(&is_compressed, in, sizeof(is_compressed));
 		is_compressed = DNS_IS_COMPRESSED(ntohs(is_compressed));
 		assert(is_compressed);
 		in += 2; // NAME
-	
+
+		memcpy(&item->rr_type, in, 2);
 		in += 2; // TYPE
+		memcpy(&item->rr_class, in, 2);
 		in += 2; // CLASS
+		memcpy(&item->ttl, in, 4);
 		in += 4; // TTL
 
 		memcpy(&rdlength, in, sizeof(rdlength));
 		rdlength = ntohs(rdlength);
+		item->rdlength = rdlength;
 		assert(rdlength == 4);
 		in += 2;
 
-		inet_ntop(AF_INET, in, ipstr, sizeof(ipstr));
-		printf("%s\n", ipstr);
+		item->rdata = malloc(rdlength);
+		memcpy(item->rdata, in, rdlength);
 		in += rdlength;
 	}
-
-	(void)out;
 
 	return 0;
 }

@@ -113,11 +113,6 @@ typedef struct {
 } __packed gwdns_header_pkt;
 
 typedef struct {
-	gwdns_header_pkt hdr;
-	uint8_t body[1024];
-} gwdns_query_pkt;
-
-typedef struct {
 	uint8_t question[UDP_MSG_LIMIT];
 	char answr[UDP_MSG_LIMIT];
 } gwdns_question_buffer;
@@ -144,7 +139,24 @@ typedef struct {
 	uint8_t  *rdata;	// RDATA: variable-length data, format depends on TYPE and CLASS
 } gwdns_serialized_rr;
 
+typedef struct {
+	char qname[DOMAIN_NAME_LIMIT];
+	uint16_t qtype;
+	uint16_t qclass;
+} gwdns_serialized_question;
+
 typedef gwdns_serialized_rr gwdns_serialized_answ;
+
+typedef struct {
+	gwdns_header_pkt hdr;
+	uint8_t body[UDP_MSG_LIMIT];
+} gwdns_query_pkt;
+
+typedef struct {
+	gwdns_header_pkt hdr;
+	gwdns_serialized_question question;
+	gwdns_serialized_answ **rr_answ;
+} gwdns_answ_data;
 
 union gwdns_resolv_addr {
 	struct sockaddr_in in;
@@ -186,4 +198,4 @@ ssize_t construct_question(gwdns_question_part *question);
 * -ENODATA the packet didn't contain any answers.
 * -EPROTO the DNS server can't understand your question
 */
-int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_serialized_answ *out);
+int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_answ_data *out);
