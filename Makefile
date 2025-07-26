@@ -6,6 +6,7 @@ INOTIFYSRC	:= test_inotify.c linux.c
 DNSCLIENTSRC	:= dnsclient.c general.c gwdnsparserlib.c
 GWSOCKS5LIBSRC	:= gwsocks5lib.c linux.c general.c
 GWDNSLIBSRC	:= gwdnslib.c linux.c
+PARSERLIBSRC	:= gwdnsparserlib.c
 
 OBJS1		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(GWPROXYSRC))
 OBJS2		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(CONVERTERSRC))
@@ -13,6 +14,7 @@ OBJS3		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(INOTIFYSRC))
 OBJS5		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(DNSCLIENTSRC))
 OBJS6		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(GWSOCKS5LIBSRC))
 OBJS7		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(GWDNSLIBSRC))
+OBJS8		:= $(patsubst %.c,$(BUILDDIR)/%.o,$(PARSERLIBSRC))
 
 TARGET1		:= $(BUILDDIR)/gwproxy
 TARGET2		:= $(BUILDDIR)/ip_converter
@@ -20,6 +22,7 @@ TARGET3		:= $(BUILDDIR)/test_inotify
 TARGET5		:= $(BUILDDIR)/dnsclient
 TARGET6		:= $(BUILDDIR)/gwsocks5lib
 TARGET7		:= $(BUILDDIR)/gwdnslib
+TARGET8		:= $(BUILDDIR)/gwdnsparserlib
 
 CC		:= gcc
 CFLAGS		:= -Wmaybe-uninitialized -Wall -Wextra -Os -g3
@@ -44,6 +47,8 @@ $(TARGET6): CFLAGS += -DRUNTEST  -DENABLE_DUMP
 $(TARGET6): $(OBJS6)
 $(TARGET7): CFLAGS += -DRUNTEST
 $(TARGET7): $(OBJS7)
+$(TARGET8): CFLAGS += -DRUNTEST
+$(TARGET8): $(OBJS8)
 
 # test without log: make CFLAGS="-DENABLE_LOG=false" -B test_conventional
 test_conventional: $(TARGET1)
@@ -54,6 +59,8 @@ test_socks5: $(TARGET1)
 test_dnsclient: $(TARGET5)
 	$< 1.1.1.1 53 google.com github.com facebook.com
 test_gwsocks5lib: $(TARGET6)
+	$<
+test_gwdnsparserlib: $(TARGET8)
 	$<
 
 .PHONY: clean

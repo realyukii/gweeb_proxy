@@ -135,8 +135,6 @@ int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_answ_data *o
 		memcpy(&rdlength, in, sizeof(rdlength));
 		rdlength = ntohs(rdlength);
 		item->rdlength = rdlength;
-		/* TODO: for now it's always assume the size is 4 bytes long (IPv4) */
-		assert(rdlength == 4);
 		in += 2;
 
 		item->rdata = malloc(rdlength);
@@ -194,3 +192,115 @@ ssize_t construct_question(gwdns_question_part *question)
 
 	return required_len;
 }
+
+#ifdef RUNTEST
+
+void test_simulate_ipv4query(void)
+{
+	char buff[UDP_MSG_LIMIT];
+	gwdns_query_pkt *send_pkt;
+	uint8_t recv_pkt[] = {
+		/* Header (12 bytes) */
+		0x00, 0x00,		/* transaction ID - STUB! */
+		0x81, 0x80,		/* Flags: QR=1, AA=0, RD=1, RA=1, RCODE=0 */
+		0x00, 0x01,		/* QDCOUNT = 1 */
+		0x00, 0x06,		/* ANCOUNT = 6 */
+		0x00, 0x00,		/* NSCOUNT = 0 */
+		0x00, 0x00,		/* ARCOUNT = 0 */
+		
+		/* Question Section */
+		/* Pointer label compression may be used in answers */
+		0x06, 'g','o','o','g','l','e',
+		0x03, 'c','o','m',
+		0x00,			/* Terminate name */
+		0x00, 0x01,		/* QTYPE = A */
+		0x00, 0x01,		/* QCLASS = IN */
+
+		/* Answer Section (6 records) */
+		/* Each Answer record: name pointer, type, class, ttl, rdlength, rdata */
+		/* First Answer */
+		0xC0, 0x0C,		/* Name: pointer to offset 0x0C (start of question name) */
+		0x00, 0x01,		/* TYPE = A */
+		0x00, 0x01,		/* CLASS = IN */
+		0x00, 0x00, 0x08, 0x62, /* TTL = 0x00000862 = 2146 sec */
+		0x00, 0x04,		/* RDLENGTH = 4 */
+		0x4A, 0x7D, 0x18, 0x71,	/* RDATA = 74.125.24.113 */
+
+		/* Second Answer */
+		0xC0, 0x0C,
+		0x00, 0x01,
+		0x00, 0x01,
+		0x00, 0x00, 0x08, 0x62,
+		0x00, 0x04,
+		0x4A, 0x7D, 0x18, 0x65, /* 74.125.24.101 */
+
+		/* Third Answer */
+		0xC0, 0x0C,
+		0x00, 0x01,
+		0x00, 0x01,
+		0x00, 0x00, 0x08, 0x62,
+		0x00, 0x04,
+		0x4A, 0x7D, 0x18, 0x8B, /* 74.125.24.139 */
+
+		/* Fourth Answer */
+		0xC0, 0x0C,
+		0x00, 0x01,
+		0x00, 0x01,
+		0x00, 0x00, 0x08, 0x62,
+		0x00, 0x04,
+		0x4A, 0x7D, 0x18, 0x8A, /* 74.125.24.138 */
+
+		/* Fifth Answer */
+		0xC0, 0x0C,
+		0x00, 0x01,
+		0x00, 0x01,
+		0x00, 0x00, 0x08, 0x62,
+		0x00, 0x04,
+		0x4A, 0x7D, 0x18, 0x64, /* 74.125.24.100 */
+
+		/* Sixth Answer */
+		0xC0, 0x0C,
+		0x00, 0x01,
+		0x00, 0x01,
+		0x00, 0x00, 0x08, 0x62,
+		0x00, 0x04,
+		0x4A, 0x7D, 0x18, 0x66, /* 74.125.24.102 */
+	};
+	gwdns_answ_data d;
+	char first_label[] = "google";
+	char second_label[] = "com";
+
+	memset(&d, 0, sizeof(d));
+	gwdns_question_part q = {
+		.domain = "google.com",
+		.dst_buffer = (uint8_t *)buff,
+		.dst_len = sizeof(buff)
+	};
+	assert(construct_question(&q) > 0);
+
+	assert(buff[12] == 6);
+	assert(!memcmp(&buff[13], first_label, 6));
+
+	assert(buff[13 + 6] == 3);
+	assert(!memcmp(&buff[13 + 6 + 1], second_label, 3));
+
+	// fill the STUB
+	memcpy(recv_pkt, buff, 2);
+
+	send_pkt = (void *)buff;
+	assert(!serialize_answ(send_pkt->hdr.id, recv_pkt, sizeof(recv_pkt), &d));
+}
+
+void run_all_tests(void)
+{
+	test_simulate_ipv4query();
+	fprintf(stderr, "all tests passed!\n");
+}
+
+int main(void)
+{
+	run_all_tests();
+	return 0;
+}
+
+#endif
