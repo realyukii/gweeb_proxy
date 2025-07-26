@@ -154,17 +154,57 @@ int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_answ_data *o
 	return 0;
 }
 
-ssize_t construct_question(gwdns_question_part *question)
+static ssize_t construct_question_section(uint8_t *body, size_t body_len, uint16_t ai_type, char *domain)
 {
-	gwdns_header_pkt *hdr;
-	gwdns_query_pkt pkt;
 	uint16_t qtype, qclass;
-	size_t required_len;
 	ssize_t bw;
 
-	if (question->type != TYPE_AAAA && question->type != TYPE_A)
-		return -EINVAL;
+	/*
+	* body is interpreted as question section
+	* for layout and format, see RFC 1035 4.1.2. Question section format
+	*/
+	bw = construct_qname(body, body_len - 3, domain);
+	if (bw < 0)
+		return bw;
 
+	body[bw++] = 0x0;
+	qtype = htons(ai_type);
+	qclass = htons(CLASS_IN);
+	memcpy(&body[bw], &qtype, 2);
+	bw += 2;
+	memcpy(&body[bw], &qclass, 2);
+	bw += 2;
+
+	return bw;
+}
+
+// TODO: rename to construct dns query?
+ssize_t construct_question(gwdns_question_part *question)
+{
+	size_t total_len, qdcount;
+	uint16_t specified_type;
+	gwdns_header_pkt *hdr;
+	ssize_t required_len;
+	gwdns_query_pkt pkt;
+	size_t body_len;
+
+	qdcount = 1;
+	switch (question->ai_family) {
+	case AF_INET:
+		specified_type = TYPE_A;
+		break;
+	case AF_INET6:
+		specified_type = TYPE_AAAA;
+		break;
+	case AF_UNSPEC:
+		qdcount = 2;
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	total_len = 0;
 	hdr = &pkt.hdr;
 	/*
 	* the memset implicitly set opcode to query
@@ -178,31 +218,33 @@ ssize_t construct_question(gwdns_question_part *question)
 	hdr->id = htons((uint16_t)rand());
 	DNS_SET_RD(hdr->flags, true);
 	hdr->flags = htons(hdr->flags);
-	hdr->qdcount = htons(1);
+	hdr->qdcount = htons(qdcount);
 
-	/*
-	* pkt.body is interpreted as question section
-	* for layout and format, see RFC 1035 4.1.2. Question section format
-	*/
-	bw = construct_qname(pkt.body, sizeof(pkt.body) - 3, question->domain);
-	if (bw < 0)
-		return bw;
+	body_len = sizeof(pkt.body);
+	if (qdcount == 2) {
+		required_len = construct_question_section(pkt.body, body_len, TYPE_AAAA, question->domain);
+		if (required_len < 0)
+			return -EINVAL;
+		total_len += required_len;
 
-	pkt.body[bw++] = 0x0;
-	qtype = htons(question->type);
-	qclass = htons(CLASS_IN);
-	memcpy(&pkt.body[bw], &qtype, 2);
-	bw += 2;
-	memcpy(&pkt.body[bw], &qclass, 2);
-	bw += 2;
+		body_len -= required_len;
+		required_len = construct_question_section(&pkt.body[required_len], body_len, TYPE_A, question->domain);
+		if (required_len < 0)
+			return -EINVAL;
+		total_len += required_len;
+	} else {
+		required_len = construct_question_section(pkt.body, body_len, specified_type, question->domain);
+		if (required_len < 0)
+			return -EINVAL;
+		total_len += required_len;
+	}
 
-	required_len = sizeof(pkt.hdr) + bw;
-	if (question->dst_len < required_len)
+	total_len += sizeof(pkt.hdr);
+	if (question->dst_len < total_len)
 		return -ENOBUFS;
+	memcpy(question->dst_buffer, &pkt, total_len);
 
-	memcpy(question->dst_buffer, &pkt, required_len);
-
-	return required_len;
+	return total_len;
 }
 
 #ifdef RUNTEST

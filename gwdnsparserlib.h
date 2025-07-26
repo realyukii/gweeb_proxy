@@ -120,7 +120,7 @@ typedef struct {
 
 typedef struct {
 	uint8_t *dst_buffer;
-	uint16_t type;
+	uint16_t ai_family;
 	size_t dst_len;
 	char *domain;
 } gwdns_question_part;

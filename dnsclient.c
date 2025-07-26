@@ -83,7 +83,7 @@ static int send_query(struct io_uring *ring, int sockfd, char *domain, gwdns_que
 	q.domain = domain;
 	q.dst_buffer = buff->question;
 	q.dst_len = UDP_MSG_LIMIT;
-	q.type = TYPE_AAAA;
+	q.ai_family = AF_INET6;
 	payload_len = construct_question(&q);
 	if (payload_len < 0)
 		return -1;
