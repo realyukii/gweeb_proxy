@@ -1,3 +1,5 @@
+#define _DEFAULT_SOURCE
+#include <endian.h>
 #include "gwdnsparserlib.h"
 
 static ssize_t construct_qname(uint8_t *dst, size_t dst_len, const char *qname)
@@ -126,14 +128,21 @@ int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_answ_data *o
 		in += 2; // NAME
 
 		memcpy(&item->rr_type, in, 2);
+		item->rr_type = ntohs(item->rr_type);
 		in += 2; // TYPE
 		memcpy(&item->rr_class, in, 2);
+		item->rr_class = ntohs(item->rr_class);
 		in += 2; // CLASS
 		memcpy(&item->ttl, in, 4);
+		item->ttl = be32toh(item->ttl);
 		in += 4; // TTL
 
 		memcpy(&rdlength, in, sizeof(rdlength));
 		rdlength = ntohs(rdlength);
+		if (item->rr_type == TYPE_AAAA && rdlength != sizeof(struct in6_addr))
+			return -EINVAL;
+		if (item->rr_type == TYPE_A && rdlength != sizeof(struct in_addr))
+			return -EINVAL;
 		item->rdlength = rdlength;
 		in += 2;
 
@@ -152,6 +161,9 @@ ssize_t construct_question(gwdns_question_part *question)
 	uint16_t qtype, qclass;
 	size_t required_len;
 	ssize_t bw;
+
+	if (question->type != TYPE_AAAA && question->type != TYPE_A)
+		return -EINVAL;
 
 	hdr = &pkt.hdr;
 	/*
@@ -177,7 +189,7 @@ ssize_t construct_question(gwdns_question_part *question)
 		return bw;
 
 	pkt.body[bw++] = 0x0;
-	qtype = htons(TYPE_A);
+	qtype = htons(question->type);
 	qclass = htons(CLASS_IN);
 	memcpy(&pkt.body[bw], &qtype, 2);
 	bw += 2;

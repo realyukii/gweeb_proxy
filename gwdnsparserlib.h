@@ -91,6 +91,7 @@ typedef enum {
 	TYPE_MINFO	= 14,	// mailbox or mail list information
 	TYPE_MX		= 15,	// mail exchange
 	TYPE_TXT	= 16,	// text strings
+	TYPE_AAAA	= 28,	// text strings
 	QTYPE_AXFR	= 252,	// A request for a transfer of an entire zone
 	QTYPE_MAILB	= 253,	// A request for mailbox-related records (MB, MG or MR)
 	QTYPE_ALL	= 255	// A request for all records
@@ -119,6 +120,7 @@ typedef struct {
 
 typedef struct {
 	uint8_t *dst_buffer;
+	uint16_t type;
 	size_t dst_len;
 	char *domain;
 } gwdns_question_part;
@@ -190,7 +192,7 @@ typedef struct {
 * possible error are:
 * - ENAMETOOLONG	domain name in question.name is too long.
 * - ENOBUFS		length in question.dst_len is not sufficient.
-* - EINVAL		malformed question.name
+* - EINVAL		malformed or unsupported value in question data
 */
 ssize_t construct_question(gwdns_question_part *question);
 

@@ -83,6 +83,7 @@ static int send_query(struct io_uring *ring, int sockfd, char *domain, gwdns_que
 	q.domain = domain;
 	q.dst_buffer = buff->question;
 	q.dst_len = UDP_MSG_LIMIT;
+	q.type = TYPE_AAAA;
 	payload_len = construct_question(&q);
 	if (payload_len < 0)
 		return -1;
@@ -161,13 +162,15 @@ static int resolv_addr(char **domains, gwdns_resolv_hint *hint, gwdns_resolv_ctx
 		ctx->sqe_nr--;
 		printf("cqe->res=%d cqe->user_data=%llx\n", cqe->res, CLEAR_ID(cqe->user_data));
 		if (EXTRACT_ID(cqe->user_data) == ID) {
-			char ipstr[INET_ADDRSTRLEN];
+			char ipstr[INET6_ADDRSTRLEN];
 			gwdns_answ_data d;
 
 			cqe->user_data = CLEAR_ID(cqe->user_data);
 			ret = serialize_answ((uint16_t)cqe->user_data, (uint8_t *)buff[idx].answr, cqe->res, &d);
 			for (size_t i = 0; i < d.hdr.ancount; i++) {
-				inet_ntop(AF_INET, d.rr_answ[i]->rdata, ipstr, sizeof(ipstr));
+				gwdns_serialized_answ *p = d.rr_answ[i];
+				int sa_family = p->rr_type == TYPE_AAAA ? AF_INET6 : AF_INET;
+				inet_ntop(sa_family, p->rdata, ipstr, sizeof(ipstr));
 				printf("%s\n", ipstr);
 			}
 			
