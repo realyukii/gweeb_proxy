@@ -110,7 +110,6 @@ int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_answ_data *o
 	in += advance_len;
 	in_len -= advance_len;
 
-	/* TODO: for now it's always assume the size is 4 bytes long (IPv4) */
 	out->hdr.ancount = hdr->ancount;
 	out->rr_answ = malloc(hdr->ancount * sizeof(uint8_t *));
 	for (size_t i = 0; i < hdr->ancount; i++) {
@@ -136,6 +135,7 @@ int serialize_answ(uint16_t txid, uint8_t *in, size_t in_len, gwdns_answ_data *o
 		memcpy(&rdlength, in, sizeof(rdlength));
 		rdlength = ntohs(rdlength);
 		item->rdlength = rdlength;
+		/* TODO: for now it's always assume the size is 4 bytes long (IPv4) */
 		assert(rdlength == 4);
 		in += 2;
 
