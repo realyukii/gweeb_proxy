@@ -7,6 +7,29 @@
 #define CLEAR_ID(mask) ((mask) & ~ID)
 
 typedef struct {
+	int ra_family;		// for now IPv4-only
+	size_t domain_nr;
+} gwdns_resolv_hint;
+
+union gwdns_resolv_addr {
+	struct sockaddr_in in;
+	struct sockaddr_in6 in6;
+};
+
+typedef struct {
+	/* the following are fields for internal use only */
+	struct io_uring ring;
+	uint8_t sqe_nr;
+	union gwdns_resolv_addr *servers;
+	size_t server_nr;
+} gwdns_resolv_ctx;
+
+typedef struct {
+	union gwdns_resolv_addr *servers;
+	size_t server_nr;
+} gwdns_resolv_param;
+
+typedef struct {
 	union gwdns_resolv_addr addr;
 	char **domain;
 	size_t domain_nr;
