@@ -1,3 +1,5 @@
+The project has been archived. I’m now focusing on contributing to https://github.com/GNUWeeb/gwproxy, and further development will continue there.
+
 A simple tcp proxy server that forward a connection to the specified destination address:port.
 
 This repository is part of GNU/Weeb challanges. For more information, see: https://t.me/GNUWeeb/1174779
